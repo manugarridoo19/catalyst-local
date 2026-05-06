@@ -2,7 +2,7 @@ import { Header } from "@/components/header";
 import { FeedList } from "@/components/feed/feed-list";
 import { WatchlistPanel } from "@/components/watchlist/watchlist-panel";
 import { CommandPalette } from "@/components/search/command-palette";
-import { getFeed, getWatchlist } from "@/lib/db/queries";
+import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import type { FeedItem } from "@/lib/feed-types";
 
@@ -11,7 +11,12 @@ export const revalidate = 0;
 
 async function loadInitial(): Promise<{
   feed: FeedItem[];
-  watchlist: { symbol: string; name: string | null; sector: string | null }[];
+  watchlist: {
+    symbol: string;
+    name: string | null;
+    sector: string | null;
+    logoUrl: string | null;
+  }[];
   error?: string;
 }> {
   try {
@@ -20,25 +25,42 @@ async function loadInitial(): Promise<{
       getFeed({ limit: 100 }),
       getWatchlist(session),
     ]);
-    return {
-      feed: feedRows.map((r) => ({
+
+    // Recolectar symbols primarios + watchlist para una sola query de meta.
+    const symbols = new Set<string>();
+    for (const r of feedRows) if (r.tickers[0]) symbols.add(r.tickers[0]);
+    for (const w of watchRows) symbols.add(w.symbol);
+    const meta = await getTickerMetaMap([...symbols]);
+
+    const feed: FeedItem[] = feedRows.map((r) => {
+      const primary = r.tickers[0] ?? null;
+      const m = primary ? meta.get(primary) : null;
+      return {
         id: r.id,
         url: r.url,
         headline: r.headline,
+        body: r.body,
         source: r.source,
         publishedAt: r.publishedAt.toISOString(),
         imageUrl: r.imageUrl,
         tickers: r.tickers,
+        primarySymbol: primary,
+        primaryName: m?.name ?? null,
+        primaryLogo: m?.logoUrl ?? null,
         impact: r.impact,
         sentiment: r.sentiment,
         rationale: r.rationale,
-      })),
-      watchlist: watchRows.map((w) => ({
-        symbol: w.symbol,
-        name: w.name,
-        sector: w.sector,
-      })),
-    };
+      };
+    });
+
+    const watchlist = watchRows.map((w) => ({
+      symbol: w.symbol,
+      name: w.name,
+      sector: w.sector,
+      logoUrl: meta.get(w.symbol)?.logoUrl ?? null,
+    }));
+
+    return { feed, watchlist };
   } catch (err) {
     return {
       feed: [],

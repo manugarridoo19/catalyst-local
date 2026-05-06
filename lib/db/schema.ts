@@ -29,6 +29,7 @@ export const tickers = pgTable(
     sector: text("sector"),
     industry: text("industry"),
     marketCap: bigint("market_cap", { mode: "number" }),
+    logoUrl: text("logo_url"),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

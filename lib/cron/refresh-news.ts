@@ -5,6 +5,7 @@ import { extractTickers } from "@/lib/tickers/extractor";
 import { enrichPendingTickers } from "@/lib/tickers/enricher";
 import { scoreNewsItem } from "@/lib/scoring";
 import {
+  getTickerMetaMap,
   insertNewsWithTickers,
   insertScore,
   loadAliases,
@@ -102,10 +103,12 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
         broadcast.push({
           id: entry.id,
           headline: entry.item.headline,
+          body: entry.item.body,
           source: entry.item.source,
           publishedAt: entry.item.publishedAt.toISOString(),
           url: entry.item.url,
           tickers: entry.tickers,
+          primarySymbol: entry.tickers[0] ?? null,
           impact: score.impact,
           sentiment: score.sentiment,
           rationale: score.rationale,
@@ -122,8 +125,21 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
     }
   }
 
-  // 7) Push realtime al cliente.
-  if (broadcast.length) await broadcastNews(broadcast);
+  // 7) Enriquecer payload con logo+nombre del primary ticker antes del push.
+  if (broadcast.length) {
+    const primarySymbols = broadcast
+      .map((b) => b.primarySymbol)
+      .filter((s): s is string => Boolean(s));
+    const meta = await getTickerMetaMap(primarySymbols);
+    for (const b of broadcast) {
+      if (b.primarySymbol) {
+        const m = meta.get(b.primarySymbol);
+        b.primaryName = m?.name ?? null;
+        b.primaryLogo = m?.logoUrl ?? null;
+      }
+    }
+    await broadcastNews(broadcast);
+  }
 
   // 8) Enriquecer tickers pendientes (background-ish, mismo cron).
   const enriched = await enrichPendingTickers();

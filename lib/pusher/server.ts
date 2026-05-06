@@ -26,10 +26,14 @@ export const NEWS_EVENT = "news:new";
 export type FeedNewsPayload = {
   id: number;
   headline: string;
+  body?: string | null;
   source: string;
   publishedAt: string;
   url: string;
   tickers: string[];
+  primarySymbol?: string | null;
+  primaryName?: string | null;
+  primaryLogo?: string | null;
   impact: number;
   sentiment: number;
   rationale?: string;

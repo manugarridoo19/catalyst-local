@@ -92,6 +92,7 @@ export type FeedRow = {
   id: number;
   url: string;
   headline: string;
+  body: string | null;
   source: string;
   publishedAt: Date;
   imageUrl: string | null;
@@ -133,6 +134,7 @@ export async function getFeed(opts: {
         id: news.id,
         url: news.url,
         headline: news.headline,
+        body: news.body,
         source: news.source,
         publishedAt: news.publishedAt,
         imageUrl: news.imageUrl,
@@ -156,6 +158,7 @@ export async function getFeed(opts: {
         id: news.id,
         url: news.url,
         headline: news.headline,
+        body: news.body,
         source: news.source,
         publishedAt: news.publishedAt,
         imageUrl: news.imageUrl,
@@ -211,4 +214,32 @@ export async function removeFromWatchlist(session: string, symbol: string) {
 export async function getNewsScoresByIds(ids: number[]) {
   if (!ids.length) return [];
   return db.select().from(newsScores).where(inArray(newsScores.newsId, ids));
+}
+
+export type TickerMeta = {
+  symbol: string;
+  name: string | null;
+  logoUrl: string | null;
+  sector: string | null;
+};
+
+// Fetch metadata para varios symbols a la vez. Lo usa el feed page loader
+// para inyectar logo+nombre del "primary ticker" en cada noticia.
+export async function getTickerMetaMap(
+  symbols: string[],
+): Promise<Map<string, TickerMeta>> {
+  const out = new Map<string, TickerMeta>();
+  if (!symbols.length) return out;
+  const unique = Array.from(new Set(symbols.map((s) => s.toUpperCase())));
+  const rows = await db
+    .select({
+      symbol: tickers.symbol,
+      name: tickers.name,
+      logoUrl: tickers.logoUrl,
+      sector: tickers.sector,
+    })
+    .from(tickers)
+    .where(inArray(tickers.symbol, unique));
+  for (const r of rows) out.set(r.symbol, r);
+  return out;
 }

@@ -5,10 +5,16 @@ export type FeedItem = {
   id: number;
   url: string;
   headline: string;
+  body?: string | null;
   source: string;
   publishedAt: string; // ISO
   imageUrl?: string | null;
   tickers: string[];
+  // Metadata del primer ticker (el "primary") — para mostrar logo+nombre
+  // sin tener que hacer N queries en el cliente.
+  primarySymbol?: string | null;
+  primaryName?: string | null;
+  primaryLogo?: string | null;
   impact: number | null;
   sentiment: number | null;
   rationale?: string | null;

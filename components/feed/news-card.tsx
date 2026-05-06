@@ -1,101 +1,114 @@
 import Link from "next/link";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ImpactBadge, SentimentBadge } from "./score-badges";
+import { TickerLogo } from "@/components/ticker/ticker-logo";
 import type { FeedItem } from "@/lib/feed-types";
 import { cn } from "@/lib/utils";
 
+// Card compacta del feed: logo + TICKER MAYÚSCULAS | mini headline | scores.
+// Toda la card es un Link al detalle del ticker primario, con `?news=ID` para
+// que la vista detalle pueda hacer scroll y expandir esa noticia.
 export function NewsCard({
   item,
-  dense = true,
   fresh = false,
 }: {
   item: FeedItem;
-  dense?: boolean;
   fresh?: boolean;
 }) {
   const ago = formatDistanceToNowStrict(new Date(item.publishedAt), {
     addSuffix: false,
   });
-
-  // Direccional sutil — flecha pequeña en el chip si hay sentiment definido.
+  const primary = item.primarySymbol ?? item.tickers[0] ?? null;
   const direction =
-    item.sentiment == null ? null : item.sentiment > 0 ? "▲" : item.sentiment < 0 ? "▼" : "·";
+    item.sentiment == null ? null : item.sentiment > 0 ? "▲" : item.sentiment < 0 ? "▼" : null;
 
-  return (
-    <article
+  const inner = (
+    <div
       className={cn(
-        "group relative grid grid-cols-[auto_1fr_auto] items-start gap-4 border-b border-border/40 px-5 transition-all duration-200 hover:bg-foreground/[0.015]",
-        dense ? "py-3" : "py-5",
+        "group grid grid-cols-[auto_1fr_auto] items-center gap-4 border-b border-border/40 px-5 py-3 transition-all duration-150 hover:bg-foreground/[0.025]",
         fresh && "news-fresh",
       )}
     >
-      {/* Tickers chips — left rail */}
-      <div className="flex flex-wrap items-center gap-1 pt-1">
-        {item.tickers.length === 0 ? (
-          <span className="rounded-sm border border-border/50 bg-card/40 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-            mkt
-          </span>
+      {/* Left: logo + ticker uppercase */}
+      <div className="flex w-32 items-center gap-3">
+        {primary ? (
+          <TickerLogo symbol={primary} logoUrl={item.primaryLogo ?? undefined} size="md" />
         ) : (
-          item.tickers.slice(0, 3).map((t) => (
-            <Link
-              key={t}
-              href={`/ticker/${t}`}
-              className="group/chip flex items-center gap-1 rounded-sm border border-border/70 bg-card/60 px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase tabular-nums text-foreground transition-colors hover:border-primary/70 hover:bg-primary/[0.08] hover:text-primary"
-            >
-              <span className="tick">{t}</span>
-              {direction && (
-                <span
-                  className={cn(
-                    "text-[8px] leading-none",
-                    item.sentiment != null && item.sentiment > 0 && "text-emerald-400/80",
-                    item.sentiment != null && item.sentiment < 0 && "text-rose-400/80",
-                    item.sentiment === 0 && "text-muted-foreground",
-                  )}
-                >
-                  {direction}
-                </span>
-              )}
-            </Link>
-          ))
+          <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border/60 bg-card/60 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            mkt
+          </div>
         )}
-        {item.tickers.length > 3 && (
-          <span className="self-center font-mono text-[10px] text-muted-foreground/70">
-            +{item.tickers.length - 3}
+        <div className="flex flex-col leading-tight min-w-0">
+          <span className="tick font-mono text-sm font-bold uppercase text-foreground">
+            {primary ?? "MKT"}
           </span>
-        )}
+          {direction && (
+            <span
+              className={cn(
+                "font-mono text-[10px] leading-none",
+                item.sentiment != null && item.sentiment > 0 && "text-emerald-400",
+                item.sentiment != null && item.sentiment < 0 && "text-rose-400",
+              )}
+            >
+              {direction}
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Headline + meta */}
+      {/* Mini headline (single line truncated) */}
       <div className="min-w-0">
-        <a
-          href={item.url}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="font-editorial block truncate text-[15px] font-medium leading-snug text-foreground transition-colors group-hover:text-primary"
+        <h3
+          className="font-editorial truncate text-[15px] font-medium leading-snug text-foreground transition-colors group-hover:text-primary"
           title={item.headline}
         >
           {item.headline}
-        </a>
-        <div className="mt-1 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/80">
-          <span>{item.source.replace(/^(rss:|finnhub:|marketaux:)/, "")}</span>
+        </h3>
+        <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/80">
+          <span className="truncate">
+            {item.source.replace(/^(rss:|finnhub:|marketaux:)/, "")}
+          </span>
           <span className="opacity-40">/</span>
-          <span className="tick">{ago}</span>
-          {item.rationale && (
+          <span className="tick whitespace-nowrap">{ago}</span>
+          {item.tickers.length > 1 && (
             <>
               <span className="opacity-40">/</span>
-              <span className="truncate normal-case tracking-normal italic text-muted-foreground">
-                {item.rationale}
-              </span>
+              <span className="tick whitespace-nowrap">+{item.tickers.length - 1}</span>
             </>
           )}
         </div>
       </div>
 
-      {/* Scores */}
+      {/* Right: scores */}
       <div className="flex items-center gap-2 self-center pl-3">
         <ImpactBadge value={item.impact} />
         <SentimentBadge value={item.sentiment} />
       </div>
-    </article>
+    </div>
+  );
+
+  // Si no hay ticker primario, la card no navega — solo expone link externo
+  // como fallback en el headline (modo macro/MKT).
+  if (!primary) {
+    return (
+      <a
+        href={item.url}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="block"
+      >
+        {inner}
+      </a>
+    );
+  }
+
+  return (
+    <Link
+      href={`/ticker/${primary}?news=${item.id}`}
+      className="block"
+      prefetch={false}
+    >
+      {inner}
+    </Link>
   );
 }

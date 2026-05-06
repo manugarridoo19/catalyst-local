@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { TickerLogo } from "@/components/ticker/ticker-logo";
 
 export type WatchlistItem = {
   symbol: string;
   name: string | null;
   sector: string | null;
+  logoUrl: string | null;
 };
 
 export function WatchlistPanel({ items }: { items: WatchlistItem[] }) {
@@ -36,21 +38,19 @@ export function WatchlistPanel({ items }: { items: WatchlistItem[] }) {
             {items.map((it) => (
               <li
                 key={it.symbol}
-                className="border-b border-border/40 transition-colors hover:bg-foreground/[0.02]"
+                className="border-b border-border/40 transition-colors hover:bg-foreground/[0.025]"
               >
                 <Link
                   href={`/ticker/${it.symbol}`}
-                  className="flex items-center justify-between px-5 py-3"
+                  className="flex items-center gap-3 px-5 py-3"
                 >
-                  <span className="tick font-mono text-sm font-bold text-foreground transition-colors group-hover:text-primary">
-                    {it.symbol}
-                  </span>
-                  <div className="ml-3 min-w-0 flex-1 text-right">
+                  <TickerLogo symbol={it.symbol} logoUrl={it.logoUrl} size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <div className="tick font-mono text-sm font-bold uppercase text-foreground transition-colors hover:text-primary">
+                      {it.symbol}
+                    </div>
                     <div className="font-editorial truncate text-xs leading-tight text-muted-foreground">
                       {it.name ?? "—"}
-                    </div>
-                    <div className="truncate font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/60">
-                      {it.sector ?? ""}
                     </div>
                   </div>
                 </Link>

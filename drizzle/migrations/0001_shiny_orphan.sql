@@ -1,0 +1,1 @@
+ALTER TABLE "tickers" ADD COLUMN "logo_url" text;

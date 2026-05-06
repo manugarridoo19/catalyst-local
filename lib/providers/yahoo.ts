@@ -1,14 +1,11 @@
 // Capa fina sobre yahoo-finance2 — la usamos como fallback para datos que
 // Finnhub free no cubre (histórico de precios para charts, fundamentales
 // extras). NO la usamos en el cron principal de noticias.
-//
-// La librería tiene una API tipada compleja; usamos `any` localmente para
-// no acoplar nuestro código a internos que cambian entre versiones.
 
 import yahooFinance from "yahoo-finance2";
 
 export type DailyBar = {
-  date: Date;
+  time: number; // unix seconds (lightweight-charts compatible)
   open: number;
   high: number;
   low: number;
@@ -25,18 +22,36 @@ type ChartQuote = {
   volume?: number | null;
 };
 
-export async function getDailyBars(
+export type Period = "1d" | "1w" | "1m" | "3m" | "1y";
+
+const PERIOD_CONFIG: Record<
+  Period,
+  { days: number; interval: "1m" | "5m" | "15m" | "1h" | "1d" }
+> = {
+  "1d": { days: 1, interval: "5m" },
+  "1w": { days: 7, interval: "15m" },
+  "1m": { days: 31, interval: "1h" },
+  "3m": { days: 93, interval: "1d" },
+  "1y": { days: 365, interval: "1d" },
+};
+
+export async function getBars(
   symbol: string,
-  days = 90,
+  period: Period,
 ): Promise<DailyBar[]> {
+  const cfg = PERIOD_CONFIG[period];
   const period2 = new Date();
-  const period1 = new Date(period2.getTime() - days * 24 * 60 * 60 * 1000);
+  const period1 = new Date(period2.getTime() - cfg.days * 24 * 60 * 60 * 1000);
+
   const result = (await (yahooFinance as unknown as {
-    chart: (s: string, o: { period1: Date; period2: Date; interval: string }) => Promise<{ quotes?: ChartQuote[] }>;
+    chart: (
+      s: string,
+      o: { period1: Date; period2: Date; interval: string },
+    ) => Promise<{ quotes?: ChartQuote[] }>;
   }).chart(symbol, {
     period1,
     period2,
-    interval: "1d",
+    interval: cfg.interval,
   })) || { quotes: [] };
 
   const out: DailyBar[] = [];
@@ -46,17 +61,16 @@ export async function getDailyBars(
       q.open == null ||
       q.high == null ||
       q.low == null ||
-      q.close == null ||
-      q.volume == null
+      q.close == null
     )
       continue;
     out.push({
-      date: q.date,
+      time: Math.floor(q.date.getTime() / 1000),
       open: q.open,
       high: q.high,
       low: q.low,
       close: q.close,
-      volume: q.volume,
+      volume: q.volume ?? 0,
     });
   }
   return out;

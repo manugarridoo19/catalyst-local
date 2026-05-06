@@ -5,14 +5,18 @@ import { getProfile } from "@/lib/providers/finnhub";
 
 // Tickers nuevos llegan sin metadata. En cada cron procesamos hasta N de
 // los más antiguos sin enriquecer (FIFO) — limitado para no agotar el
-// rate-limit de Finnhub free (60 req/min).
-const ENRICH_BATCH = 25;
+// rate-limit de Finnhub free (60 req/min). El cron también gasta llamadas
+// en el fetch de noticias, así que dejamos margen.
+const ENRICH_BATCH = 40;
 
 export async function enrichPendingTickers(limit = ENRICH_BATCH) {
+  // Re-enriquecer si nunca se hizo, o si falta logo (column nuevo).
   const pending = await db
     .select({ symbol: tickers.symbol })
     .from(tickers)
-    .where(sql`${tickers.enrichedAt} IS NULL`)
+    .where(
+      sql`${tickers.enrichedAt} IS NULL OR ${tickers.logoUrl} IS NULL`,
+    )
     .limit(limit);
 
   let done = 0;
@@ -29,6 +33,7 @@ export async function enrichPendingTickers(limit = ENRICH_BATCH) {
           marketCap: profile.marketCapitalization
             ? Math.round(profile.marketCapitalization * 1_000_000)
             : null,
+          logoUrl: profile.logo || null,
           enrichedAt: now,
         })
         .where(eq(tickers.symbol, symbol));
