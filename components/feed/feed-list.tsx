@@ -9,6 +9,7 @@ import {
 import type { FeedItem } from "@/lib/feed-types";
 import { NewsCard } from "./news-card";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 type Props = {
   initial: FeedItem[];
@@ -19,6 +20,7 @@ type LivePayload = { items: FeedItem[] };
 
 export function FeedList({ initial, watchlist = [] }: Props) {
   const [items, setItems] = useState<FeedItem[]>(initial);
+  const [freshIds, setFreshIds] = useState<Set<number>>(() => new Set());
   const [filter, setFilter] = useState<"all" | "watchlist" | "high">("all");
 
   useEffect(() => {
@@ -27,7 +29,20 @@ export function FeedList({ initial, watchlist = [] }: Props) {
     const channel = pusher.subscribe(NEWS_CHANNEL);
     const onNew = (data: LivePayload) => {
       setItems((prev) => mergeFeed(data.items, prev));
-      // Aviso solo si alguna noticia toca un ticker de la watchlist.
+      // Marca como "fresh" durante el ciclo de la animación CSS.
+      setFreshIds((prev) => {
+        const next = new Set(prev);
+        for (const it of data.items) next.add(it.id);
+        return next;
+      });
+      setTimeout(() => {
+        setFreshIds((prev) => {
+          const next = new Set(prev);
+          for (const it of data.items) next.delete(it.id);
+          return next;
+        });
+      }, 2400);
+
       const hit = data.items.find((it) =>
         it.tickers.some((t) => watchlist.includes(t)),
       );
@@ -57,9 +72,14 @@ export function FeedList({ initial, watchlist = [] }: Props) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border bg-card/50 px-4 py-2">
-        <div className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-          Live feed · {filtered.length}
+      <div className="flex items-center justify-between border-b border-border/70 bg-card/30 px-5 py-2">
+        <div className="flex items-center gap-3">
+          <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+            Live feed
+          </div>
+          <span className="tick rounded-sm border border-border/60 bg-card/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+            {filtered.length}
+          </span>
         </div>
         <div className="flex items-center gap-1 font-mono text-[11px]">
           <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>
@@ -81,11 +101,13 @@ export function FeedList({ initial, watchlist = [] }: Props) {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="cat-scroll flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
           <EmptyState />
         ) : (
-          filtered.map((it) => <NewsCard key={it.id} item={it} />)
+          filtered.map((it) => (
+            <NewsCard key={it.id} item={it} fresh={freshIds.has(it.id)} />
+          ))
         )}
       </div>
     </div>
@@ -107,11 +129,13 @@ function FilterChip({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`rounded border px-2 py-0.5 uppercase tracking-wide transition-colors ${
+      className={cn(
+        "rounded-sm border px-2 py-0.5 uppercase tracking-[0.18em] transition-all duration-150",
         active
-          ? "border-amber-400/60 bg-amber-400/10 text-amber-200"
-          : "border-border text-muted-foreground hover:text-foreground"
-      } disabled:cursor-not-allowed disabled:opacity-40`}
+          ? "border-primary/60 bg-primary/10 text-primary shadow-[0_0_14px_oklch(0.78_0.13_75/0.25)]"
+          : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+        "disabled:cursor-not-allowed disabled:opacity-40",
+      )}
     >
       {children}
     </button>
@@ -120,13 +144,14 @@ function FilterChip({
 
 function EmptyState() {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center text-muted-foreground">
-      <div className="font-mono text-xs uppercase tracking-widest">
-        No hay noticias todavía
+    <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center">
+      <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+        Awaiting first signal
       </div>
-      <p className="max-w-xs text-sm">
-        El cron alimenta el feed cada minuto. Lanza{" "}
-        <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+      <p className="font-editorial max-w-sm text-base italic leading-relaxed text-muted-foreground/80">
+        El cron alimenta este feed cada cinco minutos en producción.
+        Lanza{" "}
+        <code className="rounded-sm bg-card px-1.5 py-0.5 font-mono text-xs not-italic text-foreground">
           pnpm cron:local
         </code>{" "}
         para forzar la primera carga.

@@ -7,9 +7,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-editorial: var(--font-editorial);
+  --font-heading: var(--font-editorial);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -84,37 +85,40 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Catalyst palette — Bloomberg-derelict. Cool blue-black vault backgrounds
+     (NOT pure black, easier on eyes), warm paper-white text, single copper
+     accent. Reds/greens son los semáforos de sentiment. */
+  --background: oklch(0.105 0.012 245);
+  --foreground: oklch(0.928 0.012 80);
+  --card: oklch(0.135 0.014 245);
+  --card-foreground: oklch(0.928 0.012 80);
+  --popover: oklch(0.13 0.014 245);
+  --popover-foreground: oklch(0.928 0.012 80);
+  --primary: oklch(0.78 0.13 75); /* copper amber */
+  --primary-foreground: oklch(0.13 0.014 245);
+  --secondary: oklch(0.18 0.012 245);
+  --secondary-foreground: oklch(0.928 0.012 80);
+  --muted: oklch(0.175 0.012 245);
+  --muted-foreground: oklch(0.55 0.018 70);
+  --accent: oklch(0.78 0.13 75);
+  --accent-foreground: oklch(0.13 0.014 245);
+  --destructive: oklch(0.66 0.21 24);
+  --border: oklch(0.92 0.01 80 / 8%);
+  --input: oklch(0.92 0.01 80 / 12%);
+  --ring: oklch(0.78 0.13 75 / 60%);
+  --chart-1: oklch(0.78 0.13 75);
+  --chart-2: oklch(0.7 0.15 145);
+  --chart-3: oklch(0.66 0.21 24);
+  --chart-4: oklch(0.6 0.05 245);
+  --chart-5: oklch(0.45 0.02 80);
+  --sidebar: oklch(0.13 0.014 245);
+  --sidebar-foreground: oklch(0.928 0.012 80);
+  --sidebar-primary: oklch(0.78 0.13 75);
+  --sidebar-primary-foreground: oklch(0.13 0.014 245);
+  --sidebar-accent: oklch(0.175 0.012 245);
+  --sidebar-accent-foreground: oklch(0.928 0.012 80);
+  --sidebar-border: oklch(0.92 0.01 80 / 8%);
+  --sidebar-ring: oklch(0.78 0.13 75 / 60%);
 }
 
 @layer base {
@@ -123,8 +127,133 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-feature-settings: "ss01", "cv11", "tnum";
   }
   html {
     @apply font-sans;
   }
+  /* Tipografía editorial para headlines y números crujientes en mono. */
+  .font-editorial {
+    font-family: var(--font-editorial), Georgia, "Times New Roman", serif;
+    font-feature-settings: "kern", "liga", "onum";
+    letter-spacing: -0.005em;
+  }
+  .font-mono,
+  [class*="tabular-nums"] {
+    font-feature-settings: "tnum", "zero", "ss01";
+  }
+}
+
+/* ----- Ambient layer: scanlines + grid texture + vignette --------------- */
+
+.ambient-bg {
+  background:
+    radial-gradient(
+      ellipse 80% 50% at 50% -10%,
+      oklch(0.78 0.13 75 / 0.06),
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 60% 40% at 100% 100%,
+      oklch(0.6 0.05 245 / 0.05),
+      transparent 60%
+    ),
+    var(--background);
+}
+
+.ambient-scanlines,
+.ambient-grid {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.ambient-scanlines {
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 2px,
+    oklch(1 0 0 / 0.012) 2px,
+    oklch(1 0 0 / 0.012) 3px
+  );
+  mix-blend-mode: screen;
+}
+
+.ambient-grid {
+  background-image:
+    linear-gradient(to right, oklch(1 0 0 / 0.018) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(1 0 0 / 0.018) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(
+    ellipse 90% 70% at 50% 50%,
+    black 30%,
+    transparent 90%
+  );
+}
+
+/* Mantener UI por encima de las capas decorativas. */
+body > *:not(.ambient-scanlines):not(.ambient-grid) {
+  position: relative;
+  z-index: 2;
+}
+
+/* ----- News card glow when freshly arrived via Pusher ------------------- */
+
+@keyframes catalyst-fresh {
+  0% {
+    background-color: oklch(0.78 0.13 75 / 0.18);
+    border-left-color: oklch(0.78 0.13 75);
+  }
+  100% {
+    background-color: transparent;
+    border-left-color: transparent;
+  }
+}
+
+.news-fresh {
+  animation: catalyst-fresh 2.4s ease-out;
+  border-left: 2px solid transparent;
+}
+
+/* ----- Live status pulsing dot ------------------------------------------ */
+
+@keyframes catalyst-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.85); }
+}
+
+.live-dot {
+  animation: catalyst-pulse 1.6s ease-in-out infinite;
+}
+
+/* ----- Numeric ticker — slight glyph weight bump for legibility --------- */
+
+.tick {
+  font-feature-settings: "tnum", "zero", "ss01";
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* ----- Selection — copper amber on dark blue ---------------------------- */
+
+::selection {
+  background: oklch(0.78 0.13 75 / 0.35);
+  color: oklch(0.95 0.012 80);
+}
+
+/* ----- Custom scrollbar within the feed --------------------------------- */
+
+.cat-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.cat-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cat-scroll::-webkit-scrollbar-thumb {
+  background: oklch(0.92 0.01 80 / 10%);
+  border-radius: 3px;
+}
+.cat-scroll::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.78 0.13 75 / 50%);
 }
