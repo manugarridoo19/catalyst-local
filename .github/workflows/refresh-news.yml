@@ -1,0 +1,33 @@
+name: refresh-news
+
+# GitHub Actions cron — 5-min minimum on free tier. Compensa el límite de
+# Vercel Hobby (1 cron/día). Llama al endpoint de producción con el
+# CRON_SECRET almacenado como GitHub Secret. No usa ningún input untrusted
+# del evento, solo el secret y una URL hardcodeada.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Hit cron endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ENDPOINT: "https://catalyst-local.vercel.app/api/cron/refresh-news"
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET secret missing"
+            exit 1
+          fi
+          response=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$ENDPOINT")
+          body=$(echo "$response" | head -n -1)
+          code=$(echo "$response" | tail -n 1)
+          echo "HTTP $code"
+          echo "$body" | head -c 1000
+          if [ "$code" != "200" ]; then exit 1; fi
