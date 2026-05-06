@@ -2,9 +2,12 @@ import Parser from "rss-parser";
 import type { NormalizedNewsItem } from "@/lib/types";
 import { hashUrl } from "@/lib/hash";
 
-// Fuentes RSS gratuitas y sin auth. Algunas (Reuters) bloquean acceso
-// directo, así que usamos Google News como espejo cuando hace falta.
+// Fuentes RSS gratuitas y sin auth. La mezcla está pensada para diversidad:
+// outlets generalistas (MarketWatch, CNBC, Yahoo), agregadores especializados
+// (MarketBeat, Benzinga, Motley Fool), y mirrors de Google News para los que
+// no exponen RSS directo (Reuters, Bloomberg, FT, Barrons).
 const SOURCES: { name: string; url: string }[] = [
+  // -- Generalistas / breaking news ---------------------------------------
   {
     name: "marketwatch",
     url: "https://feeds.content.dowjones.io/public/rss/mw_topstories",
@@ -15,13 +18,35 @@ const SOURCES: { name: string; url: string }[] = [
     url: "https://www.cnbc.com/id/10001147/device/rss/rss.html",
   },
   {
-    name: "seeking-alpha",
-    url: "https://seekingalpha.com/market_currents.xml",
-  },
-  {
     name: "investing-com",
     url: "https://www.investing.com/rss/news.rss",
   },
+  // -- Stock-specific aggregators -----------------------------------------
+  {
+    name: "marketbeat",
+    url: "https://www.marketbeat.com/feed/headlines.aspx",
+  },
+  {
+    name: "marketbeat-ratings",
+    url: "https://www.marketbeat.com/feed/ratings.aspx",
+  },
+  {
+    name: "benzinga",
+    url: "https://www.benzinga.com/rssfeed/feed_select?fields=stocks",
+  },
+  {
+    name: "benzinga-news",
+    url: "https://www.benzinga.com/feed",
+  },
+  {
+    name: "motley-fool",
+    url: "https://www.fool.com/feed/index/news",
+  },
+  {
+    name: "seeking-alpha",
+    url: "https://seekingalpha.com/market_currents.xml",
+  },
+  // -- Google News mirrors (para outlets que matan RSS directo) -----------
   {
     name: "reuters-business",
     url: "https://news.google.com/rss/search?q=site:reuters.com+business&hl=en-US&gl=US&ceid=US:en",
@@ -30,13 +55,25 @@ const SOURCES: { name: string; url: string }[] = [
     name: "ft-companies",
     url: "https://news.google.com/rss/search?q=site:ft.com+companies&hl=en-US&gl=US&ceid=US:en",
   },
+  {
+    name: "bloomberg",
+    url: "https://news.google.com/rss/search?q=site:bloomberg.com+markets&hl=en-US&gl=US&ceid=US:en",
+  },
+  {
+    name: "barrons",
+    url: "https://news.google.com/rss/search?q=site:barrons.com&hl=en-US&gl=US&ceid=US:en",
+  },
+  {
+    name: "wsj-markets",
+    url: "https://news.google.com/rss/search?q=site:wsj.com+markets&hl=en-US&gl=US&ceid=US:en",
+  },
 ];
 
 const parser = new Parser({
   timeout: 20_000,
   headers: {
-    // Algunos feeds (Reuters mirror, FT) bloquean User-Agents que no
-    // parezcan navegador. Usamos uno común para evitar 403.
+    // Algunos feeds (Reuters mirror, FT, MarketBeat) bloquean User-Agents
+    // que no parezcan navegador. Usamos uno común para evitar 403.
     "User-Agent":
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
     Accept:
@@ -75,7 +112,7 @@ async function fetchOne(
     .map<NormalizedNewsItem>((it) => ({
       url: it.link!,
       hash: hashUrl(it.link!),
-      headline: it.title!.trim(),
+      headline: cleanTitle(it.title!),
       source: `rss:${source}`,
       publishedAt: it.isoDate
         ? new Date(it.isoDate)
@@ -85,4 +122,12 @@ async function fetchOne(
       body: it.contentSnippet || it.content || undefined,
       apiTickers: [], // RSS no anota tickers — los descubre el extractor.
     }));
+}
+
+// Google News mirrors devuelven titulares como "Some headline - Source",
+// donde el "- Source" es ruido. Lo limpiamos para no guardarlo así en DB.
+function cleanTitle(t: string): string {
+  return t
+    .replace(/\s+-\s+[A-Za-z0-9.\s]+$/, "")
+    .trim();
 }
