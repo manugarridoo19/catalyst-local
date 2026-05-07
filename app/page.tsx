@@ -22,7 +22,10 @@ async function loadInitial(): Promise<{
   try {
     const session = await getSessionId();
     const [feedRows, watchRows] = await Promise.all([
-      getFeed({ limit: 100 }),
+      // Default: solo noticias con ticker asociado — para que cada tarjeta
+      // tenga logo + símbolo. La pestaña "All" del FeedList puede pedir el
+      // resto vía API (TBD).
+      getFeed({ limit: 100, requireTicker: true }),
       getWatchlist(session),
     ]);
 

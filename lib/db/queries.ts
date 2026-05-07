@@ -109,6 +109,7 @@ export async function getFeed(opts: {
   before?: Date;
   symbol?: string;
   minImpact?: number;
+  requireTicker?: boolean;
 } = {}): Promise<FeedRow[]> {
   const limit = Math.min(opts.limit ?? 50, 200);
 
@@ -126,6 +127,10 @@ export async function getFeed(opts: {
   if (opts.before) conditions.push(sql`${news.publishedAt} < ${opts.before}` as never);
   if (opts.minImpact)
     conditions.push(sql`${newsScores.impact} >= ${opts.minImpact}` as never);
+  if (opts.requireTicker)
+    conditions.push(
+      sql`EXISTS (SELECT 1 FROM news_tickers nt WHERE nt.news_id = ${news.id})` as never,
+    );
 
   let rows;
   if (opts.symbol) {
