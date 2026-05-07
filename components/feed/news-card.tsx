@@ -1,54 +1,69 @@
+"use client";
+
 import Link from "next/link";
 import { formatDistanceToNowStrict } from "date-fns";
+import { ExternalLink, ArrowRight } from "lucide-react";
 import { ImpactBadge, SentimentBadge } from "./score-badges";
 import { CategoryBadge } from "./category-badge";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import type { FeedItem } from "@/lib/feed-types";
 import { cn } from "@/lib/utils";
 
-// Mapeo de source RSS → etiqueta corta y atmósfera de color para el chip
-// que se muestra cuando una noticia no tiene ticker asociado (modo macro).
+// Mapeo source → etiqueta corta + tono cromático para chip cuando no hay
+// ticker primario (modo macro/MKT).
 const SOURCE_LABEL: Record<string, { label: string; tint: string }> = {
-  "rss:marketwatch": { label: "MW", tint: "from-amber-400/30 to-amber-600/10" },
-  "rss:yahoo-finance": { label: "YF", tint: "from-violet-400/30 to-violet-600/10" },
-  "rss:cnbc-business": { label: "CNBC", tint: "from-rose-400/30 to-rose-600/10" },
-  "rss:seeking-alpha": { label: "SA", tint: "from-orange-400/30 to-orange-600/10" },
-  "rss:investing-com": { label: "INV", tint: "from-cyan-400/30 to-cyan-600/10" },
-  "rss:marketbeat": { label: "MB", tint: "from-emerald-400/30 to-emerald-600/10" },
-  "rss:marketbeat-ratings": { label: "MB★", tint: "from-emerald-400/30 to-emerald-600/10" },
-  "rss:benzinga": { label: "BZ", tint: "from-fuchsia-400/30 to-fuchsia-600/10" },
-  "rss:benzinga-news": { label: "BZ", tint: "from-fuchsia-400/30 to-fuchsia-600/10" },
-  "rss:motley-fool": { label: "FOOL", tint: "from-yellow-400/30 to-yellow-600/10" },
-  "rss:reuters-business": { label: "RTRS", tint: "from-orange-400/30 to-orange-600/10" },
-  "rss:ft-companies": { label: "FT", tint: "from-pink-400/30 to-pink-600/10" },
-  "rss:bloomberg": { label: "BBG", tint: "from-orange-400/30 to-orange-600/10" },
-  "rss:barrons": { label: "BARR", tint: "from-blue-400/30 to-blue-600/10" },
-  "rss:wsj-markets": { label: "WSJ", tint: "from-zinc-400/30 to-zinc-600/10" },
-  "rss:zacks": { label: "ZCKS", tint: "from-blue-400/30 to-blue-600/10" },
+  "rss:marketwatch": { label: "MW", tint: "from-amber-400/40 to-amber-600/15" },
+  "rss:yahoo-finance": { label: "YF", tint: "from-violet-400/40 to-violet-600/15" },
+  "rss:cnbc-business": { label: "CNBC", tint: "from-rose-400/40 to-rose-600/15" },
+  "rss:seeking-alpha": { label: "SA", tint: "from-orange-400/40 to-orange-600/15" },
+  "rss:investing-com": { label: "INV", tint: "from-cyan-400/40 to-cyan-600/15" },
+  "rss:marketbeat": { label: "MB", tint: "from-emerald-400/40 to-emerald-600/15" },
+  "rss:marketbeat-ratings": { label: "MB★", tint: "from-emerald-400/40 to-emerald-600/15" },
+  "rss:benzinga": { label: "BZ", tint: "from-fuchsia-400/40 to-fuchsia-600/15" },
+  "rss:benzinga-news": { label: "BZ", tint: "from-fuchsia-400/40 to-fuchsia-600/15" },
+  "rss:motley-fool": { label: "FOOL", tint: "from-yellow-400/40 to-yellow-600/15" },
+  "rss:reuters-business": { label: "RTRS", tint: "from-orange-400/40 to-orange-600/15" },
+  "rss:ft-companies": { label: "FT", tint: "from-pink-400/40 to-pink-600/15" },
+  "rss:bloomberg": { label: "BBG", tint: "from-orange-400/40 to-orange-600/15" },
+  "rss:barrons": { label: "BARR", tint: "from-blue-400/40 to-blue-600/15" },
+  "rss:wsj-markets": { label: "WSJ", tint: "from-zinc-400/40 to-zinc-600/15" },
+  "rss:zacks": { label: "ZCKS", tint: "from-blue-400/40 to-blue-600/15" },
+  "rss:thestreet": { label: "TST", tint: "from-red-400/40 to-red-600/15" },
+  "rss:forbes-markets": { label: "FRBS", tint: "from-slate-400/40 to-slate-600/15" },
+  "rss:etftrends": { label: "ETF", tint: "from-indigo-400/40 to-indigo-600/15" },
+  "rss:kiplinger": { label: "KIP", tint: "from-teal-400/40 to-teal-600/15" },
+  "rss:tipranks": { label: "TIP", tint: "from-purple-400/40 to-purple-600/15" },
+  "rss:sec-8k": { label: "8-K", tint: "from-orange-400/40 to-orange-600/15" },
 };
 
 function sourceChip(source: string) {
   const direct = SOURCE_LABEL[source];
   if (direct) return direct;
-  if (source.startsWith("finnhub:")) return { label: "FH", tint: "from-sky-400/30 to-sky-600/10" };
-  if (source.startsWith("marketaux:")) return { label: "MX", tint: "from-teal-400/30 to-teal-600/10" };
-  return { label: "MKT", tint: "from-zinc-400/30 to-zinc-600/10" };
+  if (source.startsWith("finnhub:")) return { label: "FH", tint: "from-sky-400/40 to-sky-600/15" };
+  if (source.startsWith("marketaux:")) return { label: "MX", tint: "from-teal-400/40 to-teal-600/15" };
+  if (source.startsWith("gnews:")) return { label: "GN", tint: "from-blue-400/40 to-blue-600/15" };
+  return { label: "MKT", tint: "from-zinc-400/40 to-zinc-600/15" };
 }
 
 function cleanSource(source: string) {
-  return source.replace(/^(rss:|finnhub:|marketaux:)/, "");
+  return source.replace(/^(rss:|finnhub:|marketaux:|gnews:)/, "");
 }
 
-// Card del feed: logo + TICKER MAYÚSCULAS | mini headline | scores.
-// Toda la card es Link al detalle del ticker primario, con `?news=ID` para
-// que la vista detalle haga scroll y expanda esa noticia.
+type Props = {
+  item: FeedItem;
+  fresh?: boolean;
+  expanded?: boolean;
+  onToggle?: () => void;
+  staggerIndex?: number;
+};
+
 export function NewsCard({
   item,
   fresh = false,
-}: {
-  item: FeedItem;
-  fresh?: boolean;
-}) {
+  expanded = false,
+  onToggle,
+  staggerIndex = 0,
+}: Props) {
   const ago = formatDistanceToNowStrict(new Date(item.publishedAt), {
     addSuffix: false,
   });
@@ -56,112 +71,189 @@ export function NewsCard({
   const direction =
     item.sentiment == null ? null : item.sentiment > 0 ? "▲" : item.sentiment < 0 ? "▼" : null;
   const chip = sourceChip(item.source);
+  const isHighImpact = (item.impact ?? 0) >= 4;
+  const isExtreme = Math.abs(item.sentiment ?? 0) >= 3;
 
-  // Borde izquierdo coloreado por sentiment — pista visual rápida.
-  const sentimentBar =
+  // Borde izquierdo coloreado por sentiment + grosor por impact.
+  const sentimentTone =
     item.sentiment == null
       ? "border-l-transparent"
       : item.sentiment >= 2
-        ? "border-l-emerald-500/70"
+        ? "border-l-emerald-500/80"
         : item.sentiment <= -2
-          ? "border-l-rose-500/70"
-          : "border-l-border/40";
+          ? "border-l-rose-500/80"
+          : "border-l-border/30";
 
-  const inner = (
-    <div
-      className={cn(
-        "group grid grid-cols-[auto_1fr_auto] items-center gap-4 border-b border-l-2 border-border/40 px-5 py-3 transition-all duration-150 hover:bg-foreground/[0.025]",
-        sentimentBar,
-        fresh && "news-fresh",
-      )}
-    >
-      {/* Left: logo + ticker uppercase */}
-      <div className="flex w-32 items-center gap-3">
-        {primary ? (
-          <TickerLogo symbol={primary} logoUrl={item.primaryLogo ?? undefined} size="md" />
-        ) : (
-          <div
-            className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-md border border-border/60 bg-gradient-to-br font-mono text-[9px] font-bold uppercase tracking-wider text-foreground",
-              chip.tint,
-            )}
-          >
-            {chip.label}
-          </div>
-        )}
-        <div className="flex min-w-0 flex-col leading-tight">
-          <span className="tick truncate font-mono text-sm font-bold uppercase text-foreground">
-            {primary ?? chip.label}
-          </span>
-          {direction && (
-            <span
-              className={cn(
-                "font-mono text-[10px] leading-none",
-                item.sentiment != null && item.sentiment > 0 && "text-emerald-400",
-                item.sentiment != null && item.sentiment < 0 && "text-rose-400",
-              )}
-            >
-              {direction}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Mini headline (single line truncated) + meta */}
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <CategoryBadge value={item.category} />
-          <h3
-            className="font-editorial truncate text-[15px] font-medium leading-snug text-foreground transition-colors group-hover:text-primary"
-            title={item.headline}
-          >
-            {item.headline}
-          </h3>
-        </div>
-        <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/80">
-          <span className="truncate">{cleanSource(item.source)}</span>
-          <span className="opacity-40">/</span>
-          <span className="tick whitespace-nowrap">{ago}</span>
-          {item.tickers.length > 1 && (
-            <>
-              <span className="opacity-40">/</span>
-              <span className="tick whitespace-nowrap text-primary/80">
-                +{item.tickers.length - 1} more
-              </span>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Right: scores */}
-      <div className="flex items-center gap-2 self-center pl-3">
-        <ImpactBadge value={item.impact} />
-        <SentimentBadge value={item.sentiment} />
-      </div>
-    </div>
-  );
-
-  // Sin ticker primario → fallback a article externo (modo macro/MKT).
-  if (!primary) {
-    return (
-      <a
-        href={item.url}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="block"
-      >
-        {inner}
-      </a>
-    );
-  }
+  const sentimentBg =
+    isExtreme && item.sentiment != null
+      ? item.sentiment > 0
+        ? "from-emerald-500/[0.04] via-transparent to-transparent"
+        : "from-rose-500/[0.04] via-transparent to-transparent"
+      : "from-transparent via-transparent to-transparent";
 
   return (
-    <Link
-      href={`/ticker/${primary}?news=${item.id}`}
-      className="block"
-      prefetch={false}
+    <article
+      style={{ "--stagger-i": staggerIndex } as React.CSSProperties}
+      className={cn(
+        "stagger-in group relative border-b border-border/40 bg-gradient-to-r",
+        sentimentBg,
+        "border-l-[3px]",
+        sentimentTone,
+        isHighImpact && "border-l-[4px]",
+        fresh && "news-fresh",
+        expanded && "bg-card/40",
+      )}
     >
-      {inner}
-    </Link>
+      {/* Card head — different click zones: logo+ticker → navigate, headline → expand */}
+      <div
+        className={cn(
+          "grid grid-cols-[auto_1fr_auto] items-center gap-4 px-5 py-4 transition-all duration-200",
+          "hover:bg-foreground/[0.025]",
+          isHighImpact && "hover:shadow-[inset_3px_0_24px_-12px_oklch(0.78_0.13_75/0.5)]",
+        )}
+      >
+        {/* Left: logo + ticker uppercase — CLICKING HERE NAVIGATES TO PROFILE */}
+        {primary ? (
+          <Link
+            href={`/ticker/${primary}`}
+            prefetch={false}
+            className="group/logo flex w-32 items-center gap-3"
+            title={`Open ${primary} profile`}
+          >
+            <TickerLogo
+              symbol={primary}
+              logoUrl={item.primaryLogo ?? undefined}
+              size="md"
+              className="transition-transform duration-200 group-hover/logo:scale-[1.08] group-hover/logo:ring-2 group-hover/logo:ring-primary/40"
+            />
+            <div className="flex min-w-0 flex-col leading-tight">
+              <span className="tick truncate font-mono text-sm font-bold uppercase text-foreground transition-colors group-hover/logo:text-primary">
+                {primary}
+              </span>
+              {direction && (
+                <span
+                  className={cn(
+                    "font-mono text-[11px] font-semibold leading-none",
+                    item.sentiment != null && item.sentiment > 0 && "text-emerald-400",
+                    item.sentiment != null && item.sentiment < 0 && "text-rose-400",
+                  )}
+                >
+                  {direction}
+                </span>
+              )}
+            </div>
+          </Link>
+        ) : (
+          <div className="flex w-32 items-center gap-3">
+            <div
+              className={cn(
+                "flex h-9 w-9 items-center justify-center rounded-md border border-border/60 bg-gradient-to-br font-mono text-[9px] font-bold uppercase tracking-wider text-foreground",
+                chip.tint,
+              )}
+            >
+              {chip.label}
+            </div>
+            <span className="tick truncate font-mono text-sm font-bold uppercase text-foreground">
+              {chip.label}
+            </span>
+          </div>
+        )}
+
+        {/* Middle: headline + meta — CLICKING HERE EXPANDS INLINE */}
+        <button
+          type="button"
+          onClick={onToggle}
+          className="group/expand min-w-0 cursor-pointer text-left"
+        >
+          <div className="flex items-start gap-2">
+            <CategoryBadge value={item.category} className="mt-0.5 shrink-0" />
+            <h3
+              className={cn(
+                "font-editorial text-[16px] font-medium leading-[1.32] text-foreground transition-colors group-hover/expand:text-primary",
+                expanded ? "" : "line-clamp-2",
+              )}
+            >
+              {item.headline}
+            </h3>
+          </div>
+          {item.body && !expanded && (
+            <p className="font-editorial mt-1 line-clamp-1 text-[13px] italic leading-relaxed text-muted-foreground/80">
+              {item.body}
+            </p>
+          )}
+          <div className="mt-1.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
+            <span className="truncate">{cleanSource(item.source)}</span>
+            <span className="opacity-40">·</span>
+            <span className="tick whitespace-nowrap">{ago}</span>
+            {item.tickers.length > 1 && (
+              <>
+                <span className="opacity-40">·</span>
+                <span className="tick whitespace-nowrap text-primary/80">
+                  +{item.tickers.length - 1} tickers
+                </span>
+              </>
+            )}
+          </div>
+        </button>
+
+        {/* Right: scores stacked */}
+        <div className="flex flex-col items-end gap-1.5 self-center pl-3">
+          <SentimentBadge value={item.sentiment} />
+          <ImpactBadge value={item.impact} size="sm" />
+        </div>
+      </div>
+
+      {/* Expanded body — animated, action buttons */}
+      {expanded && (
+        <div className="card-expand border-t border-border/30 bg-card/30 px-5 py-4">
+          <div className="ml-32 mr-4 max-w-3xl">
+            {item.body ? (
+              <p className="font-editorial text-[14px] leading-relaxed text-foreground/90">
+                {item.body}
+              </p>
+            ) : (
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/60">
+                No summary captured for this item.
+              </p>
+            )}
+            {item.rationale && (
+              <div className="mt-3 border-l-2 border-primary/40 bg-primary/[0.04] px-3 py-2">
+                <div className="font-mono text-[9px] uppercase tracking-[0.22em] text-primary/80">
+                  AI rationale
+                </div>
+                <p className="font-editorial mt-1 text-[13px] italic leading-relaxed text-foreground/85">
+                  {item.rationale}
+                </p>
+              </div>
+            )}
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <a
+                href={item.url}
+                target="_blank"
+                rel="noreferrer noopener"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1.5 rounded-sm border border-primary/40 bg-primary/[0.08] px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-primary transition-colors hover:bg-primary/15"
+              >
+                Read full article
+                <ExternalLink className="h-3 w-3" />
+              </a>
+              {primary && (
+                <Link
+                  href={`/ticker/${primary}?news=${item.id}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-card/60 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-foreground transition-colors hover:border-foreground/30 hover:text-primary"
+                >
+                  Open {primary}
+                  <ArrowRight className="h-3 w-3" />
+                </Link>
+              )}
+              <span className="ml-auto font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/50">
+                Click again to collapse
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+    </article>
   );
 }

@@ -202,18 +202,48 @@ body > *:not(.ambient-scanlines):not(.ambient-grid) {
 
 @keyframes catalyst-fresh {
   0% {
-    background-color: oklch(0.78 0.13 75 / 0.18);
-    border-left-color: oklch(0.78 0.13 75);
+    background: linear-gradient(
+      90deg,
+      oklch(0.78 0.13 75 / 0.22) 0%,
+      oklch(0.78 0.13 75 / 0.04) 100%
+    );
   }
   100% {
-    background-color: transparent;
-    border-left-color: transparent;
+    background: transparent;
   }
 }
 
 .news-fresh {
-  animation: catalyst-fresh 2.4s ease-out;
-  border-left: 2px solid transparent;
+  animation: catalyst-fresh 2.8s ease-out;
+}
+
+/* ----- Card stagger entrance — fade-up con --i delay ------------------- */
+
+@keyframes catalyst-stagger {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.stagger-in {
+  animation: catalyst-stagger 0.36s ease-out backwards;
+  animation-delay: calc(var(--stagger-i, 0) * 22ms);
+}
+
+/* ----- Expandable card body reveal -------------------------------------- */
+
+@keyframes catalyst-expand {
+  0% { opacity: 0; transform: translateY(-2px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.card-expand {
+  animation: catalyst-expand 0.22s ease-out;
 }
 
 /* ----- Live status pulsing dot ------------------------------------------ */

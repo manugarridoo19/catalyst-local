@@ -16,6 +16,13 @@ export const dynamic = "force-dynamic";
 
 type Params = { symbol: string };
 
+// Finnhub devuelve marketCapitalization en MILLONES de USD.
+function formatMarketCap(millions: number): string {
+  if (millions >= 1_000_000) return `$${(millions / 1_000_000).toFixed(2)}T`;
+  if (millions >= 1_000) return `$${(millions / 1_000).toFixed(2)}B`;
+  return `$${millions.toFixed(0)}M`;
+}
+
 export default async function TickerPage({
   params,
 }: {
@@ -63,53 +70,87 @@ export default async function TickerPage({
       <Header />
 
       {/* Hero */}
-      <section className="border-b border-border/70 bg-card/30 px-6 py-4">
-        <div className="mb-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1 hover:text-foreground"
-          >
-            <ArrowLeft className="h-3 w-3" /> Feed
-          </Link>
-          <span className="opacity-50">/</span>
-          <span className="text-foreground">{symbol}</span>
+      <section className="relative overflow-hidden border-b border-border/70 bg-gradient-to-br from-card/50 via-card/30 to-transparent px-6 py-5">
+        <div className="absolute inset-0 -z-0 opacity-[0.04] [mask-image:radial-gradient(circle_at_top_left,black,transparent_70%)]">
+          <div className="h-full w-full bg-[radial-gradient(circle_at_30%_50%,oklch(0.78_0.13_75)_0%,transparent_60%)]" />
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <TickerLogo symbol={symbol} logoUrl={logoUrl} size="lg" />
-            <div>
-              <div className="tick font-mono text-3xl font-bold uppercase tracking-tight tabular-nums">
-                {symbol}
-              </div>
-              <div className="mt-0.5 font-editorial text-base text-muted-foreground">
-                {displayName ?? "Unknown company"}
-                {sector && (
-                  <span className="ml-2 rounded-sm border border-border/60 bg-card/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/80">
-                    {sector}
-                  </span>
-                )}
+        <div className="relative">
+          <div className="mb-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1 hover:text-foreground"
+            >
+              <ArrowLeft className="h-3 w-3" /> Feed
+            </Link>
+            <span className="opacity-50">/</span>
+            <span className="text-foreground">{symbol}</span>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-6">
+            <div className="flex items-center gap-5">
+              <TickerLogo symbol={symbol} logoUrl={logoUrl} size="lg" />
+              <div>
+                <div className="tick font-mono text-4xl font-bold uppercase tracking-tight tabular-nums leading-none">
+                  {symbol}
+                </div>
+                <div className="mt-1.5 font-editorial text-base text-muted-foreground">
+                  {displayName ?? "Unknown company"}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {sector && (
+                    <span className="rounded-sm border border-border/60 bg-card/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/80">
+                      {sector}
+                    </span>
+                  )}
+                  {profile?.exchange && (
+                    <span className="rounded-sm border border-border/60 bg-card/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/80">
+                      {profile.exchange}
+                    </span>
+                  )}
+                  {profile?.country && (
+                    <span className="rounded-sm border border-border/60 bg-card/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/80">
+                      {profile.country}
+                    </span>
+                  )}
+                  {news.length > 0 && (
+                    <span className="rounded-sm border border-primary/40 bg-primary/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-primary">
+                      {news.length} news
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-4">
-            {price != null && (
-              <div className="text-right">
-                <div className="tick font-mono text-2xl font-bold tabular-nums">
-                  ${price.toFixed(2)}
-                </div>
-                {change != null && (
-                  <div
-                    className={`tick font-mono text-xs tabular-nums ${
-                      change >= 0 ? "text-emerald-400" : "text-rose-400"
-                    }`}
-                  >
-                    {change >= 0 ? "+" : ""}
-                    {change.toFixed(2)}%
+            <div className="flex items-center gap-5">
+              {price != null && (
+                <div className="text-right">
+                  <div className="tick font-mono text-3xl font-bold tabular-nums leading-none">
+                    ${price.toFixed(2)}
                   </div>
-                )}
-              </div>
-            )}
-            <WatchlistToggle symbol={symbol} initial={inWatchlist} />
+                  {change != null && (
+                    <div
+                      className={`tick mt-1.5 inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono text-xs tabular-nums ${
+                        change >= 0
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                          : "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                      }`}
+                    >
+                      {change >= 0 ? "▲" : "▼"} {change >= 0 ? "+" : ""}
+                      {change.toFixed(2)}%
+                    </div>
+                  )}
+                </div>
+              )}
+              {profile?.marketCapitalization != null && profile.marketCapitalization > 0 && (
+                <div className="hidden text-right md:block">
+                  <div className="font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/70">
+                    Market cap
+                  </div>
+                  <div className="tick font-mono text-base font-semibold tabular-nums text-foreground">
+                    {formatMarketCap(profile.marketCapitalization)}
+                  </div>
+                </div>
+              )}
+              <WatchlistToggle symbol={symbol} initial={inWatchlist} />
+            </div>
           </div>
         </div>
       </section>

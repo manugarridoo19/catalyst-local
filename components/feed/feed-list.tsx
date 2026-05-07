@@ -18,10 +18,23 @@ type Props = {
 
 type LivePayload = { items: FeedItem[] };
 
+const FILTERS = [
+  { id: "all" as const, label: "All" },
+  { id: "watchlist" as const, label: "Watchlist" },
+  { id: "high" as const, label: "High impact" },
+  { id: "earnings" as const, label: "Earnings" },
+  { id: "ma" as const, label: "M&A" },
+  { id: "analyst" as const, label: "Analyst" },
+  { id: "guidance" as const, label: "Guidance" },
+];
+
+type FilterId = (typeof FILTERS)[number]["id"];
+
 export function FeedList({ initial, watchlist = [] }: Props) {
   const [items, setItems] = useState<FeedItem[]>(initial);
   const [freshIds, setFreshIds] = useState<Set<number>>(() => new Set());
-  const [filter, setFilter] = useState<"all" | "watchlist" | "high">("all");
+  const [filter, setFilter] = useState<FilterId>("all");
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   useEffect(() => {
     const pusher = getPusherClient();
@@ -29,7 +42,6 @@ export function FeedList({ initial, watchlist = [] }: Props) {
     const channel = pusher.subscribe(NEWS_CHANNEL);
     const onNew = (data: LivePayload) => {
       setItems((prev) => mergeFeed(data.items, prev));
-      // Marca como "fresh" durante el ciclo de la animación CSS.
       setFreshIds((prev) => {
         const next = new Set(prev);
         for (const it of data.items) next.add(it.id);
@@ -41,7 +53,7 @@ export function FeedList({ initial, watchlist = [] }: Props) {
           for (const it of data.items) next.delete(it.id);
           return next;
         });
-      }, 2400);
+      }, 2800);
 
       const hit = data.items.find((it) =>
         it.tickers.some((t) => watchlist.includes(t)),
@@ -67,12 +79,17 @@ export function FeedList({ initial, watchlist = [] }: Props) {
     if (filter === "high") {
       return items.filter((it) => (it.impact ?? 0) >= 4);
     }
+    if (filter === "earnings") return items.filter((it) => it.category === "EARNINGS");
+    if (filter === "ma") return items.filter((it) => it.category === "MA");
+    if (filter === "analyst") return items.filter((it) => it.category === "ANALYST");
+    if (filter === "guidance") return items.filter((it) => it.category === "GUIDANCE");
     return items;
   }, [items, filter, watchlist]);
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border/70 bg-card/30 px-5 py-2">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between gap-4 border-b border-border/70 bg-card/30 px-5 py-2.5 backdrop-blur-sm">
         <div className="flex items-center gap-3">
           <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
             Live feed
@@ -81,32 +98,39 @@ export function FeedList({ initial, watchlist = [] }: Props) {
             {filtered.length}
           </span>
         </div>
-        <div className="flex items-center gap-1 font-mono text-[11px]">
-          <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>
-            All
-          </FilterChip>
-          <FilterChip
-            active={filter === "watchlist"}
-            disabled={!watchlist.length}
-            onClick={() => setFilter("watchlist")}
-          >
-            Watchlist
-          </FilterChip>
-          <FilterChip
-            active={filter === "high"}
-            onClick={() => setFilter("high")}
-          >
-            High impact
-          </FilterChip>
+        <div className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
+          {FILTERS.map((f) => (
+            <FilterChip
+              key={f.id}
+              active={filter === f.id}
+              disabled={f.id === "watchlist" && watchlist.length === 0}
+              onClick={() => {
+                setFilter(f.id);
+                setExpandedId(null);
+              }}
+            >
+              {f.label}
+            </FilterChip>
+          ))}
         </div>
       </div>
 
+      {/* Cards */}
       <div className="cat-scroll flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
           <EmptyState />
         ) : (
-          filtered.map((it) => (
-            <NewsCard key={it.id} item={it} fresh={freshIds.has(it.id)} />
+          filtered.map((it, idx) => (
+            <NewsCard
+              key={it.id}
+              item={it}
+              fresh={freshIds.has(it.id)}
+              expanded={expandedId === it.id}
+              onToggle={() =>
+                setExpandedId((prev) => (prev === it.id ? null : it.id))
+              }
+              staggerIndex={Math.min(idx, 24)}
+            />
           ))
         )}
       </div>
@@ -146,15 +170,10 @@ function EmptyState() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center">
       <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-        Awaiting first signal
+        No matches for this filter
       </div>
       <p className="font-editorial max-w-sm text-base italic leading-relaxed text-muted-foreground/80">
-        El cron alimenta este feed cada cinco minutos en producción.
-        Lanza{" "}
-        <code className="rounded-sm bg-card px-1.5 py-0.5 font-mono text-xs not-italic text-foreground">
-          pnpm cron:local
-        </code>{" "}
-        para forzar la primera carga.
+        Cambia el filtro o espera a que entre la próxima ronda de news.
       </p>
     </div>
   );
