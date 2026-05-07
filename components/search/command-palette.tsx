@@ -32,7 +32,7 @@ export function CommandPalette() {
   const [, startTransition] = useTransition();
   const debounced = useDebounce(query, 200);
 
-  // Atajo ⌘K / Ctrl+K para abrir.
+  // Atajo ⌘K / Ctrl+K + evento custom desde el botón del header.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -40,8 +40,13 @@ export function CommandPalette() {
         setOpen((prev) => !prev);
       }
     };
+    const onOpen = () => setOpen(true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("catalyst:open-search", onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("catalyst:open-search", onOpen);
+    };
   }, []);
 
   // Búsqueda contra Finnhub via /api/search.

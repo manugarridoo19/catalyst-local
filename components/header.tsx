@@ -1,9 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity } from "lucide-react";
+import Link from "next/link";
+import { Activity, Search } from "lucide-react";
 import { getPusherClient, NEWS_CHANNEL, NEWS_EVENT } from "@/lib/pusher/client";
 import { cn } from "@/lib/utils";
+
+// Evento que abre la paleta de búsqueda (CommandPalette lo escucha).
+export const OPEN_SEARCH_EVENT = "catalyst:open-search";
 
 type Status = "connecting" | "live" | "offline";
 
@@ -57,10 +61,16 @@ export function Header() {
         ? "bg-rose-500"
         : "bg-amber-400";
 
+  function openSearch() {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(OPEN_SEARCH_EVENT));
+    }
+  }
+
   return (
     <header className="relative flex items-center justify-between border-b border-border bg-card/40 px-6 py-3 backdrop-blur-sm">
-      <div className="flex items-center gap-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-sm bg-primary text-primary-foreground shadow-[0_0_18px_oklch(0.78_0.13_75/0.45)]">
+      <Link href="/" className="flex items-center gap-3 group">
+        <div className="flex h-8 w-8 items-center justify-center rounded-sm bg-primary text-primary-foreground shadow-[0_0_18px_oklch(0.78_0.13_75/0.45)] transition-transform group-hover:scale-105">
           <Activity className="h-4 w-4" strokeWidth={2.5} />
         </div>
         <div>
@@ -71,9 +81,23 @@ export function Header() {
             Realtime market intelligence
           </div>
         </div>
-      </div>
+      </Link>
 
-      <div className="flex items-center gap-5 font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+      <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+        {/* Search button — clickable, opens palette */}
+        <button
+          type="button"
+          onClick={openSearch}
+          className="group flex items-center gap-2 rounded-sm border border-border/70 bg-card/40 px-2.5 py-1.5 transition-all duration-150 hover:border-primary/60 hover:bg-primary/[0.06] hover:text-primary"
+          title="Search tickers (⌘K)"
+        >
+          <Search className="h-3.5 w-3.5" strokeWidth={2} />
+          <span className="hidden sm:inline">Search</span>
+          <kbd className="hidden rounded-sm border border-border/70 bg-background/60 px-1 font-mono text-[10px] tracking-normal sm:inline">
+            ⌘K
+          </kbd>
+        </button>
+
         {/* Connection dot + status */}
         <div className="flex items-center gap-2">
           <span
@@ -85,6 +109,7 @@ export function Header() {
           />
           <span
             className={cn(
+              "hidden sm:inline",
               status === "live" && "text-emerald-300",
               status === "offline" && "text-rose-300",
             )}
@@ -94,17 +119,9 @@ export function Header() {
         </div>
 
         {/* UTC clock */}
-        <div className="hidden items-center gap-2 sm:flex">
+        <div className="hidden items-center gap-2 md:flex">
           <span className="opacity-50">UTC</span>
           <span className="tick text-foreground">{now || "—"}</span>
-        </div>
-
-        {/* ⌘K shortcut */}
-        <div className="hidden items-center gap-2 md:flex">
-          <span className="opacity-50">Search</span>
-          <kbd className="rounded-sm border border-border bg-background/60 px-1.5 py-0.5 font-mono text-[10px] tracking-normal">
-            ⌘K
-          </kbd>
         </div>
 
         {lastEvent && (

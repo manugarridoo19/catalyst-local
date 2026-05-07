@@ -2,12 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { Header } from "@/components/header";
-import { PriceChart } from "@/components/ticker/price-chart";
+import { TradingViewChart } from "@/components/ticker/tradingview-chart";
 import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import { WatchlistToggle } from "@/components/ticker/watchlist-toggle";
 import { getProfile, getQuote } from "@/lib/providers/finnhub";
-import { getBars } from "@/lib/providers/yahoo";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import type { FeedItem } from "@/lib/feed-types";
@@ -33,10 +32,9 @@ export default async function TickerPage({
   if (!/^[A-Z0-9.\-]{1,10}$/.test(symbol)) notFound();
 
   const session = await getSessionId();
-  const [profile, quote, bars, newsRows, watchlist, metaMap] = await Promise.all([
+  const [profile, quote, newsRows, watchlist, metaMap] = await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
-    getBars(symbol, "1d").catch(() => []),
     getFeed({ symbol, limit: 80 }).catch(() => []),
     getWatchlist(session).catch(() => []),
     getTickerMetaMap([symbol]),
@@ -156,13 +154,9 @@ export default async function TickerPage({
       </section>
 
       {/* Chart left, news right */}
-      <div className="grid flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[1fr_420px]">
+      <div className="grid flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[1fr_440px]">
         <main className="relative flex flex-col overflow-hidden border-b border-border/60 lg:border-b-0 lg:border-r">
-          <PriceChart
-            symbol={symbol}
-            initial={bars.map((b) => ({ time: b.time, close: b.close }))}
-            initialPeriod="1d"
-          />
+          <TradingViewChart symbol={symbol} />
         </main>
         <aside className="overflow-hidden">
           <NewsSidePanel symbol={symbol} items={news} />
