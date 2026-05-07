@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Newsreader } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
+import { CommandPalette } from "@/components/search/command-palette";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -40,6 +41,7 @@ export default function RootLayout({
         <div aria-hidden className="ambient-scanlines" />
         <div aria-hidden className="ambient-grid" />
         {children}
+        <CommandPalette />
         <Toaster richColors position="bottom-right" theme="dark" />
       </body>
     </html>

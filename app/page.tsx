@@ -1,7 +1,6 @@
 import { Header } from "@/components/header";
 import { FeedList } from "@/components/feed/feed-list";
 import { WatchlistPanel } from "@/components/watchlist/watchlist-panel";
-import { CommandPalette } from "@/components/search/command-palette";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import type { FeedItem } from "@/lib/feed-types";
@@ -90,7 +89,6 @@ export default async function HomePage() {
         </main>
         <WatchlistPanel items={watchlist} />
       </div>
-      <CommandPalette />
     </div>
   );
 }
