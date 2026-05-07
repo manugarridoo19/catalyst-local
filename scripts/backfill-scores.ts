@@ -65,8 +65,9 @@ async function main() {
         `  ${String(r.id).padEnd(5)} ERR ${err instanceof Error ? err.message.slice(0, 60) : err}\n`,
       );
     }
-    // Groq free 30 req/min → 1 req cada 2.1s para estar a salvo.
-    await new Promise((r) => setTimeout(r, 2100));
+    // Groq free 30 req/min, rolling window: 2.5s entre requests = 24/min,
+    // margen de seguridad. El Groq client tiene retry interno con backoff.
+    await new Promise((r) => setTimeout(r, 2500));
 
     if ((i + 1) % 25 === 0) {
       console.log(`[backfill-scores] progress: ${i + 1}/${rows.length} (${scored} scored, ${failed} failed)`);

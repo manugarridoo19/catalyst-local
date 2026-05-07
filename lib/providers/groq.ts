@@ -28,18 +28,16 @@ export class GroqRateLimited extends Error {
   }
 }
 
-export async function groqChatCompletion(opts: {
-  messages: ChatMessage[];
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  jsonMode?: boolean;
-}): Promise<ChatCompletionResult> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY is not set");
-
-  const model = opts.model || process.env.GROQ_MODEL || DEFAULT_MODEL;
-
+async function groqOnce(
+  apiKey: string,
+  model: string,
+  opts: {
+    messages: ChatMessage[];
+    temperature?: number;
+    maxTokens?: number;
+    jsonMode?: boolean;
+  },
+): Promise<ChatCompletionResult> {
   const body: Record<string, unknown> = {
     model,
     messages: opts.messages,
@@ -73,4 +71,36 @@ export async function groqChatCompletion(opts: {
     model: json.model,
     usage: json.usage,
   };
+}
+
+export async function groqChatCompletion(opts: {
+  messages: ChatMessage[];
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  jsonMode?: boolean;
+  retries?: number;
+}): Promise<ChatCompletionResult> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY is not set");
+
+  const model = opts.model || process.env.GROQ_MODEL || DEFAULT_MODEL;
+  const maxRetries = opts.retries ?? 3;
+
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await groqOnce(apiKey, model, opts);
+    } catch (err) {
+      lastErr = err;
+      if (!(err instanceof GroqRateLimited) || attempt === maxRetries) {
+        throw err;
+      }
+      // Backoff exponencial: 2s, 4s, 8s. Da margen para que el rolling
+      // window de Groq libere capacidad antes de reintentar.
+      const wait = 2000 * Math.pow(2, attempt);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("Groq retries exhausted");
 }

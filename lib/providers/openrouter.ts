@@ -4,13 +4,11 @@
 
 const BASE = "https://openrouter.ai/api/v1";
 
-// Orden de fallback. Modelos que sabemos que están disponibles en
-// OpenRouter free a fecha 2026-05. Si alguno se retira, el client lo
-// detecta como 404 y salta al siguiente.
+// Orden de fallback de OpenRouter. Solo se usa si Groq falla todas las
+// reintentas. Lista actualizada — qwen-2.5-72b:free se retiró, removido.
 const DEFAULT_MODEL_FALLBACKS = [
   "meta-llama/llama-3.3-70b-instruct:free",
   "google/gemini-2.0-flash-exp:free",
-  "qwen/qwen-2.5-72b-instruct:free",
   "meta-llama/llama-3.2-3b-instruct:free",
 ];
 
