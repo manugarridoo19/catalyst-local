@@ -22,29 +22,30 @@ const SOURCES: { name: string; url: string }[] = [
     url: "https://www.investing.com/rss/news.rss",
   },
   // -- Stock-specific aggregators -----------------------------------------
+  // MarketBeat y Motley Fool no exponen RSS público estable — vía Google News.
   {
     name: "marketbeat",
-    url: "https://www.marketbeat.com/feed/headlines.aspx",
+    url: "https://news.google.com/rss/search?q=site:marketbeat.com&hl=en-US&gl=US&ceid=US:en",
   },
   {
     name: "marketbeat-ratings",
-    url: "https://www.marketbeat.com/feed/ratings.aspx",
+    url: "https://news.google.com/rss/search?q=site:marketbeat.com+%22analyst+rating%22&hl=en-US&gl=US&ceid=US:en",
   },
   {
     name: "benzinga",
-    url: "https://www.benzinga.com/rssfeed/feed_select?fields=stocks",
-  },
-  {
-    name: "benzinga-news",
     url: "https://www.benzinga.com/feed",
   },
   {
     name: "motley-fool",
-    url: "https://www.fool.com/feed/index/news",
+    url: "https://news.google.com/rss/search?q=site:fool.com&hl=en-US&gl=US&ceid=US:en",
   },
   {
     name: "seeking-alpha",
     url: "https://seekingalpha.com/market_currents.xml",
+  },
+  {
+    name: "zacks",
+    url: "https://news.google.com/rss/search?q=site:zacks.com&hl=en-US&gl=US&ceid=US:en",
   },
   // -- Google News mirrors (para outlets que matan RSS directo) -----------
   {

@@ -23,6 +23,7 @@ const SOURCE_LABEL: Record<string, { label: string; tint: string }> = {
   "rss:bloomberg": { label: "BBG", tint: "from-orange-400/30 to-orange-600/10" },
   "rss:barrons": { label: "BARR", tint: "from-blue-400/30 to-blue-600/10" },
   "rss:wsj-markets": { label: "WSJ", tint: "from-zinc-400/30 to-zinc-600/10" },
+  "rss:zacks": { label: "ZCKS", tint: "from-blue-400/30 to-blue-600/10" },
 };
 
 function sourceChip(source: string) {
