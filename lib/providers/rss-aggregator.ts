@@ -47,6 +47,39 @@ const SOURCES: { name: string; url: string }[] = [
     name: "zacks",
     url: "https://news.google.com/rss/search?q=site:zacks.com&hl=en-US&gl=US&ceid=US:en",
   },
+  {
+    name: "thestreet",
+    url: "https://news.google.com/rss/search?q=site:thestreet.com&hl=en-US&gl=US&ceid=US:en",
+  },
+  {
+    name: "forbes-markets",
+    url: "https://news.google.com/rss/search?q=site:forbes.com+markets&hl=en-US&gl=US&ceid=US:en",
+  },
+  {
+    name: "etftrends",
+    url: "https://www.etftrends.com/feed/",
+  },
+  {
+    name: "kiplinger",
+    url: "https://news.google.com/rss/search?q=site:kiplinger.com&hl=en-US&gl=US&ceid=US:en",
+  },
+  {
+    name: "finviz",
+    url: "https://news.google.com/rss/search?q=site:finviz.com&hl=en-US&gl=US&ceid=US:en",
+  },
+  {
+    name: "247wallst",
+    url: "https://news.google.com/rss/search?q=site:247wallst.com&hl=en-US&gl=US&ceid=US:en",
+  },
+  {
+    name: "tipranks",
+    url: "https://news.google.com/rss/search?q=site:tipranks.com&hl=en-US&gl=US&ceid=US:en",
+  },
+  // SEC 8-K (material events) — gold para significancia.
+  {
+    name: "sec-8k",
+    url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom",
+  },
   // -- Google News mirrors (para outlets que matan RSS directo) -----------
   {
     name: "reuters-business",

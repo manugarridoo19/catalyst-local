@@ -37,10 +37,19 @@ async function fh<T>(
   return res.json() as Promise<T>;
 }
 
-// Noticias generales (motor del feed). Devuelve hasta ~100 últimas.
+// Noticias generales (motor del feed). Devuelve hasta ~100 últimas por
+// categoría. Llamamos a las 4 categorías en paralelo.
+const CATEGORIES = ["general", "forex", "crypto", "merger"] as const;
+
 export async function fetchGeneralNews(): Promise<NormalizedNewsItem[]> {
-  const items = await fh<FinnhubNews[]>("/news", { category: "general" });
-  return items.map(toNormalized);
+  const results = await Promise.allSettled(
+    CATEGORIES.map((cat) => fh<FinnhubNews[]>("/news", { category: cat })),
+  );
+  const out: NormalizedNewsItem[] = [];
+  for (const r of results) {
+    if (r.status === "fulfilled") out.push(...r.value.map(toNormalized));
+  }
+  return out;
 }
 
 // Noticias específicas de un ticker en los últimos N días.
@@ -56,6 +65,33 @@ export async function fetchCompanyNews(
     to: to.toISOString().slice(0, 10),
   });
   return items.map(toNormalized);
+}
+
+// Bulk: noticias para varios tickers a la vez. Respeta el rate-limit de
+// Finnhub (60 req/min) usando un semáforo de concurrencia 8 con 100ms de
+// espaciado entre requests dentro del mismo "slot".
+export async function fetchCompanyNewsBatch(
+  symbols: string[],
+  days = 3,
+): Promise<NormalizedNewsItem[]> {
+  const out: NormalizedNewsItem[] = [];
+  const queue = [...symbols];
+  const concurrency = 8;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (queue.length) {
+      const sym = queue.shift();
+      if (!sym) break;
+      try {
+        const items = await fetchCompanyNews(sym, days);
+        out.push(...items);
+      } catch {
+        // skip failed ticker
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 function toNormalized(n: FinnhubNews): NormalizedNewsItem {

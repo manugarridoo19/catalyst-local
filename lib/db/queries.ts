@@ -221,6 +221,40 @@ export async function getNewsScoresByIds(ids: number[]) {
   return db.select().from(newsScores).where(inArray(newsScores.newsId, ids));
 }
 
+// Borra noticias publicadas hace más de N días. Sus filas en news_tickers
+// y news_scores caen automáticamente vía FK CASCADE.
+export async function deleteOldNews(days: number): Promise<number> {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const result = (await db.execute(sql`
+    DELETE FROM news WHERE published_at < ${cutoff}
+  `)) as unknown as { count?: number };
+  return result.count ?? 0;
+}
+
+// Devuelve los símbolos que deberían recibir per-ticker fetching en el cron:
+// los más mencionados en news + todo lo que esté en watchlist + los seed
+// tickers populares (siempre interesantes).
+export async function getTopTickersForFetch(
+  limit = 50,
+): Promise<{ symbol: string; name: string | null }[]> {
+  const result = (await db.execute(sql`
+    SELECT t.symbol, t.name FROM tickers t
+    LEFT JOIN (
+      SELECT ticker, COUNT(*) AS n FROM news_tickers GROUP BY ticker
+    ) c ON c.ticker = t.symbol
+    LEFT JOIN (
+      SELECT DISTINCT symbol FROM watchlist
+    ) w ON w.symbol = t.symbol
+    ORDER BY
+      (w.symbol IS NOT NULL) DESC,
+      (t.source = 'seed') DESC,
+      COALESCE(c.n, 0) DESC,
+      t.first_seen_at DESC
+    LIMIT ${limit}
+  `)) as unknown as Array<{ symbol: string; name: string | null }>;
+  return result;
+}
+
 export type TickerMeta = {
   symbol: string;
   name: string | null;

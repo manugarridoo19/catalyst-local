@@ -1,11 +1,17 @@
-import { fetchGeneralNews } from "@/lib/providers/finnhub";
+import {
+  fetchCompanyNewsBatch,
+  fetchGeneralNews,
+} from "@/lib/providers/finnhub";
 import { fetchMarketauxNews } from "@/lib/providers/marketaux";
 import { fetchAllRssNews } from "@/lib/providers/rss-aggregator";
+import { fetchGoogleNewsByTicker } from "@/lib/providers/google-news-tickers";
 import { extractTickers } from "@/lib/tickers/extractor";
 import { enrichPendingTickers } from "@/lib/tickers/enricher";
 import { scoreNewsItem } from "@/lib/scoring";
 import {
+  deleteOldNews,
   getTickerMetaMap,
+  getTopTickersForFetch,
   insertNewsWithTickers,
   insertScore,
   loadAliases,
@@ -14,14 +20,22 @@ import {
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 
-// Cap por ejecución. Modelos `:free` son lentos bajo carga (~3-10s por
-// llamada), así que mantenemos el batch pequeño para que el cron termine
-// dentro del límite de 60s de Vercel Hobby. El resto se procesa en el
-// siguiente tick.
-const SCORING_BATCH = 8;
+// Cap por ejecución. Con Groq (sub-segundo) podemos hacer muchos más por
+// cron; mantenemos margen para no chocar con el límite Vercel de 60s.
+const SCORING_BATCH = 30;
+
+// Retención: borramos news >14 días al final de cada cron para no saturar
+// la BD. La home queda orientada a presente/futuro.
+const RETENTION_DAYS = 14;
 
 export type CronResult = {
-  fetched: { finnhub: number; marketaux: number; rss: number };
+  fetched: {
+    finnhub: number;
+    finnhubCompany: number;
+    marketaux: number;
+    rss: number;
+    gnewsTickers: number;
+  };
   inserted: number;
   scored: number;
   failedScores: number;
@@ -32,22 +46,43 @@ export type CronResult = {
 export async function runRefreshNewsCron(): Promise<CronResult> {
   const t0 = Date.now();
 
-  // 1) Fetch en paralelo (un proveedor caído no tumba el cron).
-  const [finnhubR, marketauxR, rssR] = await Promise.allSettled([
-    fetchGeneralNews(),
-    fetchMarketauxNews(),
-    fetchAllRssNews(),
-  ]);
+  // 1) Resolver los top tickers ANTES del fetch — para el barrido
+  // per-ticker en Finnhub y Google News.
+  const topTickers = await getTopTickersForFetch(50).catch(() => []);
+
+  // 2) Fetch en paralelo (un proveedor caído no tumba el cron).
+  const [finnhubR, finnhubCoR, marketauxR, rssR, gnewsR] =
+    await Promise.allSettled([
+      fetchGeneralNews(),
+      fetchCompanyNewsBatch(
+        topTickers.slice(0, 30).map((t) => t.symbol),
+        3,
+      ),
+      fetchMarketauxNews(),
+      fetchAllRssNews(),
+      fetchGoogleNewsByTicker(topTickers.slice(0, 50)),
+    ]);
 
   const finnhubItems = finnhubR.status === "fulfilled" ? finnhubR.value : [];
+  const finnhubCoItems =
+    finnhubCoR.status === "fulfilled" ? finnhubCoR.value : [];
   const marketauxItems =
     marketauxR.status === "fulfilled" ? marketauxR.value : [];
   const rssItems = rssR.status === "fulfilled" ? rssR.value : [];
+  const gnewsItems = gnewsR.status === "fulfilled" ? gnewsR.value : [];
   if (finnhubR.status === "rejected") console.warn("[cron] finnhub failed:", finnhubR.reason);
+  if (finnhubCoR.status === "rejected") console.warn("[cron] finnhub-company failed:", finnhubCoR.reason);
   if (marketauxR.status === "rejected") console.warn("[cron] marketaux failed:", marketauxR.reason);
   if (rssR.status === "rejected") console.warn("[cron] rss failed:", rssR.reason);
+  if (gnewsR.status === "rejected") console.warn("[cron] gnews-tickers failed:", gnewsR.reason);
 
-  const allItems = [...finnhubItems, ...marketauxItems, ...rssItems];
+  const allItems = [
+    ...finnhubItems,
+    ...finnhubCoItems,
+    ...marketauxItems,
+    ...rssItems,
+    ...gnewsItems,
+  ];
 
   // 2) Dedupe por hash dentro del lote.
   const byHash = new Map<string, NormalizedNewsItem>();
@@ -144,11 +179,17 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   // 8) Enriquecer tickers pendientes (background-ish, mismo cron).
   const enriched = await enrichPendingTickers();
 
+  // 9) Retention: borrar noticias antiguas. Los FK con onDelete: cascade
+  // limpian news_tickers y news_scores automáticamente.
+  await deleteOldNews(RETENTION_DAYS);
+
   return {
     fetched: {
       finnhub: finnhubItems.length,
+      finnhubCompany: finnhubCoItems.length,
       marketaux: marketauxItems.length,
       rss: rssItems.length,
+      gnewsTickers: gnewsItems.length,
     },
     inserted: newlyInserted.length,
     scored,
