@@ -33,6 +33,7 @@ export async function scoreNewsItem(input: {
         return {
           impact: parsed.impact,
           sentiment: parsed.sentiment,
+          category: parsed.category,
           rationale: parsed.rationale,
           model: result.model,
           promptVersion: PROMPT_VERSION,
@@ -68,6 +69,7 @@ export async function scoreNewsItem(input: {
     return {
       impact: parsed.impact,
       sentiment: parsed.sentiment,
+      category: parsed.category,
       rationale: parsed.rationale,
       model: result.model,
       promptVersion: PROMPT_VERSION,

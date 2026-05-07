@@ -13,6 +13,7 @@ import type {
   NormalizedNewsItem,
   SentimentScore,
 } from "@/lib/types";
+import { categorizeHeuristic, type NewsCategory } from "@/lib/categorizer";
 
 // Inserta tickers nuevos sin sobreescribir los existentes. Devuelve la lista
 // de símbolos que ya están en DB tras la operación.
@@ -30,11 +31,17 @@ export async function upsertTickers(
 
 // Inserta una noticia + sus tickers. Si la URL ya existe (unique constraint)
 // devuelve null y el caller debe saltarla. Devuelve el id de la noticia
-// para asociar el score después.
+// para asociar el score después. Aplicamos la categorización heurística
+// aquí mismo para que la card tenga badge desde el primer render.
 export async function insertNewsWithTickers(
   item: NormalizedNewsItem,
   extracted: ExtractedTicker[],
 ): Promise<number | null> {
+  const category = categorizeHeuristic({
+    headline: item.headline,
+    body: item.body ?? null,
+    source: item.source,
+  });
   const inserted = await db
     .insert(news)
     .values({
@@ -45,6 +52,7 @@ export async function insertNewsWithTickers(
       publishedAt: item.publishedAt,
       body: item.body,
       imageUrl: item.imageUrl,
+      category,
     })
     .onConflictDoNothing({ target: news.url })
     .returning({ id: news.id });
@@ -82,6 +90,13 @@ export async function insertScore(
       promptVersion: score.promptVersion,
     })
     .onConflictDoNothing();
+  // Si el LLM clasificó la categoría, la sobreescribimos sobre la heurística.
+  if (score.category) {
+    await db
+      .update(news)
+      .set({ category: score.category })
+      .where(eq(news.id, newsId));
+  }
 }
 
 export async function loadAliases() {
@@ -96,6 +111,7 @@ export type FeedRow = {
   source: string;
   publishedAt: Date;
   imageUrl: string | null;
+  category: NewsCategory | null;
   tickers: string[];
   impact: number | null;
   sentiment: number | null;
@@ -143,6 +159,7 @@ export async function getFeed(opts: {
         source: news.source,
         publishedAt: news.publishedAt,
         imageUrl: news.imageUrl,
+        category: news.category,
         tickers: tickersAgg.tickers,
         impact: newsScores.impact,
         sentiment: newsScores.sentiment,
@@ -167,6 +184,7 @@ export async function getFeed(opts: {
         source: news.source,
         publishedAt: news.publishedAt,
         imageUrl: news.imageUrl,
+        category: news.category,
         tickers: tickersAgg.tickers,
         impact: newsScores.impact,
         sentiment: newsScores.sentiment,
@@ -183,6 +201,7 @@ export async function getFeed(opts: {
   return rows.map((r) => ({
     ...r,
     tickers: r.tickers ?? [],
+    category: r.category as NewsCategory | null,
   }));
 }
 
@@ -222,11 +241,14 @@ export async function getNewsScoresByIds(ids: number[]) {
 }
 
 // Borra noticias publicadas hace más de N días. Sus filas en news_tickers
-// y news_scores caen automáticamente vía FK CASCADE.
+// y news_scores caen automáticamente vía FK CASCADE. Casteamos a
+// timestamptz porque postgres-js no maneja bien Date como param literal.
 export async function deleteOldNews(days: number): Promise<number> {
-  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const cutoff = new Date(
+    Date.now() - days * 24 * 60 * 60 * 1000,
+  ).toISOString();
   const result = (await db.execute(sql`
-    DELETE FROM news WHERE published_at < ${cutoff}
+    DELETE FROM news WHERE published_at < ${cutoff}::timestamptz
   `)) as unknown as { count?: number };
   return result.count ?? 0;
 }

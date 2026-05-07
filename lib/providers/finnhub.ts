@@ -37,9 +37,9 @@ async function fh<T>(
   return res.json() as Promise<T>;
 }
 
-// Noticias generales (motor del feed). Devuelve hasta ~100 últimas por
-// categoría. Llamamos a las 4 categorías en paralelo.
-const CATEGORIES = ["general", "forex", "crypto", "merger"] as const;
+// Noticias generales (motor del feed). Solo categorías de equities — el
+// usuario pidió excluir crypto y forex.
+const CATEGORIES = ["general", "merger"] as const;
 
 export async function fetchGeneralNews(): Promise<NormalizedNewsItem[]> {
   const results = await Promise.allSettled(

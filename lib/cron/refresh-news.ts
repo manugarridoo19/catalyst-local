@@ -51,16 +51,17 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   const topTickers = await getTopTickersForFetch(50).catch(() => []);
 
   // 2) Fetch en paralelo (un proveedor caído no tumba el cron).
+  // Tamaño de muestra ajustado al budget de 60s en Vercel Hobby.
   const [finnhubR, finnhubCoR, marketauxR, rssR, gnewsR] =
     await Promise.allSettled([
       fetchGeneralNews(),
       fetchCompanyNewsBatch(
-        topTickers.slice(0, 30).map((t) => t.symbol),
+        topTickers.slice(0, 15).map((t) => t.symbol),
         3,
       ),
       fetchMarketauxNews(),
       fetchAllRssNews(),
-      fetchGoogleNewsByTicker(topTickers.slice(0, 50)),
+      fetchGoogleNewsByTicker(topTickers.slice(0, 25)),
     ]);
 
   const finnhubItems = finnhubR.status === "fulfilled" ? finnhubR.value : [];

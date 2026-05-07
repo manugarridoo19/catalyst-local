@@ -4,13 +4,13 @@
 
 const BASE = "https://openrouter.ai/api/v1";
 
-// Orden de fallback. El primero es OPENROUTER_MODEL si está fijado, y si
-// no, este orden por defecto (más rápido → más lento).
+// Orden de fallback. Modelos que sabemos que están disponibles en
+// OpenRouter free a fecha 2026-05. Si alguno se retira, el client lo
+// detecta como 404 y salta al siguiente.
 const DEFAULT_MODEL_FALLBACKS = [
   "meta-llama/llama-3.3-70b-instruct:free",
-  "mistralai/mistral-nemo:free",
-  "qwen/qwen-2.5-7b-instruct:free",
-  "google/gemma-2-9b-it:free",
+  "google/gemini-2.0-flash-exp:free",
+  "qwen/qwen-2.5-72b-instruct:free",
   "meta-llama/llama-3.2-3b-instruct:free",
 ];
 
@@ -66,8 +66,13 @@ async function tryOnce(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    // 429 (rate limit) y 502/503 son retriables — probar otro modelo.
-    if (res.status === 429 || res.status === 502 || res.status === 503) {
+    // 404 (modelo retirado), 429 (rate limit), 502/503 → probar siguiente.
+    if (
+      res.status === 404 ||
+      res.status === 429 ||
+      res.status === 502 ||
+      res.status === 503
+    ) {
       throw new RetriableError(`${res.status} ${res.statusText}: ${text.slice(0, 120)}`, res.status);
     }
     throw new Error(`OpenRouter ${res.status} ${res.statusText}: ${text.slice(0, 200)}`);

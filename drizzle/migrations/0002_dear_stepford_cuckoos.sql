@@ -1,0 +1,2 @@
+CREATE TYPE "public"."news_category" AS ENUM('EARNINGS', 'MA', 'ANALYST', 'GUIDANCE', 'INSIDER', 'REGULATORY', 'PRODUCT', 'LEGAL', 'MACRO', 'OTHER');--> statement-breakpoint
+ALTER TABLE "news" ADD COLUMN "category" "news_category";

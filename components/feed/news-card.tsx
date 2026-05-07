@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ImpactBadge, SentimentBadge } from "./score-badges";
+import { CategoryBadge } from "./category-badge";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import type { FeedItem } from "@/lib/feed-types";
 import { cn } from "@/lib/utils";
@@ -108,12 +109,15 @@ export function NewsCard({
 
       {/* Mini headline (single line truncated) + meta */}
       <div className="min-w-0">
-        <h3
-          className="font-editorial truncate text-[15px] font-medium leading-snug text-foreground transition-colors group-hover:text-primary"
-          title={item.headline}
-        >
-          {item.headline}
-        </h3>
+        <div className="flex items-center gap-2">
+          <CategoryBadge value={item.category} />
+          <h3
+            className="font-editorial truncate text-[15px] font-medium leading-snug text-foreground transition-colors group-hover:text-primary"
+            title={item.headline}
+          >
+            {item.headline}
+          </h3>
+        </div>
         <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/80">
           <span className="truncate">{cleanSource(item.source)}</span>
           <span className="opacity-40">/</span>

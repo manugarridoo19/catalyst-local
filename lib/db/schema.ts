@@ -19,6 +19,22 @@ export const extractionMethodEnum = pgEnum("extraction_method", [
   "dict",
 ]);
 
+// Categoría editorial de la noticia. Se asigna heurísticamente al insertar
+// (basado en source + keywords) y opcionalmente la sobreescribe el LLM
+// durante el scoring. Pensada para filtrar el feed por tipo de catalyst.
+export const newsCategoryEnum = pgEnum("news_category", [
+  "EARNINGS",
+  "MA",
+  "ANALYST",
+  "GUIDANCE",
+  "INSIDER",
+  "REGULATORY",
+  "PRODUCT",
+  "LEGAL",
+  "MACRO",
+  "OTHER",
+]);
+
 // Universo dinámico: cada vez que un proveedor menciona un ticker nuevo se
 // inserta aquí. Los detalles (name/sector) se enriquecen perezosamente.
 export const tickers = pgTable(
@@ -52,6 +68,7 @@ export const news = pgTable(
     publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
     body: text("body"),
     imageUrl: text("image_url"),
+    category: newsCategoryEnum("category"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

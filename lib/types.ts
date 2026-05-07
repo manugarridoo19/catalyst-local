@@ -18,9 +18,12 @@ export type ExtractedTicker = {
   method: ExtractionMethod;
 };
 
+import type { NewsCategory } from "@/lib/categorizer";
+
 export type SentimentScore = {
   impact: number; // 1-5
   sentiment: number; // -5..+5
+  category?: NewsCategory; // override del heurístico, opcional
   rationale?: string;
   model: string;
   promptVersion: string;

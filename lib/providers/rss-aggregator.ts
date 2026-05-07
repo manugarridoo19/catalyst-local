@@ -75,10 +75,11 @@ const SOURCES: { name: string; url: string }[] = [
     name: "tipranks",
     url: "https://news.google.com/rss/search?q=site:tipranks.com&hl=en-US&gl=US&ceid=US:en",
   },
-  // SEC 8-K (material events) — gold para significancia.
+  // SEC 8-K (material events) — gold para significancia. SEC requiere UA
+  // con contacto, lo añadimos a esta source vía Google News como mirror.
   {
     name: "sec-8k",
-    url: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom",
+    url: "https://news.google.com/rss/search?q=site:sec.gov+8-K&hl=en-US&gl=US&ceid=US:en",
   },
   // -- Google News mirrors (para outlets que matan RSS directo) -----------
   {

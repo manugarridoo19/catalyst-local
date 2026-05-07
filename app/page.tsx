@@ -46,6 +46,7 @@ async function loadInitial(): Promise<{
         source: r.source,
         publishedAt: r.publishedAt.toISOString(),
         imageUrl: r.imageUrl,
+        category: r.category,
         tickers: r.tickers,
         primarySymbol: primary,
         primaryName: m?.name ?? null,
