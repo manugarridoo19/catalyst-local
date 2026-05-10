@@ -108,8 +108,11 @@ export async function chatCompletion(opts: {
       return await tryOnce(model, opts.messages, opts);
     } catch (err) {
       lastErr = err;
-      if (!(err instanceof RetriableError)) throw err;
-      // Probar siguiente modelo.
+      if (err instanceof RetriableError) {
+        console.warn(`[openrouter] ${model} → ${err.status}: ${err.message.slice(0, 100)}`);
+        continue;
+      }
+      throw err;
     }
   }
   throw lastErr instanceof Error

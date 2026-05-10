@@ -1,12 +1,64 @@
+import { chatCompletion } from "@/lib/providers/openrouter";
 import { groqChatCompletion, GroqRateLimited } from "@/lib/providers/groq";
 import { PROMPT_VERSION, SYSTEM_PROMPT, buildUserPrompt } from "./prompt";
 import { parseScore } from "./parser";
 import type { SentimentScore } from "@/lib/types";
 
-// Solo Groq. OpenRouter free models están constantemente saturados/retirados
-// y la cadena de fallback consumía tiempo sin valor real. Si Groq cae para
-// una noticia concreta, la dejamos sin score y el siguiente cron la
-// reintentará — el budget se respeta así sin ruido en logs.
+// Stack de scoring:
+//   1) OpenRouter Nemotron (nvidia/nemotron-3-super-120b-a12b:free) primario
+//      — modelo big de NVIDIA con razonamiento más fino que Llama 3.1 8b
+//   2) Groq llama-3.1-8b-instant como fallback rápido si OpenRouter cae
+//   3) Si ambos fallan, dejamos sin score y el siguiente cron retry
+//
+// Si quieres forzar otro modelo: SCORER_PRIMARY=groq | openrouter
+
+type Provider = "openrouter" | "groq";
+
+const PRIMARY: Provider =
+  (process.env.SCORER_PRIMARY?.toLowerCase() as Provider) || "openrouter";
+
+const OPENROUTER_DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
+
+async function scoreViaOpenRouter(input: {
+  headline: string;
+  body?: string;
+  tickers: string[];
+  source?: string;
+}) {
+  const model = process.env.OPENROUTER_MODEL || OPENROUTER_DEFAULT_MODEL;
+  const messages = [
+    { role: "system" as const, content: SYSTEM_PROMPT },
+    { role: "user" as const, content: buildUserPrompt(input) },
+  ];
+  const result = await chatCompletion({
+    messages,
+    model,
+    temperature: 0.1,
+    maxTokens: 220,
+    jsonMode: true,
+  });
+  return { content: result.content, model: result.model };
+}
+
+async function scoreViaGroq(input: {
+  headline: string;
+  body?: string;
+  tickers: string[];
+  source?: string;
+}) {
+  const messages = [
+    { role: "system" as const, content: SYSTEM_PROMPT },
+    { role: "user" as const, content: buildUserPrompt(input) },
+  ];
+  const result = await groqChatCompletion({
+    messages,
+    temperature: 0.1,
+    maxTokens: 220,
+    jsonMode: true,
+    retries: 3,
+  });
+  return { content: result.content, model: result.model };
+}
 
 export async function scoreNewsItem(input: {
   headline: string;
@@ -14,47 +66,50 @@ export async function scoreNewsItem(input: {
   tickers: string[];
   source?: string;
 }): Promise<SentimentScore | null> {
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[scoring] GROQ_API_KEY not set — skipping scoring");
+  const hasOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
+  const hasGroq = Boolean(process.env.GROQ_API_KEY);
+  if (!hasOpenRouter && !hasGroq) {
+    console.warn("[scoring] no provider keys set — skipping");
     return null;
   }
-  const messages = [
-    { role: "system" as const, content: SYSTEM_PROMPT },
-    { role: "user" as const, content: buildUserPrompt(input) },
-  ];
 
-  try {
-    const result = await groqChatCompletion({
-      messages,
-      temperature: 0.1,
-      maxTokens: 220,
-      jsonMode: true,
-      retries: 4,
-    });
-    const parsed = parseScore(result.content);
-    if (!parsed) {
-      console.warn(
-        `[scoring] groq unparseable: "${result.content.slice(0, 200).replace(/\n/g, " ")}"`,
-      );
-      return null;
+  // Orden de proveedores según preferencia.
+  const order: Provider[] =
+    PRIMARY === "groq" ? ["groq", "openrouter"] : ["openrouter", "groq"];
+
+  for (const provider of order) {
+    if (provider === "openrouter" && !hasOpenRouter) continue;
+    if (provider === "groq" && !hasGroq) continue;
+
+    try {
+      const { content, model } =
+        provider === "openrouter"
+          ? await scoreViaOpenRouter(input)
+          : await scoreViaGroq(input);
+      const parsed = parseScore(content);
+      if (!parsed) {
+        console.warn(
+          `[scoring] ${provider} unparseable: "${content.slice(0, 200).replace(/\n/g, " ")}"`,
+        );
+        continue; // intenta siguiente provider
+      }
+      return {
+        impact: parsed.impact,
+        sentiment: parsed.sentiment,
+        category: parsed.category,
+        rationale: parsed.rationale,
+        model,
+        promptVersion: PROMPT_VERSION,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof GroqRateLimited) {
+        console.warn(`[scoring] groq rate-limited:`, msg.slice(0, 100));
+      } else {
+        console.warn(`[scoring] ${provider} error:`, msg.slice(0, 160));
+      }
+      // continúa al siguiente provider
     }
-    return {
-      impact: parsed.impact,
-      sentiment: parsed.sentiment,
-      category: parsed.category,
-      rationale: parsed.rationale,
-      model: result.model,
-      promptVersion: PROMPT_VERSION,
-    };
-  } catch (err) {
-    if (err instanceof GroqRateLimited) {
-      console.warn(`[scoring] groq rate-limited:`, err.message.slice(0, 100));
-      return null;
-    }
-    console.warn(
-      `[scoring] groq error:`,
-      err instanceof Error ? err.message : err,
-    );
-    return null;
   }
+  return null;
 }
