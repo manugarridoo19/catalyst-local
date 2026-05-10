@@ -27,14 +27,15 @@ export async function scoreNewsItem(input: {
     const result = await groqChatCompletion({
       messages,
       temperature: 0.1,
-      maxTokens: 180,
+      maxTokens: 220,
       jsonMode: true,
       retries: 4,
     });
     const parsed = parseScore(result.content);
     if (!parsed) {
-      // Modelo respondió, pero el JSON no es parseable. No vale la pena
-      // reintentar inmediatamente — siguiente cron lo coge.
+      console.warn(
+        `[scoring] groq unparseable: "${result.content.slice(0, 200).replace(/\n/g, " ")}"`,
+      );
       return null;
     }
     return {
@@ -47,8 +48,7 @@ export async function scoreNewsItem(input: {
     };
   } catch (err) {
     if (err instanceof GroqRateLimited) {
-      // Rate-limited tras todos los retries. Dejamos sin score; cron
-      // reintentará en el siguiente ciclo.
+      console.warn(`[scoring] groq rate-limited:`, err.message.slice(0, 100));
       return null;
     }
     console.warn(
