@@ -10,15 +10,31 @@ import { useEffect, useRef } from "react";
 
 const CONFIG = {
   autosize: true,
-  interval: "D",
+  // Weekly default da una vista de varios meses sin que esté súper-zoomed.
+  interval: "W",
   timezone: "Etc/UTC",
   theme: "dark",
-  // Estilo de chart: 1=bars, 2=candles, 3=line, 8=area, 9=mountain
-  style: "3",
+  // Estilo de chart: 1=bars, 2=candles, 3=line, 8=area, 9=mountain.
+  // Candles ("1") leen mejor a nivel diario/semanal que la línea.
+  style: "1",
   locale: "en",
   backgroundColor: "rgba(13, 17, 23, 0)",
   gridColor: "rgba(255, 255, 255, 0.04)",
+  // Toolbar superior con date pickers — el usuario puede saltar a 1d/5d/1m.
   withdateranges: true,
+  // Time frames disponibles abajo del chart.
+  time_frames: [
+    { text: "5y", resolution: "W", description: "5 years" },
+    { text: "1y", resolution: "D", description: "1 year", title: "1 year" },
+    { text: "6m", resolution: "D", description: "6 months" },
+    { text: "3m", resolution: "D", description: "3 months" },
+    { text: "1m", resolution: "60", description: "1 month" },
+    { text: "5d", resolution: "30", description: "5 days" },
+    { text: "1d", resolution: "5", description: "1 day" },
+  ],
+  // Range inicial: 6 meses de datos. Suele dar un zoom legible para
+  // estructurar la lectura de catalysts.
+  range: "6M",
   allow_symbol_change: false,
   hide_side_toolbar: true,
   hide_volume: false,

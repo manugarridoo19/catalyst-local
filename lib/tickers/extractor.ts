@@ -44,12 +44,16 @@ export function extractTickers(
   }
 
   // 3) Diccionario de alias (ej. "Apple Inc" → AAPL). Se construye con uso.
+  // Usamos word-boundary regex para evitar falsos positivos como "Apple"
+  // matcheando dentro de "Pineapple" o "Tesla" en "Tesladora".
   if (aliases.length) {
-    const lower = haystack.toLowerCase();
     for (const a of aliases) {
       const sym = a.symbol.toUpperCase();
       if (seen.has(sym)) continue;
-      if (lower.includes(a.alias.toLowerCase())) {
+      // Escapar regex specials del alias y matchear con \b alrededor.
+      const escaped = a.alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(`\\b${escaped}\\b`, "i");
+      if (re.test(haystack)) {
         seen.set(sym, { symbol: sym, method: "dict" });
       }
     }
