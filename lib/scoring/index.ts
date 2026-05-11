@@ -48,6 +48,15 @@ async function scoreViaOpenRouter(input: {
   return { content: result.content, model: result.model };
 }
 
+// Stack interno de Groq: 70b versatile primary (31% neutro perezoso en
+// audit) → 8b instant fallback (56% neutro pero TPM cap 30K, mucho más
+// holgado que el 70b 12K). El 70b da mejor calidad sentiment+impact en
+// los pocos calls que entran antes de TPM-saturar; el 8b absorbe el resto.
+const GROQ_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+];
+
 async function scoreViaGroq(input: {
   headline: string;
   body?: string;
@@ -58,17 +67,29 @@ async function scoreViaGroq(input: {
     { role: "system" as const, content: SYSTEM_PROMPT },
     { role: "user" as const, content: buildUserPrompt(input) },
   ];
-  const result = await groqChatCompletion({
-    messages,
-    temperature: 0.1,
-    maxTokens: 220,
-    jsonMode: true,
-    // 1 retry max: si Groq 429ea, dejamos que scoring/index.ts haga
-    // fallback a OpenRouter en lugar de gastar 30s backoff. El cron
-    // tiene 60s budget total.
-    retries: 1,
-  });
-  return { content: result.content, model: result.model };
+  let lastErr: unknown = null;
+  for (const model of GROQ_MODELS) {
+    try {
+      const result = await groqChatCompletion({
+        messages,
+        model,
+        temperature: 0.1,
+        maxTokens: 220,
+        jsonMode: true,
+        // 0 retries por modelo aquí — si 70b 429ea, saltamos a 8b inmediato.
+        retries: 0,
+      });
+      return { content: result.content, model: result.model };
+    } catch (err) {
+      lastErr = err;
+      if (err instanceof GroqRateLimited) {
+        console.warn(`[scoring] groq ${model} rate-limited, trying next`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("All Groq models failed");
 }
 
 export async function scoreNewsItem(input: {

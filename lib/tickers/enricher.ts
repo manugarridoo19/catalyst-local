@@ -10,13 +10,15 @@ import { getProfile } from "@/lib/providers/finnhub";
 const ENRICH_BATCH = 12;
 
 export async function enrichPendingTickers(limit = ENRICH_BATCH) {
-  // Re-enriquecer si nunca se hizo, o si falta logo (column nuevo).
+  // Solo NUNCA enriquecidos. Antes era "enrichedAt IS NULL OR logoUrl IS
+  // NULL" pero eso creaba bucle infinito: Finnhub no tiene perfil para
+  // muchos tickers (foreign, OTC), enricher seteaba enrichedAt pero dejaba
+  // logoUrl=NULL → el OR lo re-cogía cada tick → loop eterno gastando
+  // Finnhub rate-limit en tickers irreparables. Ahora una sola tentativa.
   const pending = await db
     .select({ symbol: tickers.symbol })
     .from(tickers)
-    .where(
-      sql`${tickers.enrichedAt} IS NULL OR ${tickers.logoUrl} IS NULL`,
-    )
+    .where(sql`${tickers.enrichedAt} IS NULL`)
     .limit(limit);
 
   let done = 0;
@@ -84,6 +86,11 @@ const SHORT_ALIAS_DENYLIST = new Set([
   "live", "save", "lead", "join", "move", "stop", "start", "open",
   "close", "ride", "share", "store", "store", "stock", "stocks",
   "market", "future", "ramp", "boost", "spark", "watch", "winner",
+  // 2026-05: tras audit. Aliases que el enricher generaba "primera palabra"
+  // pero matcheaban palabras comunes en headlines genéricos.
+  "performance", "canadian", "growth", "earnings", "revenue",
+  "shares", "price", "value", "report", "rating", "quarter",
+  "fiscal", "annual", "guidance",
   // Sufijos corporativos
   "target", "sea", "co", "corp", "inc", "ltd", "plc",
 ]);

@@ -23,6 +23,14 @@ const ALIAS_DENYLIST = new Set([
   "networks", "real", "trust", "media", "health", "tech", "data",
   "holdings", "international", "global", "company", "co", "corp",
   "inc", "ltd", "limited", "plc", "ag", "nv", "spa", "oyj", "ab", "sa",
+  // 2026-05: añadidos tras audit de mislinkages.
+  // "Performance" → PFGC matcheaba "performance review", "stellar performance"
+  // "Canadian" → CNI matcheaba "Canadian Natural Resources" (CNQ correcto),
+  //   "Canadian Pacific" (CP correcto), "Canadian Stocks To Watch" (generic)
+  "performance", "canadian", "bullish", "bearish",
+  // Otros candidatos comunes en headlines genéricos
+  "growth", "earnings", "revenue", "stock", "shares", "price", "value",
+  "report", "rating", "quarter", "annual", "fiscal", "guidance",
 ]);
 
 // Tickers que SOLO deben extraerse si la fuente API los anotó explícitamente.
@@ -37,6 +45,16 @@ const API_ONLY_TICKERS = new Set([
 ]);
 
 const TICKER_REGEX = /\$([A-Z]{1,5})\b/g;
+
+// Patrón "(EXCH:TICKER)" y "(TICKER)" tras nombre de empresa. Captura:
+//   "Helmerich & Payne (HP) Q2 Earnings"            → HP
+//   "Constellation Energy (NASDAQ:CEG) Q1"           → CEG
+//   "PayPal Holdings’ (PYPL) Q1 2026"                → PYPL
+//   "Microsoft Stock (NASDAQ:MSFT) Slips"            → MSFT
+//   "Canadian Natural Resources (CNQ) Q1 Earnings"   → CNQ
+// El `(?:[A-Z]+:)?` opcional permite tanto bare como prefixed.
+// Length 2-5 evita matches accidentales como "(A)" o "(USA)".
+const PAREN_TICKER_REGEX = /\((?:[A-Z]+:)?([A-Z]{2,5})\)/g;
 
 export type TickerAlias = { alias: string; symbol: string };
 
@@ -69,6 +87,19 @@ export function extractTickers(
     if (!s) continue;
     if (BLOCKLIST.has(s)) continue;
     if (API_ONLY_TICKERS.has(s)) continue; // solo via provider API
+    if (seen.has(s)) continue;
+    seen.set(s, { symbol: s, method: "regex" });
+  }
+
+  // 2b) Patrón "(NASDAQ:CEG)" / "(HP)" — convención muy común en earnings
+  // headlines y RSS de financial press. Permite recuperar tickers que no
+  // están en el alias dict (como CEG, CNQ, HP) ni en apiTickers (RSS no
+  // siempre tagea). Misma protección API_ONLY: rechazamos "(C)" "(V)".
+  for (const m of haystack.matchAll(PAREN_TICKER_REGEX)) {
+    const s = m[1];
+    if (!s) continue;
+    if (BLOCKLIST.has(s)) continue;
+    if (API_ONLY_TICKERS.has(s)) continue;
     if (seen.has(s)) continue;
     seen.set(s, { symbol: s, method: "regex" });
   }
