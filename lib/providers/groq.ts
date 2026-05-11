@@ -4,7 +4,11 @@
 
 const BASE = "https://api.groq.com/openai/v1";
 
-const DEFAULT_MODEL = "llama-3.1-8b-instant";
+// 70b versatile da misma latencia (~250-400ms) que 8b-instant pero mejor
+// calidad de scoring — el 8b confunde "neutro" con "no directional" y se
+// va a sent=0 en headlines tipo "MU hits 52-week highs". 70b sigue la
+// regla anti-neutro del prompt v3.3 bien. Mismo rate-limit (30/min free).
+const DEFAULT_MODEL = "llama-3.3-70b-versatile";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -28,6 +32,11 @@ export class GroqRateLimited extends Error {
   }
 }
 
+// Timeout por intento. Groq normalmente <2s pero rate-limit + cola interna
+// pueden colgar la conexión 60s+. Sin esto, un solo call lento tumba el
+// cron de 60s antes de que pueda hacer fallback a OpenRouter.
+const PER_REQUEST_TIMEOUT_MS = 8000;
+
 async function groqOnce(
   apiKey: string,
   model: string,
@@ -46,14 +55,27 @@ async function groqOnce(
   };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
 
-  const res = await fetch(`${BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), PER_REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`Groq timeout ${PER_REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     if (res.status === 429) {

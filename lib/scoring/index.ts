@@ -63,7 +63,10 @@ async function scoreViaGroq(input: {
     temperature: 0.1,
     maxTokens: 220,
     jsonMode: true,
-    retries: 3,
+    // 1 retry max: si Groq 429ea, dejamos que scoring/index.ts haga
+    // fallback a OpenRouter en lugar de gastar 30s backoff. El cron
+    // tiene 60s budget total.
+    retries: 1,
   });
   return { content: result.content, model: result.model };
 }

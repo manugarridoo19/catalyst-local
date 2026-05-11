@@ -37,6 +37,11 @@ class RetriableError extends Error {
   }
 }
 
+// Timeout por intento. owl-alpha tiene worker pool pequeño y excess requests
+// quedan en cola hasta 90-120s — sin esto una sola llamada lenta tumba el
+// cron de 60s entero. 15s da margen para una call típica (~5s) + variance.
+const PER_REQUEST_TIMEOUT_MS = 15000;
+
 async function tryOnce(
   model: string,
   messages: ChatMessage[],
@@ -53,21 +58,37 @@ async function tryOnce(
   };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
 
-  const res = await fetch(`${BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://catalyst-local.local",
-      "X-Title": "Catalyst Local",
-    },
-    body: JSON.stringify(body),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), PER_REQUEST_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://catalyst-local.local",
+        "X-Title": "Catalyst Local",
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new RetriableError(`timeout ${PER_REQUEST_TIMEOUT_MS}ms on ${model}`, 408);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    // 404 (modelo retirado), 429 (rate limit), 502/503 → probar siguiente.
+    // 404 (modelo retirado), 408 (timeout cliente), 429 (rate limit),
+    // 502/503 → probar siguiente.
     if (
       res.status === 404 ||
+      res.status === 408 ||
       res.status === 429 ||
       res.status === 502 ||
       res.status === 503
