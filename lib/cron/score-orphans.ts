@@ -6,11 +6,10 @@ import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 
 // Batch + concurrencia calibradas para 60s Vercel Hobby. 50 × ~2s / 5 = 20s
 // margen para enriquecimiento y broadcast.
-// Groq 70b free tiene TPM limit más restrictivo que el 8b: con prompts de
-// ~800 tokens, capa alrededor de los 15 calls/min. BATCH=25 metía 504 por
-// cascada de 429s + retries. 15 deja headroom — cada call ~300ms y total
-// ~12s. Drainage = 15/tick × 12 ticks/hora = 180 news/hora.
-const ORPHAN_BATCH = 15;
+// Groq 8b free tiene 30K TPM — prompts ~800 tokens × 25 calls = 20K dentro
+// del cap con margen. Total ~10s + DB/broadcast ≈ 15s. Drainage =
+// 25/tick × 12 ticks/hora = 300 news scoreadas/hora.
+const ORPHAN_BATCH = 25;
 const ORPHAN_CONCURRENCY = 1;
 
 export type OrphanResult = {

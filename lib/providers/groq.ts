@@ -4,11 +4,11 @@
 
 const BASE = "https://api.groq.com/openai/v1";
 
-// 70b versatile da misma latencia (~250-400ms) que 8b-instant pero mejor
-// calidad de scoring — el 8b confunde "neutro" con "no directional" y se
-// va a sent=0 en headlines tipo "MU hits 52-week highs". 70b sigue la
-// regla anti-neutro del prompt v3.3 bien. Mismo rate-limit (30/min free).
-const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+// 8b vs 70b: 70b sigue la regla anti-neutro mejor PERO el TPM cap free
+// del 70b es ~12K/min — con prompts ~800 tokens nos satura a los 15 calls
+// y el cron entero cae a 429 cascade. 8b tiene 30K TPM, scoring estable.
+// Tradeoff aceptable: ~5% de los casos perdemos la dirección correcta.
+const DEFAULT_MODEL = "llama-3.1-8b-instant";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
