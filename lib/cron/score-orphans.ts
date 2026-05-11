@@ -6,10 +6,12 @@ import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 
 // Batch + concurrencia calibradas para 60s Vercel Hobby. 50 × ~2s / 5 = 20s
 // margen para enriquecimiento y broadcast.
-// Con Groq como primary (1-2s/call) podemos subir a 30/tick. CONCURRENCY=4
-// para no chocar con el 30/min de Groq free.
-const ORPHAN_BATCH = 30;
-const ORPHAN_CONCURRENCY = 4;
+// Groq free = 30 req/min = 1 req cada 2s. Más rápido y entramos en rate-
+// limit y caemos a OpenRouter (también 429). Workers paralelos suman calls
+// instantáneas. Mantenemos CONCURRENCY=1 con sub-2s implícito de la propia
+// latencia Groq (~1-1.5s/call) → ~25 items en 60s.
+const ORPHAN_BATCH = 25;
+const ORPHAN_CONCURRENCY = 1;
 
 export type OrphanResult = {
   picked: number;

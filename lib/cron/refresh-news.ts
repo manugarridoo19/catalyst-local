@@ -20,13 +20,12 @@ import {
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 
-// Cap por ejecución. Refresh-news SOLO scorea las 8 más recientes para no
-// reventar el 60s budget de Vercel Hobby — score-orphans corre en su propio
-// 60s window cada 5min y se encarga del bulk. Antes con 30 cabíamos pero
-// ahora OpenRouter owl-alpha tarda 5-15s/call → timeout. 8×~5s/4 paralelos
-// ≈ 10s, deja margen para fetch + enrich + retention.
+// Refresh-news scorea las 8 más recientes con concurrency 1 — Groq es 30
+// req/min y refresh-news + score-orphans + cualquier retry compite por ese
+// budget. Secuencial = ~10-12s aquí, score-orphans usa los siguientes 50s
+// del rate-limit window en su propio tick. Total ≤ 30 req/min.
 const SCORING_BATCH = 8;
-const SCORING_CONCURRENCY = 4;
+const SCORING_CONCURRENCY = 1;
 
 // Retención: borramos news >14 días al final de cada cron para no saturar
 // la BD. La home queda orientada a presente/futuro.
