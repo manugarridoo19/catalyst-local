@@ -6,11 +6,11 @@ import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 
 // Batch + concurrencia calibradas para 60s Vercel Hobby. 50 × ~2s / 5 = 20s
 // margen para enriquecimiento y broadcast.
-// Refresh-news ya no scorea. En prod Groq sale ~4-5s/call con retries
-// (más lento que el 1.5s local — probablemente cold-start de la fn
-// Vercel + latencia región us-east). BATCH=15 timeouted 504, BATCH=12
-// pasó en 56s. Bajamos a 10 con margen.
-const ORPHAN_BATCH = 10;
+// Con Groq 70b en producción salimos ~250-400ms/call. BATCH=10 corrió en
+// 15.7s — margen enorme dentro de los 60s. Subimos a 25 para drenar el
+// backlog mucho más rápido: 25 × 0.4s ≈ 10s + DB/broadcast ≈ 15-20s total.
+// Drainage 25/tick × 12 ticks/hora = 300 news scoreadas/hora.
+const ORPHAN_BATCH = 25;
 const ORPHAN_CONCURRENCY = 1;
 
 export type OrphanResult = {
