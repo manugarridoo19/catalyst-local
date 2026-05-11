@@ -6,7 +6,9 @@ import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 
 // Batch + concurrencia calibradas para 60s Vercel Hobby. 50 × ~2s / 5 = 20s
 // margen para enriquecimiento y broadcast.
-const ORPHAN_BATCH = 30;
+// owl-alpha tarda 5-15s/call con 429s frecuentes. 30×~10s/4 ≈ 75s → timeout.
+// Con 15 cabemos ~37s. Si queda backlog, el siguiente tick (5min) lo pesca.
+const ORPHAN_BATCH = 15;
 const ORPHAN_CONCURRENCY = 4;
 
 export type OrphanResult = {
