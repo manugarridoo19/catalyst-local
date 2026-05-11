@@ -54,7 +54,12 @@ export async function insertNewsWithTickers(
       imageUrl: item.imageUrl,
       category,
     })
-    .onConflictDoNothing({ target: news.url })
+    // Schema tiene unique on BOTH url y hash. El conflict target debe ser
+    // hash porque es el dedupe semántico (normaliza utm params). Si usamos
+    // url como target, llegan dos URLs distintas que normalizan al mismo
+    // hash → Postgres detecta la violación de hash que NO está en el ON
+    // CONFLICT → 500 y el cron entero muere. Switching a hash arregla esto.
+    .onConflictDoNothing({ target: news.hash })
     .returning({ id: news.id });
 
   const newsId = inserted[0]?.id;

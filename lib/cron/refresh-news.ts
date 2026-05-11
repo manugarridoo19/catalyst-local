@@ -110,12 +110,26 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   await upsertTickers([...allSymbols], "cron");
 
   // 5) Insertar noticias nuevas. Las que ya existen devuelven null.
+  // Try/catch por item — un INSERT roto NO debe tumbar todo el cron (un solo
+  // duplicate hash/url falló durante 7h dejando la feed congelada).
   const newlyInserted: { id: number; item: NormalizedNewsItem; tickers: string[] }[] = [];
+  let insertFailures = 0;
   for (const { item, tickers } of itemsWithTickers) {
-    const id = await insertNewsWithTickers(item, tickers);
-    if (id) {
-      newlyInserted.push({ id, item, tickers: tickers.map((t) => t.symbol) });
+    try {
+      const id = await insertNewsWithTickers(item, tickers);
+      if (id) {
+        newlyInserted.push({ id, item, tickers: tickers.map((t) => t.symbol) });
+      }
+    } catch (err) {
+      insertFailures++;
+      console.warn(
+        `[cron] insert failed for ${item.url.slice(0, 80)}:`,
+        err instanceof Error ? err.message.slice(0, 200) : err,
+      );
     }
+  }
+  if (insertFailures) {
+    console.warn(`[cron] ${insertFailures} insert failures (cron continues)`);
   }
 
   // 6) Scoring — priorizamos las más recientes y respetamos el cap.
