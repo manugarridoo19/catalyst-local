@@ -7,13 +7,11 @@ import { fetchAllRssNews } from "@/lib/providers/rss-aggregator";
 import { fetchGoogleNewsByTicker } from "@/lib/providers/google-news-tickers";
 import { extractTickers } from "@/lib/tickers/extractor";
 import { enrichPendingTickers } from "@/lib/tickers/enricher";
-import { scoreNewsItem } from "@/lib/scoring";
 import {
   deleteOldNews,
   getTickerMetaMap,
   getTopTickersForFetch,
   insertNewsWithTickers,
-  insertScore,
   loadAliases,
   upsertTickers,
 } from "@/lib/db/queries";
@@ -23,9 +21,9 @@ import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 // Refresh-news NO scorea. Fetch + insert + enrich ya consume 30-40s en
 // el 60s budget; añadirle scoring nos lleva a 504 intermitentes. score-
 // orphans tiene su propio 60s tick cada 5min y se encarga de TODO el
-// scoring. Latencia "news llega → news scoreada" sigue ≤5min.
-const SCORING_BATCH = 0;
-const SCORING_CONCURRENCY = 1;
+// scoring. Latencia "news llega → broadcast" ahora es inmediata; los
+// badges Signif/Sent aparecen cuando score-orphans rebroadcast con
+// score → el cliente actualiza el card in-place por id.
 
 // Retención: borramos news >14 días al final de cada cron para no saturar
 // la BD. La home queda orientada a presente/futuro.
@@ -133,62 +131,32 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
     console.warn(`[cron] ${insertFailures} insert failures (cron continues)`);
   }
 
-  // 6) Scoring — priorizamos las más recientes y respetamos el cap.
+  // 6) Broadcast inmediato SIN score. La feed live ve la noticia en
+  // segundos; score-orphans la puntúa en su tick y emite un segundo
+  // broadcast con scores que actualiza el card in-place.
+  // (SCORING_BATCH=0 desde que separamos ingest y scoring por presupuesto
+  // de 60s en Vercel Hobby — todo el scoring vive en score-orphans.)
   newlyInserted.sort(
     (a, b) => b.item.publishedAt.getTime() - a.item.publishedAt.getTime(),
   );
-  const toScore = newlyInserted.slice(0, SCORING_BATCH);
-
-  // Scoring concurrente — N workers tirando del queue. Cada provider tiene
-  // rate-limit alto (Groq 30/min, OpenRouter ~20/min); con C=5 quedamos por
-  // debajo y el batch entero corre en ~10-20s.
-  let scored = 0;
-  let failedScores = 0;
-  const broadcast: FeedNewsPayload[] = [];
-  let cursor = 0;
-  async function worker() {
-    while (true) {
-      const i = cursor++;
-      if (i >= toScore.length) return;
-      const entry = toScore[i];
-      try {
-        const score = await scoreNewsItem({
-          headline: entry.item.headline,
-          body: entry.item.body,
-          tickers: entry.tickers,
-          source: entry.item.source,
-        });
-        if (score) {
-          await insertScore(entry.id, score);
-          scored++;
-          broadcast.push({
-            id: entry.id,
-            headline: entry.item.headline,
-            body: entry.item.body,
-            source: entry.item.source,
-            publishedAt: entry.item.publishedAt.toISOString(),
-            url: entry.item.url,
-            tickers: entry.tickers,
-            primarySymbol: entry.tickers[0] ?? null,
-            impact: score.impact,
-            sentiment: score.sentiment,
-            rationale: score.rationale,
-          });
-        } else {
-          failedScores++;
-        }
-      } catch (err) {
-        failedScores++;
-        console.warn(
-          `[cron] scoring failed for news ${entry.id}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-  }
-  await Promise.all(
-    Array.from({ length: SCORING_CONCURRENCY }, () => worker()),
-  );
+  const scored = 0;
+  const failedScores = 0;
+  // Cap a 50 para no reventar Pusher con un solo push gigante cuando entra
+  // un cron muy productivo (~400 items). Las que se queden las traerá el
+  // próximo SSR / fetch del usuario.
+  const broadcast: FeedNewsPayload[] = newlyInserted.slice(0, 50).map((e) => ({
+    id: e.id,
+    headline: e.item.headline,
+    body: e.item.body,
+    source: e.item.source,
+    publishedAt: e.item.publishedAt.toISOString(),
+    url: e.item.url,
+    tickers: e.tickers,
+    primarySymbol: e.tickers[0] ?? null,
+    impact: null,
+    sentiment: null,
+    rationale: null,
+  }));
 
   // 7) Enriquecer payload con logo+nombre del primary ticker antes del push.
   if (broadcast.length) {

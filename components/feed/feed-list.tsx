@@ -41,21 +41,33 @@ export function FeedList({ initial, watchlist = [] }: Props) {
     if (!pusher) return;
     const channel = pusher.subscribe(NEWS_CHANNEL);
     const onNew = (data: LivePayload) => {
-      setItems((prev) => mergeFeed(data.items, prev));
+      // Detectamos cuáles items son GENUINAMENTE nuevos (no estaban antes)
+      // para evitar re-spamear toast/animación cuando llega el segundo
+      // broadcast (score-orphans rebroadcast con score). Usamos el
+      // setItems callback para tener acceso al estado anterior.
+      let actuallyNew: FeedItem[] = [];
+      setItems((prev) => {
+        const existingIds = new Set(prev.map((p) => p.id));
+        actuallyNew = data.items.filter((it) => !existingIds.has(it.id));
+        return mergeFeed(data.items, prev);
+      });
+
+      if (actuallyNew.length === 0) return;
+
       setFreshIds((prev) => {
         const next = new Set(prev);
-        for (const it of data.items) next.add(it.id);
+        for (const it of actuallyNew) next.add(it.id);
         return next;
       });
       setTimeout(() => {
         setFreshIds((prev) => {
           const next = new Set(prev);
-          for (const it of data.items) next.delete(it.id);
+          for (const it of actuallyNew) next.delete(it.id);
           return next;
         });
       }, 2800);
 
-      const hit = data.items.find((it) =>
+      const hit = actuallyNew.find((it) =>
         it.tickers.some((t) => watchlist.includes(t)),
       );
       if (hit) {
@@ -179,8 +191,34 @@ function EmptyState() {
   );
 }
 
+// Upsert por id: items ya presentes se ACTUALIZAN con campos nuevos
+// (típico: el primer broadcast llega sin score y el segundo trae score),
+// los nuevos se insertan al inicio. Sin esto, un re-broadcast con score
+// quedaba descartado y los badges Signif/Sent nunca aparecían.
 function mergeFeed(incoming: FeedItem[], existing: FeedItem[]): FeedItem[] {
-  const seen = new Set(existing.map((e) => e.id));
-  const novel = incoming.filter((it) => !seen.has(it.id));
-  return [...novel, ...existing].slice(0, 500);
+  const byId = new Map(existing.map((e) => [e.id, e] as const));
+  const novel: FeedItem[] = [];
+  for (const it of incoming) {
+    const prev = byId.get(it.id);
+    if (prev) {
+      // Merge — preferimos los campos non-null del incoming (suelen ser el
+      // score), pero mantenemos los del existing si el incoming los trae
+      // null (evita borrar un score válido con un re-broadcast estale).
+      byId.set(it.id, {
+        ...prev,
+        ...it,
+        impact: it.impact ?? prev.impact,
+        sentiment: it.sentiment ?? prev.sentiment,
+        rationale: it.rationale ?? prev.rationale,
+        category: it.category ?? prev.category,
+      });
+    } else {
+      novel.push(it);
+      byId.set(it.id, it);
+    }
+  }
+  // Reconstruimos el orden: nuevos al inicio, luego los existentes en su
+  // orden actual (con los updates aplicados).
+  const updated = existing.map((e) => byId.get(e.id) ?? e);
+  return [...novel, ...updated].slice(0, 500);
 }

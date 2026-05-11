@@ -34,9 +34,12 @@ export type FeedNewsPayload = {
   primarySymbol?: string | null;
   primaryName?: string | null;
   primaryLogo?: string | null;
-  impact: number;
-  sentiment: number;
-  rationale?: string;
+  // null = aún no scoreada. El cliente lo renderiza como Signif/Sent "—"
+  // hasta que score-orphans la puntúe y emita un segundo broadcast con
+  // los valores reales que actualiza el card in-place.
+  impact: number | null;
+  sentiment: number | null;
+  rationale?: string | null;
 };
 
 export async function broadcastNews(items: FeedNewsPayload[]): Promise<void> {
