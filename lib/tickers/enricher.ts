@@ -4,10 +4,10 @@ import { eq, sql } from "drizzle-orm";
 import { getProfile } from "@/lib/providers/finnhub";
 
 // Tickers nuevos llegan sin metadata. En cada cron procesamos hasta N de
-// los más antiguos sin enriquecer (FIFO) — limitado para no agotar el
-// rate-limit de Finnhub free (60 req/min). El cron también gasta llamadas
-// en el fetch de noticias, así que dejamos margen.
-const ENRICH_BATCH = 40;
+// los más antiguos sin enriquecer (FIFO). Bajado a 12 desde 40 — cada
+// llamada Finnhub tarda ~500ms-1s, 40 enrichments ≈ 20-40s blowing el
+// 60s budget. 12×1s ≈ 12s deja oxígeno para el resto del pipeline.
+const ENRICH_BATCH = 12;
 
 export async function enrichPendingTickers(limit = ENRICH_BATCH) {
   // Re-enriquecer si nunca se hizo, o si falta logo (column nuevo).

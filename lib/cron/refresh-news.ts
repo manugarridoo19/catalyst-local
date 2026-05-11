@@ -20,10 +20,12 @@ import {
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 
-// Cap por ejecución. OpenRouter free tarda 5-15s por call; con CONCURRENCY=4
-// caben ~30 items en 60-90s sin problema. Si entra más, score-orphans las
-// pesca en el siguiente tick (≤5min después).
-const SCORING_BATCH = 30;
+// Cap por ejecución. Refresh-news SOLO scorea las 8 más recientes para no
+// reventar el 60s budget de Vercel Hobby — score-orphans corre en su propio
+// 60s window cada 5min y se encarga del bulk. Antes con 30 cabíamos pero
+// ahora OpenRouter owl-alpha tarda 5-15s/call → timeout. 8×~5s/4 paralelos
+// ≈ 10s, deja margen para fetch + enrich + retention.
+const SCORING_BATCH = 8;
 const SCORING_CONCURRENCY = 4;
 
 // Retención: borramos news >14 días al final de cada cron para no saturar
