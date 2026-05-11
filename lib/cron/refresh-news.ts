@@ -20,11 +20,11 @@ import {
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 
-// Refresh-news scorea las 8 más recientes con concurrency 1 — Groq es 30
-// req/min y refresh-news + score-orphans + cualquier retry compite por ese
-// budget. Secuencial = ~10-12s aquí, score-orphans usa los siguientes 50s
-// del rate-limit window en su propio tick. Total ≤ 30 req/min.
-const SCORING_BATCH = 8;
+// Refresh-news NO scorea. Fetch + insert + enrich ya consume 30-40s en
+// el 60s budget; añadirle scoring nos lleva a 504 intermitentes. score-
+// orphans tiene su propio 60s tick cada 5min y se encarga de TODO el
+// scoring. Latencia "news llega → news scoreada" sigue ≤5min.
+const SCORING_BATCH = 0;
 const SCORING_CONCURRENCY = 1;
 
 // Retención: borramos news >14 días al final de cada cron para no saturar
