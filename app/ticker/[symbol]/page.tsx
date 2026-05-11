@@ -48,6 +48,7 @@ export default async function TickerPage({
     source: r.source,
     publishedAt: r.publishedAt.toISOString(),
     imageUrl: r.imageUrl,
+    category: r.category,
     tickers: r.tickers,
     impact: r.impact,
     sentiment: r.sentiment,

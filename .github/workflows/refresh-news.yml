@@ -3,7 +3,7 @@ name: refresh-news
 # GitHub Actions cron — 5-min minimum on free tier. Compensa el límite de
 # Vercel Hobby (1 cron/día). Llama al endpoint de producción con el
 # CRON_SECRET almacenado como GitHub Secret. No usa ningún input untrusted
-# del evento, solo el secret y una URL hardcodeada.
+# del evento, solo el secret y URLs hardcodeadas.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -12,9 +12,9 @@ on:
 jobs:
   trigger:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 4
     steps:
-      - name: Hit cron endpoint
+      - name: Hit refresh-news endpoint
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           ENDPOINT: "https://catalyst-local.vercel.app/api/cron/refresh-news"
@@ -23,6 +23,23 @@ jobs:
             echo "::error::CRON_SECRET secret missing"
             exit 1
           fi
+          response=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$ENDPOINT")
+          body=$(echo "$response" | head -n -1)
+          code=$(echo "$response" | tail -n 1)
+          echo "HTTP $code"
+          echo "$body" | head -c 1000
+          if [ "$code" != "200" ]; then exit 1; fi
+
+      - name: Hit score-orphans endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ENDPOINT: "https://catalyst-local.vercel.app/api/cron/score-orphans"
+        # Pesca cualquier noticia que quedó sin score del refresh anterior
+        # (cuando el batch entró saturado o algún provider falló). Asegura
+        # que toda news con ticker termina scoreada en <10 min de su llegada.
+        run: |
           response=$(curl -sS -w "\n%{http_code}" \
             -H "Authorization: Bearer $CRON_SECRET" \
             "$ENDPOINT")

@@ -58,6 +58,36 @@ export async function enrichPendingTickers(limit = ENRICH_BATCH) {
   return { processed: pending.length, succeeded: done };
 }
 
+// Palabras inglesas comunes que NO sirven como alias corto de ticker.
+// Si la primera palabra del nombre cae aquí, no la añadimos sola (riesgo de
+// matchear noticias irrelevantes — ej. "American" matchearía todo). El alias
+// largo sigue funcionando para detectar el ticker.
+const SHORT_ALIAS_DENYLIST = new Set([
+  // Geográficos / cualificadores
+  "american", "united", "national", "general", "first", "federal",
+  "international", "global", "world", "new", "northern", "southern",
+  "eastern", "western", "central", "atlantic", "pacific", "continental",
+  // Sectoriales / corporativos
+  "bank", "banc", "banco", "financial", "trust", "capital", "credit",
+  "energy", "industries", "industrial", "networks", "media", "health",
+  "tech", "technologies", "technology", "data", "systems", "services",
+  "holdings", "holding", "group", "company", "corporation",
+  "real", "estate", "advanced", "applied", "alpha", "beta", "core",
+  // Calificativos
+  "good", "great", "best", "big", "major", "premier", "prime", "pure",
+  // Nombres propios comunes
+  "charles", "robert", "james", "william", "thomas", "henry", "george",
+  "walt", "morgan", "wells",
+  // Verbos / sustantivos genéricos que aparecen masivamente en headlines
+  "home", "trade", "block", "delta", "twist", "rise", "fall", "fly",
+  "build", "hold", "buy", "sell", "make", "take", "give", "work",
+  "live", "save", "lead", "join", "move", "stop", "start", "open",
+  "close", "ride", "share", "store", "store", "stock", "stocks",
+  "market", "future", "ramp", "boost", "spark", "watch", "winner",
+  // Sufijos corporativos
+  "target", "sea", "co", "corp", "inc", "ltd", "plc",
+]);
+
 function uniqueAliases(name: string): string[] {
   const aliases = new Set<string>();
   const cleaned = name
@@ -68,6 +98,21 @@ function uniqueAliases(name: string): string[] {
   if (cleaned.length >= 3) aliases.add(cleaned);
   if (name.trim().length >= 3 && name.trim() !== cleaned) {
     aliases.add(name.trim());
+  }
+  // Alias corto (primera palabra) — captura headlines tipo "Dell soared 14%"
+  // o "Apple beats". v3.2 solo guardaba "Dell Technologies" → 0 matches.
+  // Restricciones:
+  //   - ≥4 chars (Dell, Apple, Tesla, Nvidia; rechaza Co, Inc, BP)
+  //   - alpha-only (no números, no símbolos)
+  //   - no en denylist de palabras comunes
+  const firstWord = cleaned.split(/\s+/)[0];
+  if (
+    firstWord &&
+    firstWord.length >= 4 &&
+    /^[A-Za-z]+$/.test(firstWord) &&
+    !SHORT_ALIAS_DENYLIST.has(firstWord.toLowerCase())
+  ) {
+    aliases.add(firstWord);
   }
   return Array.from(aliases);
 }

@@ -20,9 +20,11 @@ import {
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 
-// Cap por ejecución. Con Groq (sub-segundo) podemos hacer muchos más por
-// cron; mantenemos margen para no chocar con el límite Vercel de 60s.
+// Cap por ejecución. OpenRouter free tarda 5-15s por call; con CONCURRENCY=4
+// caben ~30 items en 60-90s sin problema. Si entra más, score-orphans las
+// pesca en el siguiente tick (≤5min después).
 const SCORING_BATCH = 30;
+const SCORING_CONCURRENCY = 4;
 
 // Retención: borramos news >14 días al final de cada cron para no saturar
 // la BD. La home queda orientada a presente/futuro.
@@ -122,44 +124,56 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   );
   const toScore = newlyInserted.slice(0, SCORING_BATCH);
 
+  // Scoring concurrente — N workers tirando del queue. Cada provider tiene
+  // rate-limit alto (Groq 30/min, OpenRouter ~20/min); con C=5 quedamos por
+  // debajo y el batch entero corre en ~10-20s.
   let scored = 0;
   let failedScores = 0;
   const broadcast: FeedNewsPayload[] = [];
-  for (const entry of toScore) {
-    try {
-      const score = await scoreNewsItem({
-        headline: entry.item.headline,
-        body: entry.item.body,
-        tickers: entry.tickers,
-        source: entry.item.source,
-      });
-      if (score) {
-        await insertScore(entry.id, score);
-        scored++;
-        broadcast.push({
-          id: entry.id,
+  let cursor = 0;
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= toScore.length) return;
+      const entry = toScore[i];
+      try {
+        const score = await scoreNewsItem({
           headline: entry.item.headline,
           body: entry.item.body,
-          source: entry.item.source,
-          publishedAt: entry.item.publishedAt.toISOString(),
-          url: entry.item.url,
           tickers: entry.tickers,
-          primarySymbol: entry.tickers[0] ?? null,
-          impact: score.impact,
-          sentiment: score.sentiment,
-          rationale: score.rationale,
+          source: entry.item.source,
         });
-      } else {
+        if (score) {
+          await insertScore(entry.id, score);
+          scored++;
+          broadcast.push({
+            id: entry.id,
+            headline: entry.item.headline,
+            body: entry.item.body,
+            source: entry.item.source,
+            publishedAt: entry.item.publishedAt.toISOString(),
+            url: entry.item.url,
+            tickers: entry.tickers,
+            primarySymbol: entry.tickers[0] ?? null,
+            impact: score.impact,
+            sentiment: score.sentiment,
+            rationale: score.rationale,
+          });
+        } else {
+          failedScores++;
+        }
+      } catch (err) {
         failedScores++;
+        console.warn(
+          `[cron] scoring failed for news ${entry.id}:`,
+          err instanceof Error ? err.message : err,
+        );
       }
-    } catch (err) {
-      failedScores++;
-      console.warn(
-        `[cron] scoring failed for news ${entry.id}:`,
-        err instanceof Error ? err.message : err,
-      );
     }
   }
+  await Promise.all(
+    Array.from({ length: SCORING_CONCURRENCY }, () => worker()),
+  );
 
   // 7) Enriquecer payload con logo+nombre del primary ticker antes del push.
   if (broadcast.length) {

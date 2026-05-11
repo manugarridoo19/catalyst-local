@@ -4,12 +4,13 @@
 
 const BASE = "https://openrouter.ai/api/v1";
 
-// Orden de fallback de OpenRouter. Solo se usa si Groq falla todas las
-// reintentas. Lista actualizada — qwen-2.5-72b:free se retiró, removido.
+// 2026-05: solo dejamos los modelos VERIFICADOS disponibles via REST. Probé
+// DeepSeek V3.1, Nemotron 70B, Qwen 2.5 72B, Gemini 2.0 — todos devuelven
+// 404 "No endpoints found". Lo que queda activo en free es bastante poco.
+// Si openrouter/owl-alpha 429s, cae a Llama 3.3 70B; si esa también, el
+// outer fallback en scoring/index.ts pasa el control a Groq.
 const DEFAULT_MODEL_FALLBACKS = [
   "meta-llama/llama-3.3-70b-instruct:free",
-  "google/gemini-2.0-flash-exp:free",
-  "meta-llama/llama-3.2-3b-instruct:free",
 ];
 
 export type ChatMessage = {
@@ -104,15 +105,24 @@ export async function chatCompletion(opts: {
 
   let lastErr: unknown = null;
   for (const model of order) {
-    try {
-      return await tryOnce(model, opts.messages, opts);
-    } catch (err) {
-      lastErr = err;
-      if (err instanceof RetriableError) {
-        console.warn(`[openrouter] ${model} → ${err.status}: ${err.message.slice(0, 100)}`);
-        continue;
+    // Hasta 2 reintentos por modelo con backoff lineal — owl-alpha tiene
+    // burst tight pero se libera en 2-5s. No vale para 429 sostenido.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await tryOnce(model, opts.messages, opts);
+      } catch (err) {
+        lastErr = err;
+        if (err instanceof RetriableError) {
+          if (err.status === 429 && attempt === 0) {
+            console.warn(`[openrouter] ${model} → 429, retry in 3s`);
+            await new Promise((r) => setTimeout(r, 3000));
+            continue;
+          }
+          console.warn(`[openrouter] ${model} → ${err.status}: ${err.message.slice(0, 100)}`);
+          break; // intenta siguiente modelo
+        }
+        throw err;
       }
-      throw err;
     }
   }
   throw lastErr instanceof Error

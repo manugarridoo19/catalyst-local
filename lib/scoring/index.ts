@@ -17,7 +17,11 @@ type Provider = "openrouter" | "groq";
 const PRIMARY: Provider =
   (process.env.SCORER_PRIMARY?.toLowerCase() as Provider) || "openrouter";
 
-const OPENROUTER_DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
+// 2026-05: probamos openrouter/owl-alpha — modelo con contexto largo, útil
+// porque algunos earnings transcripts vienen con bodies grandes. Si falla
+// upstream, fallback chain en lib/providers/openrouter.ts entra (DeepSeek
+// V3.1, Nemotron 70B, Llama 3.3 70B, Qwen 2.5 72B, Gemini 2.0).
+const OPENROUTER_DEFAULT_MODEL = "openrouter/owl-alpha";
 
 async function scoreViaOpenRouter(input: {
   headline: string;

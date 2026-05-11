@@ -10,8 +10,9 @@ import { useEffect, useRef } from "react";
 
 const CONFIG = {
   autosize: true,
-  // Weekly default da una vista de varios meses sin que esté súper-zoomed.
-  interval: "W",
+  // Daily candles. Weekly daba ~26 barras en 6M → cada vela enorme,
+  // "hyper-zoomed". Con D vemos ~120 velas en 6M → densidad cómoda.
+  interval: "D",
   timezone: "Etc/UTC",
   theme: "dark",
   // Estilo de chart: 1=bars, 2=candles, 3=line, 8=area, 9=mountain.
