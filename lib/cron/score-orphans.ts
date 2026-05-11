@@ -6,11 +6,11 @@ import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 
 // Batch + concurrencia calibradas para 60s Vercel Hobby. 50 × ~2s / 5 = 20s
 // margen para enriquecimiento y broadcast.
-// Groq free = 30 req/min = 1 req cada 2s. Más rápido y entramos en rate-
-// limit y caemos a OpenRouter (también 429). Workers paralelos suman calls
-// instantáneas. Mantenemos CONCURRENCY=1 con sub-2s implícito de la propia
-// latencia Groq (~1-1.5s/call) → ~25 items en 60s.
-const ORPHAN_BATCH = 25;
+// Groq free 30/min. Refresh-news ya gasta 8 → score-orphans tiene ~22 antes
+// de chocar con el rate-limit. Bajamos a 12 para seguridad — si refresh-news
+// se demora, los retries de Groq + fallback a OpenRouter pueden meter 5-15s
+// por call, así que mejor batch chico que repetir cada 5min un timeout.
+const ORPHAN_BATCH = 12;
 const ORPHAN_CONCURRENCY = 1;
 
 export type OrphanResult = {
