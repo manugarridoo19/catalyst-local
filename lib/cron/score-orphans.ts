@@ -6,12 +6,11 @@ import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 
 // Batch + concurrencia calibradas para 60s Vercel Hobby. 50 × ~2s / 5 = 20s
 // margen para enriquecimiento y broadcast.
-// Refresh-news ya no scorea. En prod cada call efectiva sale ~4s (Groq
-// 1-2s + retry overhead cuando rate-limit kicks). BATCH=15 → ~50s, da
-// margen al broadcast/meta. 12×ticks/hora × 15 = 180/hora drainage; con
-// 400 ingest/hora hay déficit, pero la prioridad publishedAt DESC asegura
-// que las RECIENTES siempre se gradean en el siguiente tick.
-const ORPHAN_BATCH = 15;
+// Refresh-news ya no scorea. En prod Groq sale ~4-5s/call con retries
+// (más lento que el 1.5s local — probablemente cold-start de la fn
+// Vercel + latencia región us-east). BATCH=15 timeouted 504, BATCH=12
+// pasó en 56s. Bajamos a 10 con margen.
+const ORPHAN_BATCH = 10;
 const ORPHAN_CONCURRENCY = 1;
 
 export type OrphanResult = {
