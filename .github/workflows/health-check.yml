@@ -67,12 +67,13 @@ jobs:
         run: |
           set -e
           reason=""
+          # insertedLastHour=0 es la señal real de cron muerto: en 12 ticks
+          # (5min × 12) NO entró NADA. publishedAgeMin alto solo significa
+          # que los RSS no actualizaron en X min, no que nuestro cron falle.
           if [ "$HEALTH_OK" != "true" ]; then
             reason="health endpoint not OK"
-          elif [ "$AGE" -lt 0 ] 2>/dev/null; then
-            reason="no news in DB at all"
-          elif [ "$AGE" -gt 30 ] 2>/dev/null; then
-            reason="latest news is ${AGE} min old (>30)"
+          elif [ "$INSERTED_H" = "0" ]; then
+            reason="zero inserts in the last hour (cron likely dead)"
           elif [ "$FAILS" -ge 3 ] 2>/dev/null; then
             reason="last 3 refresh-news runs failed: ${RECENT}"
           fi
