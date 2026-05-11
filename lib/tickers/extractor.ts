@@ -49,12 +49,15 @@ const TICKER_REGEX = /\$([A-Z]{1,5})\b/g;
 // Patrón "(EXCH:TICKER)" y "(TICKER)" tras nombre de empresa. Captura:
 //   "Helmerich & Payne (HP) Q2 Earnings"            → HP
 //   "Constellation Energy (NASDAQ:CEG) Q1"           → CEG
-//   "PayPal Holdings’ (PYPL) Q1 2026"                → PYPL
+//   "PayPal Holdings' (PYPL) Q1 2026"                → PYPL
 //   "Microsoft Stock (NASDAQ:MSFT) Slips"            → MSFT
 //   "Canadian Natural Resources (CNQ) Q1 Earnings"   → CNQ
-// El `(?:[A-Z]+:)?` opcional permite tanto bare como prefixed.
-// Length 2-5 evita matches accidentales como "(A)" o "(USA)".
-const PAREN_TICKER_REGEX = /\((?:[A-Z]+:)?([A-Z]{2,5})\)/g;
+// IMPORTANTE: solo aceptamos prefixes que SON exchanges conocidos. Antes el
+// regex era `(?:[A-Z]+:)?` que matcheaba CUALQUIER prefix — esto extraía
+// "NYSE" de "(PRIM:NYSE)" porque PRIM:NYSE pasaba como exch:ticker invertido.
+// Lista de exchanges/prefixes válidos a 2026-05.
+const PAREN_TICKER_REGEX =
+  /\((?:(?:NYSE|NASDAQ|NYSEARCA|OTCMKTS|NASDAQGS|NASDAQGM|NASDAQCM|AMEX|TSX|TSXV|LSE|HKEX|ASX|BATS|SSE|SEHK|BME):)?([A-Z]{2,5})\)/g;
 
 export type TickerAlias = { alias: string; symbol: string };
 

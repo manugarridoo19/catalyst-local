@@ -17,6 +17,8 @@ async function main() {
     { headline: "Stellar performance of Q1 makes investors bullish", body: "" },
     { headline: "Canadian Stocks To Watch Today - May 11th", body: "" },
     { headline: "Tesla beat Q1 estimates", body: "" },
+    { headline: "Primoris upgraded at Mizuho on bookings growth after Q1 miss (PRIM:NYSE)", body: "" },
+    { headline: "What Is the Required Minimum Distribution (RMD) for a $750,000 Account?", body: "" },
   ];
 
   for (const c of cases) {
