@@ -14,8 +14,12 @@ import type { SentimentScore } from "@/lib/types";
 
 type Provider = "openrouter" | "groq";
 
+// 2026-05: cambio el default a Groq. OpenRouter free (incl. owl-alpha)
+// rate-limita brutal — cada call 5-15s con retries, así no entra ni 1 batch
+// en el 60s de Vercel Hobby. Groq llama-3.1-8b-instant: 0.5-2s/call. Para
+// pruebas de calidad puntuales: SCORER_PRIMARY=openrouter en env.
 const PRIMARY: Provider =
-  (process.env.SCORER_PRIMARY?.toLowerCase() as Provider) || "openrouter";
+  (process.env.SCORER_PRIMARY?.toLowerCase() as Provider) || "groq";
 
 // 2026-05: probamos openrouter/owl-alpha — modelo con contexto largo, útil
 // porque algunos earnings transcripts vienen con bodies grandes. Si falla
