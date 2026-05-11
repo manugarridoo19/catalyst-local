@@ -49,9 +49,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Forzamos owl-alpha como primary aunque el env no lo diga.
+  // Forzamos owl-alpha como primary. OVERRIDE INCONDICIONAL — si .env.local
+  // tiene OPENROUTER_MODEL apuntando a otro modelo (ej. el fantasma viejo),
+  // el `||` lo respetaba en vez de owl-alpha. Lo pisamos siempre.
   process.env.SCORER_PRIMARY = "openrouter";
-  process.env.OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/owl-alpha";
+  process.env.OPENROUTER_MODEL = "openrouter/owl-alpha";
 
   const { sql } = await import("drizzle-orm");
   const { db } = await import("../lib/db");
