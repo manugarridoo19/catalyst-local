@@ -1,9 +1,14 @@
 name: refresh-news
 
-# GitHub Actions cron — 5-min minimum on free tier. Compensa el límite de
-# Vercel Hobby (1 cron/día). Llama al endpoint de producción con el
-# CRON_SECRET almacenado como GitHub Secret. No usa ningún input untrusted
-# del evento, solo el secret y URLs hardcodeadas.
+# GitHub Actions cron — 5-min minimum en free tier. Las schedules de free
+# pueden retrasarse 5-60 min cuando GitHub está cargado; conviene
+# duplicar el trigger en cron-job.org si quieres tiempos consistentes.
+#
+# Helper hit() reintenta 1 vez tras 10s si el endpoint devuelve 5xx, así
+# blips transitorios (504 puntual, rate-limit cascada) no marcan failure ni
+# disparan emails. Solo errores sostenidos (3 ticks seguidos) llegan al
+# health-check.yml que abre un issue.
+
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -12,7 +17,7 @@ on:
 jobs:
   trigger:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
       - name: Hit refresh-news endpoint
         env:
@@ -23,12 +28,25 @@ jobs:
             echo "::error::CRON_SECRET secret missing"
             exit 1
           fi
-          response=$(curl -sS -w "\n%{http_code}" \
-            -H "Authorization: Bearer $CRON_SECRET" \
-            "$ENDPOINT")
+          hit() {
+            curl -sS --max-time 120 -w "\n%{http_code}" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              "$ENDPOINT"
+          }
+          response=$(hit)
           body=$(echo "$response" | head -n -1)
           code=$(echo "$response" | tail -n 1)
-          echo "HTTP $code"
+          echo "attempt 1: HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "$body" | head -c 500
+            echo
+            echo "retrying in 10s..."
+            sleep 10
+            response=$(hit)
+            body=$(echo "$response" | head -n -1)
+            code=$(echo "$response" | tail -n 1)
+            echo "attempt 2: HTTP $code"
+          fi
           echo "$body" | head -c 1000
           if [ "$code" != "200" ]; then exit 1; fi
 
@@ -36,15 +54,27 @@ jobs:
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           ENDPOINT: "https://catalyst-local.vercel.app/api/cron/score-orphans"
-        # Pesca cualquier noticia que quedó sin score del refresh anterior
-        # (cuando el batch entró saturado o algún provider falló). Asegura
-        # que toda news con ticker termina scoreada en <10 min de su llegada.
+        # Pesca cualquier noticia sin score del refresh anterior. Mismo
+        # patrón de retry — transient 504s del LLM no generan email.
         run: |
-          response=$(curl -sS -w "\n%{http_code}" \
-            -H "Authorization: Bearer $CRON_SECRET" \
-            "$ENDPOINT")
+          hit() {
+            curl -sS --max-time 120 -w "\n%{http_code}" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              "$ENDPOINT"
+          }
+          response=$(hit)
           body=$(echo "$response" | head -n -1)
           code=$(echo "$response" | tail -n 1)
-          echo "HTTP $code"
+          echo "attempt 1: HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "$body" | head -c 500
+            echo
+            echo "retrying in 10s..."
+            sleep 10
+            response=$(hit)
+            body=$(echo "$response" | head -n -1)
+            code=$(echo "$response" | tail -n 1)
+            echo "attempt 2: HTTP $code"
+          fi
           echo "$body" | head -c 1000
           if [ "$code" != "200" ]; then exit 1; fi
