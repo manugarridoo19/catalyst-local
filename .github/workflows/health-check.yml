@@ -45,6 +45,7 @@ jobs:
         id: runs
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           recent=$(gh run list --workflow refresh-news.yml -L 3 \
             --json conclusion --jq '[.[].conclusion] | join(",")')
@@ -58,6 +59,7 @@ jobs:
       - name: Open or update alert issue
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           AGE: ${{ steps.health.outputs.age }}
           INSERTED_H: ${{ steps.health.outputs.inserted_h }}
           UNSCORED: ${{ steps.health.outputs.unscored }}
