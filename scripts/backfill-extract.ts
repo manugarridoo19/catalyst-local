@@ -12,11 +12,14 @@ async function main() {
   const { news, newsTickers, tickers } = await import("../lib/db/schema");
   const { sql } = await import("drizzle-orm");
   const { extractTickers } = await import("../lib/tickers/extractor");
-  const { loadAliases, upsertTickers } = await import("../lib/db/queries");
+  const { loadAliases, loadKnownSymbols, upsertTickers } = await import("../lib/db/queries");
 
-  // Cargar aliases una vez (cacheable in-memory).
-  const aliases = await loadAliases();
-  console.log(`[backfill-extract] ${aliases.length} aliases loaded`);
+  // Cargar aliases + known symbols (para leading-ticker regex).
+  const [aliases, knownSymbols] = await Promise.all([
+    loadAliases(),
+    loadKnownSymbols(),
+  ]);
+  console.log(`[backfill-extract] ${aliases.length} aliases + ${knownSymbols.size} known symbols loaded`);
 
   // Noticias sin ningún ticker asociado.
   const orphaned = await db.execute(sql`
@@ -48,7 +51,7 @@ async function main() {
       body: r.body ?? undefined,
       apiTickers: [],
     };
-    const extracted = extractTickers(item, aliases);
+    const extracted = extractTickers(item, aliases, { knownSymbols });
     if (extracted.length === 0) continue;
 
     // Asegurar que los tickers existen.

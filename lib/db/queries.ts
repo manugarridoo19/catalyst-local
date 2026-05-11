@@ -108,6 +108,13 @@ export async function loadAliases() {
   return db.select().from(tickerAliases);
 }
 
+// Symbol set para el extractor leading-ticker pattern. Una sola query, cabe
+// en memoria fácil (391 tickers actuales × ~5 bytes = 2KB).
+export async function loadKnownSymbols(): Promise<Set<string>> {
+  const rows = await db.select({ symbol: tickers.symbol }).from(tickers);
+  return new Set(rows.map((r) => r.symbol));
+}
+
 export type FeedRow = {
   id: number;
   url: string;

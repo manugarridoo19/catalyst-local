@@ -8,6 +8,11 @@ const BLOCKLIST = new Set([
   "NOT","NOW","OUR","OUT","SHE","THE","TOO","WAS","WHO","YOU","ALL","DAY","ETF","CEO","CFO",
   "CTO","COO","IPO","SEC","FED","GDP","CPI","PPI","USA","USD","EUR","GBP","JPY","CHF","ESG",
   "AI","ML","API","SaaS","B2B","B2C","M&A","Q1","Q2","Q3","Q4","FY","YOY","YTD","EOD","EOY",
+  // 2026-05: acrónimos financieros que el leading-ticker regex confundía
+  // con tickers (EPS Beat Q1 → matcheaba "EPS"). No son tickers reales.
+  "EPS","EBIT","EBITDA","ROI","ROE","ROIC","ROCE","CAGR","FOMC","LIBOR",
+  "SOFR","ECB","BOE","BOJ","OPEC","BRICS","NATO","UN","WTO","IMF","WHO",
+  "FDA","FTC","DOJ","IRS","SBA","NHTSA","EPA","NASA","DOD","DOE","HHS",
 ]);
 
 // Aliases denylist: palabras inglesas demasiado comunes para tratarlas como
@@ -59,6 +64,18 @@ const TICKER_REGEX = /\$([A-Z]{1,5})\b/g;
 const PAREN_TICKER_REGEX =
   /\((?:(?:NYSE|NASDAQ|NYSEARCA|OTCMKTS|NASDAQGS|NASDAQGM|NASDAQCM|AMEX|TSX|TSXV|LSE|HKEX|ASX|BATS|SSE|SEHK|BME):)?([A-Z]{2,5})\)/g;
 
+// Patrón "TICKER al inicio del headline" — convención de earnings recaps en
+// MarketBeat/Zacks/TipRanks: "MBIA Q1 Earnings Call", "MKTX Beats Estimates",
+// "RDNT Reports Q1". Para minimizar false positives (EPS Beat, USA Reports),
+// EXIGIMOS que la palabra siguiente sea un indicador inequívoco de
+// earnings/movimiento. Combinado con BLOCKLIST + API_ONLY queda muy seguro.
+const LEADING_TICKER_REGEX =
+  /^([A-Z]{2,5})\s+(?:Q[1-4]\b|FY\d*|Reports?\b|Beats?\b|Misses?\b|Falls?\b|Jumps?\b|Surges?\b|Plunges?\b|Tumbles?\b|Soars?\b|Rallies\b|Rises?\b|Drops?\b|Crashes?\b|Earnings\b|Stock\b|Shares\b|Announces?\b|Issues?\b|Lowers?\b|Raises?\b|Tops?\b|Hits?\b|Slips?\b)/;
+
+// Possessive form: "MSFT's Q1", "AMZN's Q3 results" — sin keyword constraint
+// porque la 's posesiva ya es señal fuerte (rara en palabras no-ticker).
+const POSSESSIVE_TICKER_REGEX = /^([A-Z]{2,5})['']s\s/;
+
 export type TickerAlias = { alias: string; symbol: string };
 
 // Combina los tickers anotados por el proveedor + extracción por regex
@@ -67,9 +84,10 @@ export type TickerAlias = { alias: string; symbol: string };
 export function extractTickers(
   item: NormalizedNewsItem,
   aliases: TickerAlias[],
-  options: { maxPerItem?: number } = {},
+  options: { maxPerItem?: number; knownSymbols?: Set<string> } = {},
 ): ExtractedTicker[] {
   const max = options.maxPerItem ?? 8;
+  const known = options.knownSymbols ?? null;
   const seen = new Map<string, ExtractedTicker>();
 
   // 1) Tickers anotados por la API (alta confianza).
@@ -94,7 +112,29 @@ export function extractTickers(
     seen.set(s, { symbol: s, method: "regex" });
   }
 
-  // 2b) Patrón "(NASDAQ:CEG)" / "(HP)" — convención muy común en earnings
+  // 2b) Patrón "TICKER ..." al inicio del headline. El regex estricto exige
+  // keyword de earnings/movimiento tras el ticker (Q1/Reports/Beats/etc.) lo
+  // que descarta ruido tipo "EPS Beat" (EPS en BLOCKLIST igualmente). Permite
+  // DESCUBRIR tickers nuevos: si MBIA aparece por primera vez, lo sumamos
+  // aquí y el upsert downstream lo añade a la tabla `tickers`. El parámetro
+  // `knownSymbols` es opcional — si se pasa, prioriza tickers conocidos,
+  // pero ya no es necesario para que el match funcione.
+  for (const re of [LEADING_TICKER_REGEX, POSSESSIVE_TICKER_REGEX]) {
+    const m = item.headline.match(re);
+    if (m) {
+      const s = m[1];
+      if (
+        s &&
+        !BLOCKLIST.has(s) &&
+        !API_ONLY_TICKERS.has(s) &&
+        !seen.has(s)
+      ) {
+        seen.set(s, { symbol: s, method: "regex" });
+      }
+    }
+  }
+
+  // 2c) Patrón "(NASDAQ:CEG)" / "(HP)" — convención muy común en earnings
   // headlines y RSS de financial press. Permite recuperar tickers que no
   // están en el alias dict (como CEG, CNQ, HP) ni en apiTickers (RSS no
   // siempre tagea). Misma protección API_ONLY: rechazamos "(C)" "(V)".

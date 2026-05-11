@@ -13,6 +13,7 @@ import {
   getTopTickersForFetch,
   insertNewsWithTickers,
   loadAliases,
+  loadKnownSymbols,
   upsertTickers,
 } from "@/lib/db/queries";
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
@@ -93,12 +94,15 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   }
   const deduped = Array.from(byHash.values());
 
-  // 3) Cargar aliases + extraer tickers.
-  const aliases = await loadAliases();
+  // 3) Cargar aliases + known symbols + extraer tickers.
+  const [aliases, knownSymbols] = await Promise.all([
+    loadAliases(),
+    loadKnownSymbols(),
+  ]);
   const itemsWithTickers: { item: NormalizedNewsItem; tickers: ExtractedTicker[] }[] =
     deduped.map((item) => ({
       item,
-      tickers: extractTickers(item, aliases),
+      tickers: extractTickers(item, aliases, { knownSymbols }),
     }));
 
   // 4) Asegurar que todos los símbolos detectados estén en `tickers`.
