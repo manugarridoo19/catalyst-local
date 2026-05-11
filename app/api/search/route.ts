@@ -11,13 +11,19 @@ export async function GET(req: Request) {
   if (q.length < 1) return NextResponse.json({ results: [] });
   try {
     const raw = await searchSymbols(q);
-    const results = raw
-      .filter((r) => r.type === "Common Stock" || r.type === "ADR")
-      .slice(0, 10)
-      .map((r) => ({
-        symbol: r.displaySymbol || r.symbol,
-        name: r.description,
-      }));
+    // Finnhub devuelve el mismo `displaySymbol` para múltiples exchanges
+    // (META en NASDAQ, META.BA en Buenos Aires, META.NEO en Neo). El cliente
+    // usa `key={r.symbol}` así que duplicates crashea React. Dedupe primero.
+    const seen = new Set<string>();
+    const results: { symbol: string; name: string }[] = [];
+    for (const r of raw) {
+      if (r.type !== "Common Stock" && r.type !== "ADR") continue;
+      const symbol = r.displaySymbol || r.symbol;
+      if (!symbol || seen.has(symbol)) continue;
+      seen.add(symbol);
+      results.push({ symbol, name: r.description });
+      if (results.length >= 10) break;
+    }
     return NextResponse.json({ results });
   } catch (err) {
     return NextResponse.json(

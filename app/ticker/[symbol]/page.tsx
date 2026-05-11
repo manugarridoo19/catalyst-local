@@ -65,11 +65,15 @@ export default async function TickerPage({
   const change = quote?.dp ?? null;
 
   return (
-    <div className="flex min-h-full flex-1 flex-col">
+    // h-screen + overflow-hidden encierra el layout en el viewport. Sin esto,
+    // el chart TradingView (autosize) crece a la altura natural del iframe
+    // de TV (~600px ó más) y la página se hace scrollable sin sentido —
+    // bajas y bajas dentro del chart en vez de ver la lista de noticias.
+    <div className="flex h-screen flex-col overflow-hidden">
       <Header />
 
       {/* Hero */}
-      <section className="relative overflow-hidden border-b border-border/70 bg-gradient-to-br from-card/50 via-card/30 to-transparent px-6 py-5">
+      <section className="relative shrink-0 overflow-hidden border-b border-border/70 bg-gradient-to-br from-card/50 via-card/30 to-transparent px-6 py-5">
         <div className="absolute inset-0 -z-0 opacity-[0.04] [mask-image:radial-gradient(circle_at_top_left,black,transparent_70%)]">
           <div className="h-full w-full bg-[radial-gradient(circle_at_30%_50%,oklch(0.78_0.13_75)_0%,transparent_60%)]" />
         </div>
@@ -154,12 +158,17 @@ export default async function TickerPage({
         </div>
       </section>
 
-      {/* Chart left, news right */}
-      <div className="grid flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[1fr_440px]">
-        <main className="relative flex flex-col overflow-hidden border-b border-border/60 lg:border-b-0 lg:border-r">
+      {/* Chart left, news right.
+          Móvil: una columna, chart altura fija razonable y news debajo
+          scrollable como parte del flujo de página.
+          Desktop: chart fill + news 440px panel lateral, ambos contenidos.
+          min-h-0 es crítico — sin él los hijos flex no pueden achicarse
+          y se desbordan, causando el efecto "estirado horizontal" que veías. */}
+      <div className="flex flex-1 min-h-0 flex-col overflow-y-auto lg:grid lg:grid-cols-[minmax(0,1fr)_440px] lg:overflow-hidden">
+        <main className="relative flex h-[50vh] min-h-[320px] flex-col overflow-hidden border-b border-border/60 lg:h-auto lg:border-b-0 lg:border-r">
           <TradingViewChart symbol={symbol} />
         </main>
-        <aside className="overflow-hidden">
+        <aside className="min-h-0 flex-1 lg:overflow-hidden">
           <NewsSidePanel symbol={symbol} items={news} />
         </aside>
       </div>
