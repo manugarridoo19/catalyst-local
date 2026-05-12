@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { formatDistanceToNowStrict } from "date-fns";
-import { ExternalLink, ArrowRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { ImpactBadge, SentimentBadge } from "./score-badges";
 import { CategoryBadge } from "./category-badge";
+import { NewsExpanded, cleanSource, sentimentClasses } from "./news-shared";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import type { FeedItem } from "@/lib/feed-types";
 import { cn } from "@/lib/utils";
@@ -45,10 +46,6 @@ function sourceChip(source: string) {
   return { label: "MKT", tint: "from-zinc-400/40 to-zinc-600/15" };
 }
 
-function cleanSource(source: string) {
-  return source.replace(/^(rss:|finnhub:|marketaux:|gnews:)/, "");
-}
-
 type Props = {
   item: FeedItem;
   fresh?: boolean;
@@ -72,24 +69,7 @@ export function NewsCard({
     item.sentiment == null ? null : item.sentiment > 0 ? "▲" : item.sentiment < 0 ? "▼" : null;
   const chip = sourceChip(item.source);
   const isHighImpact = (item.impact ?? 0) >= 4;
-  const isExtreme = Math.abs(item.sentiment ?? 0) >= 3;
-
-  // Borde izquierdo coloreado por sentiment + grosor por impact.
-  const sentimentTone =
-    item.sentiment == null
-      ? "border-l-transparent"
-      : item.sentiment >= 2
-        ? "border-l-emerald-500/80"
-        : item.sentiment <= -2
-          ? "border-l-rose-500/80"
-          : "border-l-border/30";
-
-  const sentimentBg =
-    isExtreme && item.sentiment != null
-      ? item.sentiment > 0
-        ? "from-emerald-500/[0.04] via-transparent to-transparent"
-        : "from-rose-500/[0.04] via-transparent to-transparent"
-      : "from-transparent via-transparent to-transparent";
+  const { tone: sentimentTone, bg: sentimentBg } = sentimentClasses(item.sentiment);
 
   return (
     <article
@@ -207,50 +187,26 @@ export function NewsCard({
       {expanded && (
         <div className="card-expand border-t border-border/30 bg-card/30 px-5 py-4">
           <div className="ml-32 mr-4 max-w-3xl">
-            {item.body ? (
-              <p className="font-editorial text-[14px] leading-relaxed text-foreground/90">
-                {item.body}
-              </p>
-            ) : (
-              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/60">
-                No summary captured for this item.
-              </p>
-            )}
-            {item.rationale && (
-              <div className="mt-3 border-l-2 border-primary/40 bg-primary/[0.04] px-3 py-2">
-                <div className="font-mono text-[9px] uppercase tracking-[0.22em] text-primary/80">
-                  AI rationale
-                </div>
-                <p className="font-editorial mt-1 text-[13px] italic leading-relaxed text-foreground/85">
-                  {item.rationale}
-                </p>
-              </div>
-            )}
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <a
-                href={item.url}
-                target="_blank"
-                rel="noreferrer noopener"
-                onClick={(e) => e.stopPropagation()}
-                className="inline-flex items-center gap-1.5 rounded-sm border border-primary/40 bg-primary/[0.08] px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-primary transition-colors hover:bg-primary/15"
-              >
-                Read full article
-                <ExternalLink className="h-3 w-3" />
-              </a>
-              {primary && (
-                <Link
-                  href={`/ticker/${primary}?news=${item.id}`}
-                  onClick={(e) => e.stopPropagation()}
-                  className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-card/60 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-foreground transition-colors hover:border-foreground/30 hover:text-primary"
-                >
-                  Open {primary}
-                  <ArrowRight className="h-3 w-3" />
-                </Link>
-              )}
-              <span className="ml-auto font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/50">
-                Click again to collapse
-              </span>
-            </div>
+            <NewsExpanded
+              item={item}
+              extra={
+                <>
+                  {primary && (
+                    <Link
+                      href={`/ticker/${primary}?news=${item.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-card/60 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-foreground transition-colors hover:border-foreground/30 hover:text-primary"
+                    >
+                      Open {primary}
+                      <ArrowRight className="h-3 w-3" />
+                    </Link>
+                  )}
+                  <span className="ml-auto font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/50">
+                    Click again to collapse
+                  </span>
+                </>
+              }
+            />
           </div>
         </div>
       )}

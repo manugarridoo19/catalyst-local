@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { formatDistanceToNowStrict } from "date-fns";
-import { ExternalLink } from "lucide-react";
 import { ImpactBadge, SentimentBadge } from "@/components/feed/score-badges";
 import { CategoryBadge } from "@/components/feed/category-badge";
+import { NewsExpanded, cleanSource, sentimentClasses } from "@/components/feed/news-shared";
 import type { FeedItem } from "@/lib/feed-types";
 import { cn } from "@/lib/utils";
 
@@ -24,10 +24,6 @@ const CATEGORY_FILTERS = [
 ];
 
 type CategoryFilter = (typeof CATEGORY_FILTERS)[number]["id"];
-
-function cleanSource(source: string) {
-  return source.replace(/^(rss:|finnhub:|marketaux:|gnews:)/, "");
-}
 
 // Lista visual de noticias del ticker. Click toggles expand inline. Si
 // llegas con ?news=ID, esa noticia aparece expandida y hace scroll.
@@ -144,23 +140,7 @@ const NewsRow = function NewsRow({
   const ago = formatDistanceToNowStrict(new Date(item.publishedAt), {
     addSuffix: false,
   });
-  const isExtreme = Math.abs(item.sentiment ?? 0) >= 3;
-
-  const sentimentTone =
-    item.sentiment == null
-      ? "border-l-transparent"
-      : item.sentiment >= 2
-        ? "border-l-emerald-500/70"
-        : item.sentiment <= -2
-          ? "border-l-rose-500/70"
-          : "border-l-border/30";
-
-  const sentimentBg =
-    isExtreme && item.sentiment != null
-      ? item.sentiment > 0
-        ? "from-emerald-500/[0.05] via-transparent to-transparent"
-        : "from-rose-500/[0.05] via-transparent to-transparent"
-      : "from-transparent via-transparent to-transparent";
+  const { tone: sentimentTone, bg: sentimentBg } = sentimentClasses(item.sentiment);
 
   return (
     <div
@@ -203,34 +183,7 @@ const NewsRow = function NewsRow({
 
       {expanded && (
         <div className="card-expand border-t border-border/30 bg-card/40 px-4 py-3">
-          {item.body ? (
-            <p className="font-editorial text-[13px] leading-relaxed text-foreground/90">
-              {item.body}
-            </p>
-          ) : (
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/60">
-              No summary captured.
-            </p>
-          )}
-          {item.rationale && (
-            <div className="mt-2 border-l-2 border-primary/40 bg-primary/[0.04] px-2.5 py-1.5">
-              <div className="font-mono text-[8px] uppercase tracking-[0.22em] text-primary/80">
-                AI rationale
-              </div>
-              <p className="font-editorial mt-0.5 text-[12px] italic leading-relaxed text-foreground/85">
-                {item.rationale}
-              </p>
-            </div>
-          )}
-          <a
-            href={item.url}
-            target="_blank"
-            rel="noreferrer noopener"
-            onClick={(e) => e.stopPropagation()}
-            className="mt-3 inline-flex items-center gap-1.5 rounded-sm border border-primary/40 bg-primary/[0.08] px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-primary transition-colors hover:bg-primary/15"
-          >
-            Read full article <ExternalLink className="h-3 w-3" />
-          </a>
+          <NewsExpanded item={item} compact />
         </div>
       )}
     </div>
