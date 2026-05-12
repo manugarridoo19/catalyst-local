@@ -41,6 +41,20 @@ export function FeedList({ initial, watchlist = [] }: Props) {
     if (!pusher) return;
     const channel = pusher.subscribe(NEWS_CHANNEL);
     const onNew = (data: LivePayload) => {
+      // Live feed = solo today (UTC). Filtramos broadcasts de noticias que
+      // se publicaron antes del UTC midnight de hoy — típicamente son
+      // re-broadcast de score-orphans sobre backlog viejo, que pertenecen
+      // a la ticker page pero no al live feed.
+      const cutoff = Date.UTC(
+        new Date().getUTCFullYear(),
+        new Date().getUTCMonth(),
+        new Date().getUTCDate(),
+      );
+      const inWindow = data.items.filter(
+        (it) => new Date(it.publishedAt).getTime() >= cutoff,
+      );
+      if (!inWindow.length) return;
+
       // Detectamos cuáles items son GENUINAMENTE nuevos (no estaban antes)
       // para evitar re-spamear toast/animación cuando llega el segundo
       // broadcast (score-orphans rebroadcast con score). Usamos el
@@ -48,8 +62,8 @@ export function FeedList({ initial, watchlist = [] }: Props) {
       let actuallyNew: FeedItem[] = [];
       setItems((prev) => {
         const existingIds = new Set(prev.map((p) => p.id));
-        actuallyNew = data.items.filter((it) => !existingIds.has(it.id));
-        return mergeFeed(data.items, prev);
+        actuallyNew = inWindow.filter((it) => !existingIds.has(it.id));
+        return mergeFeed(inWindow, prev);
       });
 
       if (actuallyNew.length === 0) return;

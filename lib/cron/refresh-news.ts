@@ -17,6 +17,7 @@ import {
   upsertTickers,
 } from "@/lib/db/queries";
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
+import { RETENTION_DAYS } from "@/lib/time-windows";
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 
 // Refresh-news NO scorea. Fetch + insert + enrich ya consume 30-40s en
@@ -26,9 +27,9 @@ import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 // badges Signif/Sent aparecen cuando score-orphans rebroadcast con
 // score → el cliente actualiza el card in-place por id.
 
-// Retención: borramos news >14 días al final de cada cron para no saturar
-// la BD. La home queda orientada a presente/futuro.
-const RETENTION_DAYS = 14;
+// Retención: ver lib/time-windows.ts (20 días). Live feed muestra solo
+// today; ticker pages 15 días; el buffer extra (>15d) cubre lookback
+// para usuarios que naveguen ticker pages al borde de la ventana.
 
 export type CronResult = {
   fetched: {

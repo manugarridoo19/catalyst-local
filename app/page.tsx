@@ -3,6 +3,7 @@ import { FeedList } from "@/components/feed/feed-list";
 import { WatchlistPanel } from "@/components/watchlist/watchlist-panel";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
+import { startOfTodayUtc } from "@/lib/time-windows";
 import type { FeedItem } from "@/lib/feed-types";
 
 export const dynamic = "force-dynamic";
@@ -21,10 +22,9 @@ async function loadInitial(): Promise<{
   try {
     const session = await getSessionId();
     const [feedRows, watchRows] = await Promise.all([
-      // Default: solo noticias con ticker asociado — para que cada tarjeta
-      // tenga logo + símbolo. La pestaña "All" del FeedList puede pedir el
-      // resto vía API (TBD).
-      getFeed({ limit: 100, requireTicker: true }),
+      // Live feed: solo noticias del día (UTC) con ticker asociado. Las más
+      // antiguas viven en las páginas de ticker dentro de su ventana de 15d.
+      getFeed({ limit: 100, requireTicker: true, since: startOfTodayUtc() }),
       getWatchlist(session),
     ]);
 

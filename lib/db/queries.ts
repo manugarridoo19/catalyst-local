@@ -135,6 +135,7 @@ export type FeedRow = {
 export async function getFeed(opts: {
   limit?: number;
   before?: Date;
+  since?: Date;
   symbol?: string;
   minImpact?: number;
   requireTicker?: boolean;
@@ -153,6 +154,7 @@ export async function getFeed(opts: {
 
   const conditions = [] as ReturnType<typeof eq>[];
   if (opts.before) conditions.push(sql`${news.publishedAt} < ${opts.before}` as never);
+  if (opts.since) conditions.push(sql`${news.publishedAt} >= ${opts.since}` as never);
   if (opts.minImpact)
     conditions.push(sql`${newsScores.impact} >= ${opts.minImpact}` as never);
   if (opts.requireTicker)

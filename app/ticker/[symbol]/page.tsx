@@ -9,6 +9,7 @@ import { WatchlistToggle } from "@/components/ticker/watchlist-toggle";
 import { getProfile, getQuote } from "@/lib/providers/finnhub";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
+import { fifteenDaysAgo } from "@/lib/time-windows";
 import type { FeedItem } from "@/lib/feed-types";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +36,7 @@ export default async function TickerPage({
   const [profile, quote, newsRows, watchlist, metaMap] = await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
-    getFeed({ symbol, limit: 80 }).catch(() => []),
+    getFeed({ symbol, limit: 80, since: fifteenDaysAgo() }).catch(() => []),
     getWatchlist(session).catch(() => []),
     getTickerMetaMap([symbol]),
   ]);
