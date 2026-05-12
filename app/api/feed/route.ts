@@ -24,7 +24,7 @@ export async function GET(req: Request) {
     const rows = await getFeed({
       ...(symbol
         ? { symbol, since: fifteenDaysAgo(), rankBySignal: true }
-        : { since: startOfTodayUtc(), requireTicker: true }),
+        : { since: startOfTodayUtc(), requireTicker: true, rankBySignal: true }),
       limit,
       offset,
     });

@@ -22,9 +22,16 @@ async function loadInitial(): Promise<{
   try {
     const session = await getSessionId();
     const [feedRows, watchRows] = await Promise.all([
-      // Live feed: solo noticias del día (UTC) con ticker asociado. Las más
-      // antiguas viven en las páginas de ticker dentro de su ventana de 15d.
-      getFeed({ limit: 100, requireTicker: true, since: startOfTodayUtc() }),
+      // Live feed: solo noticias del día (UTC) con ticker asociado, ordenado
+      // signal-first para que arriba aparezcan ANALYST/EARNINGS/M&A y las
+      // OTHER de Yahoo/aggregators queden al fondo. Las más antiguas viven
+      // en las páginas de ticker dentro de su ventana de 15d.
+      getFeed({
+        limit: 100,
+        requireTicker: true,
+        since: startOfTodayUtc(),
+        rankBySignal: true,
+      }),
       getWatchlist(session),
     ]);
 

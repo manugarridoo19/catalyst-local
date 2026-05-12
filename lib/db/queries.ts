@@ -266,8 +266,13 @@ export async function getFeed(opts: {
       .leftJoin(tickersAgg, eq(tickersAgg.newsId, news.id))
       .leftJoin(newsScores, eq(newsScores.newsId, news.id))
       .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(desc(news.publishedAt))
-      .limit(limit);
+      .orderBy(
+        ...(opts.rankBySignal
+          ? [desc(SIGNAL_RANK_SQL), desc(news.publishedAt)]
+          : [desc(news.publishedAt)]),
+      )
+      .limit(limit)
+      .offset(offset);
   }
 
   return rows.map((r) => ({
