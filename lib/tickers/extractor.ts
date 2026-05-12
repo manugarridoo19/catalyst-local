@@ -36,6 +36,13 @@ const ALIAS_DENYLIST = new Set([
   // Otros candidatos comunes en headlines genéricos
   "growth", "earnings", "revenue", "stock", "shares", "price", "value",
   "report", "rating", "quarter", "annual", "fiscal", "guidance",
+  // 2026-05-12 — audit visual detectó:
+  //   "Sterling" → STRL machó GBP currency: "sterling slumps", "sterling rises",
+  //     "sterling rate". STRL legítimo solo via "Sterling Infrastructure"
+  //     (alias 2-word existente).
+  //   "Block" → XYZ machó "block deal" (jerga india de bolsa, op. en bloque).
+  //     XYZ legítimo solo via "Block Inc" (alias 2-word).
+  "sterling", "block",
 ]);
 
 // Tickers que SOLO deben extraerse si la fuente API los anotó explícitamente.

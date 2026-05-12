@@ -33,7 +33,10 @@ export const TICKER_SEEDS: TickerSeed[] = [
   { symbol: "PYPL", name: "PayPal Holdings Inc", aliases: ["PayPal"] },
   { symbol: "UBER", name: "Uber Technologies Inc", aliases: ["Uber"] },
   { symbol: "SHOP", name: "Shopify Inc", aliases: ["Shopify"] },
-  { symbol: "SQ", name: "Block Inc", aliases: ["Block Inc", "Square Inc"] },
+  // Block Inc renombró ticker SQ → XYZ en Aug 2025. SQ se mantiene por
+  // datos históricos pero las menciones actuales deben atribuirse a XYZ.
+  { symbol: "XYZ", name: "Block Inc", aliases: ["Block Inc"] },
+  { symbol: "SQ", name: "Block Inc (legacy)", aliases: ["Square Inc"] },
   { symbol: "PLTR", name: "Palantir Technologies Inc", aliases: ["Palantir"] },
   { symbol: "SNOW", name: "Snowflake Inc", aliases: ["Snowflake"] },
   { symbol: "SOFI", name: "SoFi Technologies Inc", aliases: ["SoFi"] },
