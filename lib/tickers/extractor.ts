@@ -76,6 +76,92 @@ const LEADING_TICKER_REGEX =
 // porque la 's posesiva ya es señal fuerte (rara en palabras no-ticker).
 const POSSESSIVE_TICKER_REGEX = /^([A-Z]{2,5})['']s\s/;
 
+// 2026-05-12: Analyst-action headlines.
+//   "JPMorgan raises Vista Oil stock price target to $93 on acquisition"
+//   "Bank of America Raises Nebius Group (NASDAQ:NBIS) Price Target"
+//   "Cantor Fitzgerald lowers LTC Properties stock price target..."
+// El sujeto del verbo es la FIRMA, no la empresa. Por convención de feeds
+// (Investing.com, MarketBeat, Tipranks) la firma siempre aparece al inicio
+// del headline. Si la firma matchea su propio alias dict (JPMorgan→JPM),
+// el ticker del banco se atribuye a una noticia que materialmente no le
+// afecta (el rating no mueve a JPM, mueve a Vista Oil). Resultado real
+// observado: 40+ falsos linkings en 24h, todos con sent=0 sign=0.
+//
+// Fix: si el headline matchea `^<FIRMA> (verbo de acción)`, suprimimos los
+// tickers de la firma de TODAS las fuentes (api/regex/dict). La noticia
+// queda atribuida solo a la empresa target — si esa empresa no está en el
+// alias dict, la noticia queda sin ticker (mejor que mislinkeada).
+const ANALYST_FIRMS: Array<{ name: string; suppress: string[] }> = [
+  { name: "JPMorgan", suppress: ["JPM"] },
+  { name: "JP Morgan", suppress: ["JPM"] },
+  { name: "J.P. Morgan", suppress: ["JPM"] },
+  { name: "Morgan Stanley", suppress: ["MS"] },
+  { name: "Goldman Sachs", suppress: ["GS"] },
+  { name: "Goldman", suppress: ["GS"] },
+  { name: "Bank of America", suppress: ["BAC"] },
+  { name: "BofA", suppress: ["BAC"] },
+  { name: "Merrill Lynch", suppress: ["BAC"] },
+  { name: "Wells Fargo", suppress: ["WFC"] },
+  { name: "Citi", suppress: ["C"] },
+  { name: "Citigroup", suppress: ["C"] },
+  { name: "Barclays", suppress: ["BCS"] },
+  { name: "UBS", suppress: ["UBS"] },
+  { name: "Deutsche Bank", suppress: ["DB"] },
+  { name: "HSBC", suppress: ["HSBC"] },
+  { name: "RBC", suppress: ["RY"] },
+  { name: "BMO", suppress: ["BMO"] },
+  { name: "Mizuho", suppress: ["MFG"] },
+  { name: "Stifel", suppress: [] },
+  { name: "Piper Sandler", suppress: [] },
+  { name: "Jefferies", suppress: ["JEF"] },
+  { name: "Truist", suppress: ["TFC"] },
+  { name: "Wedbush", suppress: [] },
+  { name: "Raymond James", suppress: ["RJF"] },
+  { name: "Oppenheimer", suppress: ["OPY"] },
+  { name: "KBW", suppress: [] },
+  { name: "BTIG", suppress: [] },
+  { name: "Cantor Fitzgerald", suppress: ["CEPT"] },
+  { name: "Cantor", suppress: ["CEPT"] },
+  { name: "Needham", suppress: [] },
+  { name: "Baird", suppress: [] },
+  { name: "Evercore", suppress: ["EVR"] },
+  { name: "Macquarie", suppress: [] },
+  { name: "Credit Suisse", suppress: [] },
+];
+
+// Verbos de acción analítica. Incluyen formas sin ambigüedad ("upgrades",
+// "downgrades") y otras más laxas que aparecen siempre tras firma sujeto.
+// "Says/Calls/Rates" son débiles pero solo se aplican cuando preceden a
+// "<TARGET> ..." (no a "Says inflation" etc.); el regex compuesto valida
+// que vengan tras una firma reconocida, así que es seguro.
+const ANALYST_ACTION_VERBS = [
+  "raises", "raise", "cuts", "cut", "maintains", "maintain",
+  "reiterates", "reiterate", "upgrades", "upgrade", "downgrades", "downgrade",
+  "initiates", "initiate", "lifts", "lift", "lowers", "lower",
+  "reaffirms", "reaffirm", "trims", "trim", "boosts", "boost",
+  "drops", "drop", "hikes", "hike", "increases", "increase",
+  "decreases", "decrease", "starts", "start", "begins", "begin",
+  "says", "calls", "names", "rates",
+];
+
+// Conectores opcionales tras la firma ("JPMorgan Chase & Co. Raises ...",
+// "Cantor Fitzgerald Boosts ...", "Goldman Sachs Group Maintains ...").
+const FIRM_SUFFIX_RE = /(?:\s+(?:Chase|Group|Securities|Co\.?|Holdings|Capital|Markets|Bank|Sachs|Fitzgerald|Stanley|Inc\.?|Ltd\.?|&\s*Co\.?|A\s*S))*?/;
+
+function getAnalystSuppressSet(headline: string): Set<string> {
+  // Order by descending length para que "JP Morgan" no sea swallowed por "JP".
+  const sorted = [...ANALYST_FIRMS].sort((a, b) => b.name.length - a.name.length);
+  const verbs = ANALYST_ACTION_VERBS.join("|");
+  for (const firm of sorted) {
+    const escFirm = firm.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`^${escFirm}${FIRM_SUFFIX_RE.source}\\s+(?:${verbs})\\b`, "i");
+    if (re.test(headline)) {
+      return new Set(firm.suppress);
+    }
+  }
+  return new Set();
+}
+
 export type TickerAlias = { alias: string; symbol: string };
 
 // Combina los tickers anotados por el proveedor + extracción por regex
@@ -90,12 +176,20 @@ export function extractTickers(
   const known = options.knownSymbols ?? null;
   const seen = new Map<string, ExtractedTicker>();
 
+  // Detecta "<FIRMA analista> raises/cuts/maintains/... <empresa>" en el
+  // headline. Si matchea, suprimimos los tickers de la firma de todas las
+  // fuentes (api/regex/dict) — el sujeto del verbo es el banco pero el
+  // material event afecta a la empresa target, no al banco.
+  const suppressed = getAnalystSuppressSet(item.headline);
+
   // 1) Tickers anotados por la API (alta confianza).
   for (const sym of item.apiTickers) {
     const s = sym.toUpperCase().trim();
-    if (s && !BLOCKLIST.has(s) && !seen.has(s)) {
-      seen.set(s, { symbol: s, method: "api" });
-    }
+    if (!s) continue;
+    if (BLOCKLIST.has(s)) continue;
+    if (suppressed.has(s)) continue;
+    if (seen.has(s)) continue;
+    seen.set(s, { symbol: s, method: "api" });
   }
 
   const haystack = `${item.headline}\n${item.body ?? ""}`;
@@ -108,6 +202,7 @@ export function extractTickers(
     if (!s) continue;
     if (BLOCKLIST.has(s)) continue;
     if (API_ONLY_TICKERS.has(s)) continue; // solo via provider API
+    if (suppressed.has(s)) continue;
     if (seen.has(s)) continue;
     seen.set(s, { symbol: s, method: "regex" });
   }
@@ -127,6 +222,7 @@ export function extractTickers(
         s &&
         !BLOCKLIST.has(s) &&
         !API_ONLY_TICKERS.has(s) &&
+        !suppressed.has(s) &&
         !seen.has(s)
       ) {
         seen.set(s, { symbol: s, method: "regex" });
@@ -143,6 +239,7 @@ export function extractTickers(
     if (!s) continue;
     if (BLOCKLIST.has(s)) continue;
     if (API_ONLY_TICKERS.has(s)) continue;
+    if (suppressed.has(s)) continue;
     if (seen.has(s)) continue;
     seen.set(s, { symbol: s, method: "regex" });
   }
@@ -159,6 +256,7 @@ export function extractTickers(
     for (const a of aliases) {
       const sym = a.symbol.toUpperCase();
       if (seen.has(sym)) continue;
+      if (suppressed.has(sym)) continue;
       if (API_ONLY_TICKERS.has(sym)) continue;
       if (a.alias.length < 3) continue;
       if (ALIAS_DENYLIST.has(a.alias.toLowerCase())) continue;
