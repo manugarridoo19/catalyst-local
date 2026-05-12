@@ -153,8 +153,16 @@ export async function getFeed(opts: {
     .as("tickers_agg");
 
   const conditions = [] as ReturnType<typeof eq>[];
-  if (opts.before) conditions.push(sql`${news.publishedAt} < ${opts.before}` as never);
-  if (opts.since) conditions.push(sql`${news.publishedAt} >= ${opts.since}` as never);
+  // Postgres-js serializa Date con toString() ("Tue May 12 2026 ..."), no
+  // como timestamp. Convertimos a ISO string + cast explícito.
+  if (opts.before)
+    conditions.push(
+      sql`${news.publishedAt} < ${opts.before.toISOString()}::timestamptz` as never,
+    );
+  if (opts.since)
+    conditions.push(
+      sql`${news.publishedAt} >= ${opts.since.toISOString()}::timestamptz` as never,
+    );
   if (opts.minImpact)
     conditions.push(sql`${newsScores.impact} >= ${opts.minImpact}` as never);
   if (opts.requireTicker)
