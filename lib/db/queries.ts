@@ -132,15 +132,60 @@ export type FeedRow = {
 
 // Devuelve el feed paginado con tickers agregados y scores. Se usa en SSR
 // inicial y en el endpoint de "más noticias".
+// Ranking signal-first para feeds de ticker:
+//   - Categorías de utilidad alta (ANALYST/EARNINGS/MA/GUIDANCE/INSIDER) pesan más
+//   - Impact ≥ 4 boost
+//   - Source tier: marketbeat/seeking-alpha/investing/zacks/tipranks (premium)
+//     por encima de yahoo/aggregators (noise). gnews/finnhub son neutros.
+//   - Finalmente publishedAt DESC para que dentro del mismo bucket vea lo reciente.
+// Resultado: el usuario ve primero la señal accionable, después el resto.
+const SIGNAL_RANK_SQL = sql`(
+  CASE ${news.category}
+    WHEN 'ANALYST'    THEN 50
+    WHEN 'EARNINGS'   THEN 50
+    WHEN 'MA'         THEN 50
+    WHEN 'GUIDANCE'   THEN 45
+    WHEN 'INSIDER'    THEN 40
+    WHEN 'REGULATORY' THEN 35
+    WHEN 'LEGAL'      THEN 25
+    WHEN 'PRODUCT'    THEN 25
+    WHEN 'MACRO'      THEN 15
+    ELSE 5
+  END
+  + COALESCE((CASE WHEN ${newsScores.impact} >= 4 THEN 20 WHEN ${newsScores.impact} >= 3 THEN 10 ELSE 0 END), 0)
+  + CASE
+      WHEN ${news.source} IN (
+        'rss:marketbeat', 'rss:marketbeat-ratings', 'rss:seeking-alpha',
+        'rss:investing-com', 'rss:tipranks', 'rss:zacks'
+      ) THEN 12
+      WHEN ${news.source} IN (
+        'rss:cnbc-business', 'rss:wsj-markets', 'rss:bloomberg',
+        'rss:reuters-business', 'rss:ft-companies', 'rss:barrons',
+        'rss:benzinga', 'rss:benzinga-news', 'rss:motley-fool',
+        'rss:thestreet', 'rss:marketwatch'
+      ) THEN 6
+      WHEN ${news.source} IN (
+        'rss:yahoo-finance', 'rss:kiplinger', 'rss:forbes-markets',
+        'rss:247wallst', 'rss:finviz', 'rss:etftrends'
+      ) THEN -8
+      WHEN ${news.source} LIKE 'finnhub:%' THEN 2
+      WHEN ${news.source} LIKE 'gnews:%' THEN 0
+      ELSE 0
+    END
+)`;
+
 export async function getFeed(opts: {
   limit?: number;
+  offset?: number;
   before?: Date;
   since?: Date;
   symbol?: string;
   minImpact?: number;
   requireTicker?: boolean;
+  rankBySignal?: boolean;
 } = {}): Promise<FeedRow[]> {
   const limit = Math.min(opts.limit ?? 50, 200);
+  const offset = Math.max(opts.offset ?? 0, 0);
 
   // Subquery: agregar tickers por noticia.
   const tickersAgg = db
@@ -194,8 +239,13 @@ export async function getFeed(opts: {
       .where(
         and(eq(newsTickers.ticker, opts.symbol.toUpperCase()), ...conditions),
       )
-      .orderBy(desc(news.publishedAt))
-      .limit(limit);
+      .orderBy(
+        ...(opts.rankBySignal
+          ? [desc(SIGNAL_RANK_SQL), desc(news.publishedAt)]
+          : [desc(news.publishedAt)]),
+      )
+      .limit(limit)
+      .offset(offset);
   } else {
     rows = await db
       .select({

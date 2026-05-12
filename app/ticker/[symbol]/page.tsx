@@ -36,7 +36,12 @@ export default async function TickerPage({
   const [profile, quote, newsRows, watchlist, metaMap] = await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
-    getFeed({ symbol, limit: 80, since: fifteenDaysAgo() }).catch(() => []),
+    getFeed({
+      symbol,
+      limit: 100,
+      since: fifteenDaysAgo(),
+      rankBySignal: true,
+    }).catch(() => []),
     getWatchlist(session).catch(() => []),
     getTickerMetaMap([symbol]),
   ]);

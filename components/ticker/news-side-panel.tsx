@@ -27,19 +27,26 @@ type CategoryFilter = (typeof CATEGORY_FILTERS)[number]["id"];
 
 // Lista visual de noticias del ticker. Click toggles expand inline. Si
 // llegas con ?news=ID, esa noticia aparece expandida y hace scroll.
-export function NewsSidePanel({ symbol, items }: Props) {
+// Load-more: SSR trae las primeras 100 ranked signal-first; cada click
+// del botón añade 50 más vía /api/feed?offset=...
+const PAGE_SIZE = 50;
+
+export function NewsSidePanel({ symbol, items: initial }: Props) {
   const router = useRouter();
   const search = useSearchParams();
   const initialFocused = (() => {
     const n = Number(search.get("news"));
     return Number.isFinite(n) && n > 0 ? n : null;
   })();
+  const [items, setItems] = useState<FeedItem[]>(initial);
   const [expanded, setExpanded] = useState<Set<number>>(() => {
     const s = new Set<number>();
     if (initialFocused) s.add(initialFocused);
     return s;
   });
   const [filter, setFilter] = useState<CategoryFilter>("all");
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(initial.length >= 100);
   const focusedRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -62,6 +69,29 @@ export function NewsSidePanel({ symbol, items }: Props) {
       router.replace(`/ticker/${symbol}${params.size ? `?${params}` : ""}`, {
         scroll: false,
       });
+    }
+  }
+
+  async function loadMore() {
+    if (loading || !hasMore) return;
+    setLoading(true);
+    try {
+      const res = await fetch(
+        `/api/feed?symbol=${symbol}&limit=${PAGE_SIZE}&offset=${items.length}`,
+      );
+      const data = (await res.json()) as { items?: FeedItem[]; hasMore?: boolean };
+      const incoming = data.items ?? [];
+      // Dedupe por id (defensivo — el ranking debería dar IDs distintos por
+      // offset, pero si entran noticias nuevas durante el load, podría
+      // repetirse alguna).
+      const existing = new Set(items.map((i) => i.id));
+      const novel = incoming.filter((i) => !existing.has(i.id));
+      setItems((prev) => [...prev, ...novel]);
+      setHasMore(Boolean(data.hasMore) && incoming.length > 0);
+    } catch {
+      setHasMore(false);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -105,17 +135,40 @@ export function NewsSidePanel({ symbol, items }: Props) {
             No news for this filter.
           </div>
         ) : (
-          filtered.map((it, idx) => (
-            <NewsRow
-              key={it.id}
-              item={it}
-              expanded={expanded.has(it.id)}
-              focused={it.id === initialFocused}
-              onToggle={() => toggle(it.id)}
-              ref={it.id === initialFocused ? focusedRef : undefined}
-              staggerIndex={Math.min(idx, 20)}
-            />
-          ))
+          <>
+            {filtered.map((it, idx) => (
+              <NewsRow
+                key={it.id}
+                item={it}
+                expanded={expanded.has(it.id)}
+                focused={it.id === initialFocused}
+                onToggle={() => toggle(it.id)}
+                ref={it.id === initialFocused ? focusedRef : undefined}
+                staggerIndex={Math.min(idx, 20)}
+              />
+            ))}
+            {hasMore && filter === "all" && (
+              <div className="flex items-center justify-center px-4 py-4">
+                <button
+                  onClick={loadMore}
+                  disabled={loading}
+                  className={cn(
+                    "rounded-sm border border-border/60 bg-card/60 px-4 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] transition-colors",
+                    loading
+                      ? "cursor-wait text-muted-foreground/50"
+                      : "text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                  )}
+                >
+                  {loading ? "Loading…" : `Load ${PAGE_SIZE} more`}
+                </button>
+              </div>
+            )}
+            {!hasMore && filtered.length > 0 && (
+              <div className="px-4 py-4 text-center font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/50">
+                End of feed · 15-day window
+              </div>
+            )}
+          </>
         )}
       </div>
     </aside>
