@@ -8,7 +8,7 @@ config({ path: ".env.local" });
 config({ path: ".env" });
 
 async function main() {
-  const { db } = await import("../lib/db");
+  const { db, unwrapRows } = await import("../lib/db");
   const { news, newsTickers, tickers } = await import("../lib/db/schema");
   const { sql } = await import("drizzle-orm");
   const { extractTickers } = await import("../lib/tickers/extractor");
@@ -30,12 +30,12 @@ async function main() {
     LIMIT 5000
   `);
 
-  const rows = (orphaned.rows ?? orphaned) as Array<{
+  const rows = unwrapRows<{
     id: number;
     headline: string;
     body: string | null;
     source: string;
-  }>;
+  }>(orphaned);
   console.log(`[backfill-extract] ${rows.length} orphaned news to process`);
 
   let totalTagged = 0;
@@ -89,7 +89,7 @@ async function main() {
       COUNT(*) FILTER (WHERE id IN (SELECT news_id FROM news_tickers)) AS tagged
     FROM news
   `);
-  console.log("[backfill-extract] coverage:", finalStats.rows ?? finalStats);
+  console.log("[backfill-extract] coverage:", unwrapRows<{ total: string; tagged: string }>(finalStats));
   process.exit(0);
 }
 
