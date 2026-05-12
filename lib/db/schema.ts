@@ -77,6 +77,9 @@ export const news = pgTable(
     uniqueIndex("news_url_unique").on(t.url),
     uniqueIndex("news_hash_unique").on(t.hash),
     index("news_published_idx").on(t.publishedAt),
+    // Filtro del feed por categoría (tabs Earnings/M&A/Analyst/Guidance/...).
+    // Sin este índice la query era seq-scan sobre ~20k filas + index post-filter.
+    index("news_category_idx").on(t.category),
   ],
 );
 
@@ -112,7 +115,10 @@ export const newsScores = pgTable("news_scores", {
   scoredAt: timestamp("scored_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (t) => [
+  // Filtro "High impact" del feed (impact >= 4). Sin índice era seq-scan.
+  index("news_scores_impact_idx").on(t.impact),
+]);
 
 // Watchlist single-user en v1 — userSession es una cookie.
 export const watchlist = pgTable(
