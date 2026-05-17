@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Activity, Search } from "lucide-react";
 import { getPusherClient, NEWS_CHANNEL, NEWS_EVENT } from "@/lib/pusher/client";
 import { cn } from "@/lib/utils";
@@ -12,6 +13,7 @@ export const OPEN_SEARCH_EVENT = "catalyst:open-search";
 type Status = "connecting" | "live" | "offline";
 
 export function Header() {
+  const pathname = usePathname();
   const [status, setStatus] = useState<Status>("connecting");
   const [now, setNow] = useState<string>("");
   const [lastEvent, setLastEvent] = useState<number | null>(null);
@@ -69,19 +71,30 @@ export function Header() {
 
   return (
     <header className="relative flex items-center justify-between border-b border-border bg-card/40 px-6 py-3 backdrop-blur-sm">
-      <Link href="/" className="flex items-center gap-3 group">
-        <div className="flex h-8 w-8 items-center justify-center rounded-sm bg-primary text-primary-foreground shadow-[0_0_18px_oklch(0.78_0.13_75/0.45)] transition-transform group-hover:scale-105">
-          <Activity className="h-4 w-4" strokeWidth={2.5} />
-        </div>
-        <div>
-          <div className="font-editorial text-lg font-semibold leading-none tracking-tight text-foreground">
-            Catalyst
+      <div className="flex items-center gap-6">
+        <Link href="/" className="flex items-center gap-3 group">
+          <div className="flex h-8 w-8 items-center justify-center rounded-sm bg-primary text-primary-foreground shadow-[0_0_18px_oklch(0.78_0.13_75/0.45)] transition-transform group-hover:scale-105">
+            <Activity className="h-4 w-4" strokeWidth={2.5} />
           </div>
-          <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-            Realtime market intelligence
+          <div>
+            <div className="font-editorial text-lg font-semibold leading-none tracking-tight text-foreground">
+              Catalyst
+            </div>
+            <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+              Realtime market intelligence
+            </div>
           </div>
-        </div>
-      </Link>
+        </Link>
+
+        <nav className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-[0.18em]">
+          <NavTab href="/" active={pathname === "/"}>
+            Live feed
+          </NavTab>
+          <NavTab href="/news" active={pathname?.startsWith("/news") ?? false}>
+            News
+          </NavTab>
+        </nav>
+      </div>
 
       <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
         {/* Search button — clickable, opens palette */}
@@ -132,6 +145,30 @@ export function Header() {
         )}
       </div>
     </header>
+  );
+}
+
+function NavTab({
+  href,
+  active,
+  children,
+}: {
+  href: string;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        "rounded-sm border px-2.5 py-1 transition-all duration-150",
+        active
+          ? "border-primary/60 bg-primary/10 text-primary shadow-[0_0_14px_oklch(0.78_0.13_75/0.25)]"
+          : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+      )}
+    >
+      {children}
+    </Link>
   );
 }
 

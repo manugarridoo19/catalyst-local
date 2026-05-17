@@ -47,8 +47,8 @@ async function main() {
     changed++;
     if (!DRY) {
       await db.update(news).set({ category: newCat }).where(eq(news.id, r.id));
-    } else if (changed <= 20) {
-      console.log(`  ${r.id} → ${newCat}: ${r.headline.slice(0, 90)}`);
+    } else if (DRY && (changed <= 20 || changed % 25 === 0)) {
+      console.log(`  ${r.id} → ${newCat}: ${r.headline.slice(0, 100)}`);
     }
   }
 

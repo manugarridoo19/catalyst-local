@@ -4,13 +4,17 @@ import { WatchlistPanel } from "@/components/watchlist/watchlist-panel";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
 import { getSessionId } from "@/lib/session";
-import { startOfTodayUtc } from "@/lib/time-windows";
-import { LIVE_FEED_CATEGORIES } from "@/lib/categorizer";
+import { fifteenDaysAgo } from "@/lib/time-windows";
+import { NEWS_TAB_CATEGORIES } from "@/lib/categorizer";
 import type { FeedItem } from "@/lib/feed-types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+// News tab — recoge MACRO + OTHER (+ filas sin categoría) que el live
+// feed deja fuera. Ventana 15d para que no quede vacía y suficientemente
+// amplia para macro coverage. Sin requireTicker porque MACRO suele no
+// tener ticker primario asociado.
 async function loadInitial(): Promise<{
   feed: FeedItem[];
   watchlist: {
@@ -25,22 +29,22 @@ async function loadInitial(): Promise<{
   try {
     const session = await getSessionId();
     const [feedRows, watchRows] = await Promise.all([
-      // Live feed: solo noticias del día (UTC) con ticker asociado y
-      // categoría de signal (ANALYST/EARNINGS/MA/GUIDANCE/INSIDER/REG/
-      // LEGAL/PRODUCT). MACRO y OTHER viven en /news. Orden estricto por
-      // publishedAt DESC — el tiempo manda. Items aún sin grading entran
-      // y aparecen con placeholder; Pusher rebroadcast pinta el score
-      // cuando llega.
       getFeed({
         limit: 100,
+        since: fifteenDaysAgo(),
+        categories: NEWS_TAB_CATEGORIES,
+        allowUnknownCategory: true,
+        // Sin ticker fuera. FT y otros sources publican company
+        // announcements donde el nombre de la compañía no está aún en el
+        // alias dict (Finnhub solo enriquece tickers ya conocidos —
+        // chicken-and-egg). El resultado eran cards "ft — Bausch Health
+        // to Participate..." sin badge de símbolo. Filtramos hasta que
+        // exista una pasada de seed de aliases.
         requireTicker: true,
-        since: startOfTodayUtc(),
-        categories: LIVE_FEED_CATEGORIES,
       }),
       getWatchlist(session),
     ]);
 
-    // Recolectar symbols primarios + watchlist para una sola query de meta.
     const symbols = new Set<string>();
     for (const r of feedRows) if (r.tickers[0]) symbols.add(r.tickers[0]);
     for (const w of watchRows) symbols.add(w.symbol);
@@ -75,8 +79,6 @@ async function loadInitial(): Promise<{
       logoUrl: meta.get(w.symbol)?.logoUrl ?? null,
     }));
 
-    // Quotes iniciales para watchlist — evita el flash "—" en SSR. Si
-    // Finnhub está lento o caído, devolvemos {} y el cliente refresca.
     const quotes = watchlist.length
       ? await getQuotesMap(watchlist.map((w) => w.symbol)).catch(() => ({}))
       : {};
@@ -92,39 +94,26 @@ async function loadInitial(): Promise<{
   }
 }
 
-export default async function HomePage() {
+export default async function NewsPage() {
   const { feed, watchlist, quotes, error } = await loadInitial();
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <Header />
-      {error ? <SetupBanner message={error} /> : null}
+      {error ? (
+        <div className="border-b border-rose-500/40 bg-rose-500/10 px-6 py-3 font-mono text-xs text-rose-200">
+          {error}
+        </div>
+      ) : null}
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1 overflow-hidden">
           <FeedList
             initial={feed}
             watchlist={watchlist.map((w) => w.symbol)}
+            mode="news"
           />
         </main>
         <WatchlistPanel items={watchlist} initialQuotes={quotes} />
-      </div>
-    </div>
-  );
-}
-
-function SetupBanner({ message }: { message: string }) {
-  return (
-    <div className="border-b border-amber-500/40 bg-amber-500/10 px-6 py-3 font-mono text-xs text-amber-200">
-      <div className="mb-1 font-semibold uppercase tracking-widest">
-        Setup pendiente
-      </div>
-      <div>
-        DB no accesible: <span className="opacity-80">{message}</span>
-      </div>
-      <div className="mt-1 opacity-80">
-        Rellena <code>.env.local</code> y corre{" "}
-        <code className="rounded bg-amber-500/20 px-1">pnpm db:push</code>{" "}
-        para crear las tablas en Neon.
       </div>
     </div>
   );

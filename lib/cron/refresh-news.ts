@@ -11,7 +11,7 @@ import {
   deleteOldNews,
   getTickerMetaMap,
   getTopTickersForFetch,
-  insertNewsWithTickers,
+  insertNewsBatch,
   loadAliases,
   loadKnownSymbols,
   upsertTickers,
@@ -54,17 +54,20 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   const topTickers = await getTopTickersForFetch(50).catch(() => []);
 
   // 2) Fetch en paralelo (un proveedor caído no tumba el cron).
-  // Tamaño de muestra ajustado al budget de 60s en Vercel Hobby.
+  // Slicing reducido tras el incidente Fluid CPU 2026-05-17: company news
+  // 15→8, gnews por ticker 25→8. Cada Google News query parsea XML
+  // (sync CPU) y Finnhub-company suma sub-fetches. Combinado con cron
+  // a 15min en vez de 5min ⇒ ~12x menos trabajo total que antes.
   const [finnhubR, finnhubCoR, marketauxR, rssR, gnewsR] =
     await Promise.allSettled([
       fetchGeneralNews(),
       fetchCompanyNewsBatch(
-        topTickers.slice(0, 15).map((t) => t.symbol),
+        topTickers.slice(0, 8).map((t) => t.symbol),
         3,
       ),
       fetchMarketauxNews(),
       fetchAllRssNews(),
-      fetchGoogleNewsByTicker(topTickers.slice(0, 25)),
+      fetchGoogleNewsByTicker(topTickers.slice(0, 8)),
     ]);
 
   const finnhubItems = finnhubR.status === "fulfilled" ? finnhubR.value : [];
@@ -113,25 +116,13 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   }
   await upsertTickers([...allSymbols], "cron");
 
-  // 5) Insertar noticias nuevas. Las que ya existen devuelven null.
-  // Try/catch por item — un INSERT roto NO debe tumbar todo el cron (un solo
-  // duplicate hash/url falló durante 7h dejando la feed congelada).
-  const newlyInserted: { id: number; item: NormalizedNewsItem; tickers: string[] }[] = [];
-  let insertFailures = 0;
-  for (const { item, tickers } of itemsWithTickers) {
-    try {
-      const id = await insertNewsWithTickers(item, tickers);
-      if (id) {
-        newlyInserted.push({ id, item, tickers: tickers.map((t) => t.symbol) });
-      }
-    } catch (err) {
-      insertFailures++;
-      console.warn(
-        `[cron] insert failed for ${item.url.slice(0, 80)}:`,
-        err instanceof Error ? err.message.slice(0, 200) : err,
-      );
-    }
-  }
+  // 5) Insertar noticias nuevas en chunks transaccionales.
+  // Antes era un loop secuencial item-a-item (~100-300ms × 400 items =
+  // 40-120s, rozando el budget de 60s del cron Hobby). Ahora chunks de 50
+  // dentro de una transacción cada uno — fault isolation por chunk, dos
+  // INSERTs batched por chunk. Total ~1.6-4s en picos.
+  const { inserted: newlyInserted, failures: insertFailures } =
+    await insertNewsBatch(itemsWithTickers);
   if (insertFailures) {
     console.warn(`[cron] ${insertFailures} insert failures (cron continues)`);
   }

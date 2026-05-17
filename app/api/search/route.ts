@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { searchSymbols } from "@/lib/providers/finnhub";
 
+// Node runtime forzado: lib/providers/finnhub.ts importa hashUrl
+// (node:crypto), incompatible con edge aunque /search no lo use.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 

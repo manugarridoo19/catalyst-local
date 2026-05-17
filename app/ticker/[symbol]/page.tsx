@@ -36,11 +36,13 @@ export default async function TickerPage({
   const [profile, quote, newsRows, watchlist, metaMap] = await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
+    // Orden estricto por publishedAt DESC — el tiempo manda, igual que en
+    // el live feed. Sin filtro de categoría: en la página del ticker el
+    // usuario quiere TODA la cobertura, incluyendo macro/otros.
     getFeed({
       symbol,
       limit: 100,
       since: fifteenDaysAgo(),
-      rankBySignal: true,
     }).catch(() => []),
     getWatchlist(session).catch(() => []),
     getTickerMetaMap([symbol]),

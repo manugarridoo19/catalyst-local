@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getBars, type Period } from "@/lib/providers/yahoo";
 
-export const runtime = "nodejs";
+// Edge runtime: solo fetch a Yahoo + parse JSON. Sin DB.
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 const VALID: Period[] = ["1d", "1w", "1m", "3m", "1y"];

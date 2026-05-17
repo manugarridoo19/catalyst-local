@@ -170,3 +170,37 @@ export async function getQuote(symbol: string): Promise<FinnhubQuote | null> {
     return null;
   }
 }
+
+export type CompactQuote = {
+  price: number;
+  change: number;
+  changePercent: number;
+  prevClose: number;
+};
+
+// Fetch concurrente de quotes para múltiples símbolos respetando la cuota
+// free de Finnhub (60/min). Concurrencia=5 mantiene latencia ~1s para 10
+// símbolos. Inválidos / vacíos vuelven como null (Finnhub devuelve c=0).
+// Reutilizado por /api/quotes y por SSR de páginas con watchlist.
+export async function getQuotesMap(
+  symbols: string[],
+): Promise<Record<string, CompactQuote | null>> {
+  const unique = Array.from(new Set(symbols.map((s) => s.toUpperCase()))).filter(
+    (s) => /^[A-Z0-9.\-]{1,10}$/.test(s),
+  );
+  const out: Record<string, CompactQuote | null> = {};
+  const CONCURRENCY = 5;
+  let cursor = 0;
+  async function worker() {
+    while (cursor < unique.length) {
+      const i = cursor++;
+      const sym = unique[i];
+      const q = await getQuote(sym);
+      out[sym] = q && q.c > 0
+        ? { price: q.c, change: q.d, changePercent: q.dp, prevClose: q.pc }
+        : null;
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+  return out;
+}

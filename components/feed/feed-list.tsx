@@ -10,15 +10,23 @@ import type { FeedItem } from "@/lib/feed-types";
 import { NewsCard } from "./news-card";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import {
+  LIVE_FEED_CATEGORIES,
+  NEWS_TAB_CATEGORIES,
+  type NewsCategory,
+} from "@/lib/categorizer";
+
+type Mode = "live" | "news";
 
 type Props = {
   initial: FeedItem[];
   watchlist?: string[];
+  mode?: Mode;
 };
 
 type LivePayload = { items: FeedItem[] };
 
-const FILTERS = [
+const LIVE_FILTERS = [
   { id: "all" as const, label: "All" },
   { id: "watchlist" as const, label: "Watchlist" },
   { id: "high" as const, label: "High impact" },
@@ -28,30 +36,68 @@ const FILTERS = [
   { id: "guidance" as const, label: "Guidance" },
 ];
 
-type FilterId = (typeof FILTERS)[number]["id"];
+const NEWS_FILTERS = [
+  { id: "all" as const, label: "All" },
+  { id: "watchlist" as const, label: "Watchlist" },
+  { id: "macro" as const, label: "Macro" },
+  { id: "other" as const, label: "Other" },
+];
 
-export function FeedList({ initial, watchlist = [] }: Props) {
+type FilterId =
+  | (typeof LIVE_FILTERS)[number]["id"]
+  | (typeof NEWS_FILTERS)[number]["id"];
+
+export function FeedList({ initial, watchlist = [], mode = "live" }: Props) {
   const [items, setItems] = useState<FeedItem[]>(initial);
   const [freshIds, setFreshIds] = useState<Set<number>>(() => new Set());
   const [filter, setFilter] = useState<FilterId>("all");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  // Set de categorías permitidas en esta vista. Aplicado tanto al state
+  // inicial (server ya filtra, pero por defensa) como a cada broadcast
+  // entrante por Pusher — el cron publica a un solo canal y cada tab
+  // descarta lo que no le toca.
+  const allowedCategories = useMemo<Set<string>>(
+    () =>
+      new Set(
+        (mode === "news"
+          ? (NEWS_TAB_CATEGORIES as string[])
+          : (LIVE_FEED_CATEGORIES as string[])),
+      ),
+    [mode],
+  );
+
+  const matchesCategory = (it: FeedItem): boolean => {
+    if (mode === "news") {
+      // News tab acepta MACRO, OTHER y items sin categoría conocida.
+      return it.category == null || allowedCategories.has(it.category);
+    }
+    return it.category != null && allowedCategories.has(it.category);
+  };
 
   useEffect(() => {
     const pusher = getPusherClient();
     if (!pusher) return;
     const channel = pusher.subscribe(NEWS_CHANNEL);
     const onNew = (data: LivePayload) => {
-      // Live feed = solo today (UTC). Filtramos broadcasts de noticias que
-      // se publicaron antes del UTC midnight de hoy — típicamente son
-      // re-broadcast de score-orphans sobre backlog viejo, que pertenecen
-      // a la ticker page pero no al live feed.
-      const cutoff = Date.UTC(
-        new Date().getUTCFullYear(),
-        new Date().getUTCMonth(),
-        new Date().getUTCDate(),
-      );
+      // Live feed = solo today (UTC); News tab = 15 días.
+      const cutoff =
+        mode === "news"
+          ? Date.now() - 15 * 24 * 3600 * 1000
+          : Date.UTC(
+              new Date().getUTCFullYear(),
+              new Date().getUTCMonth(),
+              new Date().getUTCDate(),
+            );
       const inWindow = data.items.filter(
-        (it) => new Date(it.publishedAt).getTime() >= cutoff,
+        (it) =>
+          new Date(it.publishedAt).getTime() >= cutoff &&
+          matchesCategory(it) &&
+          // Ambos modos requireTicker=true en SSR; aplicamos el mismo
+          // filtro al broadcast para que los rebroadcasts de items sin
+          // ticker (FT/Yahoo company announcements sin alias) no se
+          // cuelen en el feed via realtime.
+          it.tickers.length > 0,
       );
       if (!inWindow.length) return;
 
@@ -95,7 +141,7 @@ export function FeedList({ initial, watchlist = [] }: Props) {
       channel.unbind(NEWS_EVENT, onNew);
       pusher.unsubscribe(NEWS_CHANNEL);
     };
-  }, [watchlist]);
+  }, [watchlist, mode]);
 
   const filtered = useMemo(() => {
     if (filter === "watchlist" && watchlist.length) {
@@ -109,8 +155,14 @@ export function FeedList({ initial, watchlist = [] }: Props) {
     if (filter === "ma") return items.filter((it) => it.category === "MA");
     if (filter === "analyst") return items.filter((it) => it.category === "ANALYST");
     if (filter === "guidance") return items.filter((it) => it.category === "GUIDANCE");
+    if (filter === "macro") return items.filter((it) => it.category === "MACRO");
+    if (filter === "other")
+      return items.filter((it) => it.category === "OTHER" || it.category == null);
     return items;
   }, [items, filter, watchlist]);
+
+  const filters = mode === "news" ? NEWS_FILTERS : LIVE_FILTERS;
+  const toolbarLabel = mode === "news" ? "News" : "Live feed";
 
   return (
     <div className="flex h-full flex-col">
@@ -118,14 +170,14 @@ export function FeedList({ initial, watchlist = [] }: Props) {
       <div className="flex items-center justify-between gap-4 border-b border-border/70 bg-card/30 px-5 py-2.5 backdrop-blur-sm">
         <div className="flex items-center gap-3">
           <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-            Live feed
+            {toolbarLabel}
           </div>
           <span className="tick rounded-sm border border-border/60 bg-card/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
             {filtered.length}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
-          {FILTERS.map((f) => (
+          {filters.map((f) => (
             <FilterChip
               key={f.id}
               active={filter === f.id}

@@ -54,17 +54,18 @@ export function ImpactBadge({
     return (
       <div
         className={cn(
-          "tick flex items-center justify-between rounded-md border bg-card/30 font-mono uppercase",
+          "tick flex items-center justify-between rounded-md border bg-card/30 font-mono uppercase animate-pulse",
           s.padding,
           s.gap,
           s.pill,
         )}
+        title="Pending grading"
       >
         <span className={cn("tracking-[0.18em] text-muted-foreground/50", s.label)}>
           Signif
         </span>
         <span className={cn("tabular-nums text-muted-foreground/50 font-bold", s.value)}>
-          —
+          …
         </span>
       </div>
     );
@@ -102,17 +103,18 @@ export function SentimentBadge({
     return (
       <div
         className={cn(
-          "tick flex items-center justify-between rounded-md border bg-card/30 font-mono uppercase",
+          "tick flex items-center justify-between rounded-md border bg-card/30 font-mono uppercase animate-pulse",
           s.padding,
           s.gap,
           s.pill,
         )}
+        title="Pending grading"
       >
         <span className={cn("tracking-[0.18em] text-muted-foreground/50", s.label)}>
           Sent
         </span>
         <span className={cn("tabular-nums text-muted-foreground/50 font-bold", s.value)}>
-          —
+          …
         </span>
       </div>
     );

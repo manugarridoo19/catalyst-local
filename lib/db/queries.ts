@@ -15,6 +15,17 @@ import type {
 } from "@/lib/types";
 import { categorizeHeuristic, type NewsCategory } from "@/lib/categorizer";
 
+// IN-list para `news.category` reutilizado por live feed y News tab. Toma
+// un array de categorías + una flag `allowNull` (incluye filas sin
+// categoría asignada, típicas de inserts pre-categorizer).
+function categoryCondition(
+  categories: NewsCategory[],
+  allowNull: boolean,
+) {
+  const inList = inArray(news.category, categories);
+  return allowNull ? sql`(${inList} OR ${news.category} IS NULL)` : inList;
+}
+
 // Inserta tickers nuevos sin sobreescribir los existentes. Devuelve la lista
 // de símbolos que ya están en DB tras la operación.
 export async function upsertTickers(
@@ -29,55 +40,111 @@ export async function upsertTickers(
   await db.insert(tickers).values(rows).onConflictDoNothing();
 }
 
-// Inserta una noticia + sus tickers. Si la URL ya existe (unique constraint)
-// devuelve null y el caller debe saltarla. Devuelve el id de la noticia
-// para asociar el score después. Aplicamos la categorización heurística
-// aquí mismo para que la card tenga badge desde el primer render.
-export async function insertNewsWithTickers(
-  item: NormalizedNewsItem,
-  extracted: ExtractedTicker[],
-): Promise<number | null> {
-  const category = categorizeHeuristic({
-    headline: item.headline,
-    body: item.body ?? null,
-    source: item.source,
-  });
-  const inserted = await db
-    .insert(news)
-    .values({
-      url: item.url,
-      hash: item.hash,
-      headline: item.headline,
-      source: item.source,
-      publishedAt: item.publishedAt,
-      body: item.body,
-      imageUrl: item.imageUrl,
-      category,
-    })
-    // Schema tiene unique on BOTH url y hash. El conflict target debe ser
-    // hash porque es el dedupe semántico (normaliza utm params). Si usamos
-    // url como target, llegan dos URLs distintas que normalizan al mismo
-    // hash → Postgres detecta la violación de hash que NO está en el ON
-    // CONFLICT → 500 y el cron entero muere. Switching a hash arregla esto.
-    .onConflictDoNothing({ target: news.hash })
-    .returning({ id: news.id });
+export type InsertNewsItem = {
+  item: NormalizedNewsItem;
+  tickers: ExtractedTicker[];
+};
 
-  const newsId = inserted[0]?.id;
-  if (!newsId) return null;
+export type InsertedNewsRow = {
+  id: number;
+  item: NormalizedNewsItem;
+  tickers: string[];
+};
 
-  if (extracted.length) {
-    await db
-      .insert(newsTickers)
-      .values(
-        extracted.map((t) => ({
-          newsId,
-          ticker: t.symbol,
-          extractionMethod: t.method,
-        })),
-      )
-      .onConflictDoNothing();
+// Tamaño del chunk batched. 50 da ~25-100KB de payload por INSERT, bien
+// dentro del wire-limit, y mantiene fault isolation: si un chunk falla,
+// perdemos 50 items max (vs perder los 400 productivos del tick).
+const INSERT_CHUNK = 50;
+
+// Inserta noticias + sus tickers en chunks transaccionales. Reemplaza al
+// loop secuencial anterior que hacía un await por item (~100-300ms × 400 =
+// 40-120s en picos productivos, suficiente para tumbar el budget de 60s
+// del cron Hobby). Ahora cada chunk son DOS INSERT (uno a news, otro a
+// news_tickers) dentro de la misma transacción — total ~200-500ms por
+// chunk de 50 items.
+//
+// Atomicidad (audit 2026-05-12 #1+#3): cada chunk es una transacción
+// independiente — si el INSERT de news_tickers falla, rollback'ea solo
+// ese chunk; los anteriores quedan committed. Devuelve solo las rows
+// nuevas (las que conflictaron por hash no aparecen).
+export async function insertNewsBatch(
+  items: InsertNewsItem[],
+): Promise<{ inserted: InsertedNewsRow[]; failures: number }> {
+  if (!items.length) return { inserted: [], failures: 0 };
+  const out: InsertedNewsRow[] = [];
+  let failures = 0;
+
+  for (let i = 0; i < items.length; i += INSERT_CHUNK) {
+    const chunk = items.slice(i, i + INSERT_CHUNK);
+    try {
+      const chunkOut = await db.transaction(async (tx) => {
+        const newsRows = chunk.map(({ item }) => ({
+          url: item.url,
+          hash: item.hash,
+          headline: item.headline,
+          source: item.source,
+          publishedAt: item.publishedAt,
+          body: item.body,
+          imageUrl: item.imageUrl,
+          category: categorizeHeuristic({
+            headline: item.headline,
+            body: item.body ?? null,
+            source: item.source,
+          }),
+        }));
+
+        // Schema tiene unique en BOTH url y hash. Conflict target = hash:
+        // es el dedupe semántico (normaliza utm params). Las rows que
+        // conflictan NO vuelven en `returning` — eso es nuestro filtro
+        // de "ya existía".
+        const insertedNews = await tx
+          .insert(news)
+          .values(newsRows)
+          .onConflictDoNothing({ target: news.hash })
+          .returning({ id: news.id, hash: news.hash });
+
+        if (!insertedNews.length) return [] as InsertedNewsRow[];
+
+        const idByHash = new Map(insertedNews.map((r) => [r.hash, r.id]));
+
+        // Reasociamos los tickers extraídos al newsId real (vía hash).
+        const tickerRows: {
+          newsId: number;
+          ticker: string;
+          extractionMethod: ExtractedTicker["method"];
+        }[] = [];
+        const result: InsertedNewsRow[] = [];
+        for (const { item, tickers } of chunk) {
+          const newsId = idByHash.get(item.hash);
+          if (!newsId) continue;
+          for (const t of tickers) {
+            tickerRows.push({
+              newsId,
+              ticker: t.symbol,
+              extractionMethod: t.method,
+            });
+          }
+          result.push({ id: newsId, item, tickers: tickers.map((t) => t.symbol) });
+        }
+
+        if (tickerRows.length) {
+          await tx
+            .insert(newsTickers)
+            .values(tickerRows)
+            .onConflictDoNothing();
+        }
+        return result;
+      });
+      out.push(...chunkOut);
+    } catch (err) {
+      failures += chunk.length;
+      console.warn(
+        `[insertNewsBatch] chunk of ${chunk.length} failed:`,
+        err instanceof Error ? err.message.slice(0, 200) : err,
+      );
+    }
   }
-  return newsId;
+  return { inserted: out, failures };
 }
 
 export async function insertScore(
@@ -131,49 +198,10 @@ export type FeedRow = {
 };
 
 // Devuelve el feed paginado con tickers agregados y scores. Se usa en SSR
-// inicial y en el endpoint de "más noticias".
-// Ranking signal-first para feeds de ticker:
-//   - Categorías de utilidad alta (ANALYST/EARNINGS/MA/GUIDANCE/INSIDER) pesan más
-//   - Impact ≥ 4 boost
-//   - Source tier: marketbeat/seeking-alpha/investing/zacks/tipranks (premium)
-//     por encima de yahoo/aggregators (noise). gnews/finnhub son neutros.
-//   - Finalmente publishedAt DESC para que dentro del mismo bucket vea lo reciente.
-// Resultado: el usuario ve primero la señal accionable, después el resto.
-const SIGNAL_RANK_SQL = sql`(
-  CASE ${news.category}
-    WHEN 'ANALYST'    THEN 50
-    WHEN 'EARNINGS'   THEN 50
-    WHEN 'MA'         THEN 50
-    WHEN 'GUIDANCE'   THEN 45
-    WHEN 'INSIDER'    THEN 40
-    WHEN 'REGULATORY' THEN 35
-    WHEN 'LEGAL'      THEN 25
-    WHEN 'PRODUCT'    THEN 25
-    WHEN 'MACRO'      THEN 15
-    ELSE 5
-  END
-  + COALESCE((CASE WHEN ${newsScores.impact} >= 4 THEN 20 WHEN ${newsScores.impact} >= 3 THEN 10 ELSE 0 END), 0)
-  + CASE
-      WHEN ${news.source} IN (
-        'rss:marketbeat', 'rss:marketbeat-ratings', 'rss:seeking-alpha',
-        'rss:investing-com', 'rss:tipranks', 'rss:zacks'
-      ) THEN 12
-      WHEN ${news.source} IN (
-        'rss:cnbc-business', 'rss:wsj-markets', 'rss:bloomberg',
-        'rss:reuters-business', 'rss:ft-companies', 'rss:barrons',
-        'rss:benzinga', 'rss:benzinga-news', 'rss:motley-fool',
-        'rss:thestreet', 'rss:marketwatch'
-      ) THEN 6
-      WHEN ${news.source} IN (
-        'rss:yahoo-finance', 'rss:kiplinger', 'rss:forbes-markets',
-        'rss:247wallst', 'rss:finviz', 'rss:etftrends'
-      ) THEN -8
-      WHEN ${news.source} LIKE 'finnhub:%' THEN 2
-      WHEN ${news.source} LIKE 'gnews:%' THEN 0
-      ELSE 0
-    END
-)`;
-
+// inicial y en el endpoint de "más noticias". Orden siempre por
+// publishedAt DESC — el tiempo manda, tanto en live feed como en ticker
+// pages. El control de calidad se hace filtrando categorías (`categories`)
+// en el WHERE, no reordenando.
 export async function getFeed(opts: {
   limit?: number;
   offset?: number;
@@ -182,20 +210,28 @@ export async function getFeed(opts: {
   symbol?: string;
   minImpact?: number;
   requireTicker?: boolean;
-  rankBySignal?: boolean;
+  // Lista cerrada de categorías a incluir. Live feed pasa las premium,
+  // News tab pasa OTHER+MACRO. Si se omite, se incluyen todas.
+  categories?: NewsCategory[];
+  // Cuando true, news.category IS NULL también pasa el filtro de categorías.
+  // Útil en la News tab para no perder filas viejas sin categorizar.
+  allowUnknownCategory?: boolean;
 } = {}): Promise<FeedRow[]> {
   const limit = Math.min(opts.limit ?? 50, 200);
   const offset = Math.max(opts.offset ?? 0, 0);
 
-  // Subquery: agregar tickers por noticia.
-  const tickersAgg = db
-    .select({
-      newsId: newsTickers.newsId,
-      tickers: sql<string[]>`array_agg(${newsTickers.ticker})`.as("tickers"),
-    })
-    .from(newsTickers)
-    .groupBy(newsTickers.newsId)
-    .as("tickers_agg");
+  // Correlated subquery (audit 2026-05-12 #2): antes hacíamos un
+  // `LEFT JOIN (SELECT news_id, array_agg(ticker) FROM news_tickers
+  // GROUP BY news_id)` — Postgres construía la hash aggregate sobre la
+  // tabla ENTERA en cada page load (hoy ~25k rows, en 6m proyectado a
+  // 250k+). Con la subquery correlada, Postgres solo evalúa el array_agg
+  // para las filas que sobreviven al WHERE + LIMIT (típicamente 100 max),
+  // usando la PK `(news_id, ticker)` como index. O(limit · log n) vs O(n).
+  const tickersSubquery = sql<string[]>`(
+    SELECT array_agg(nt.ticker)
+    FROM news_tickers nt
+    WHERE nt.news_id = ${news.id}
+  )`;
 
   const conditions = [] as ReturnType<typeof eq>[];
   // Postgres-js serializa Date con toString() ("Tue May 12 2026 ..."), no
@@ -214,6 +250,10 @@ export async function getFeed(opts: {
     conditions.push(
       sql`EXISTS (SELECT 1 FROM news_tickers nt WHERE nt.news_id = ${news.id})` as never,
     );
+  if (opts.categories?.length)
+    conditions.push(
+      categoryCondition(opts.categories, opts.allowUnknownCategory ?? false) as never,
+    );
 
   let rows;
   if (opts.symbol) {
@@ -227,23 +267,18 @@ export async function getFeed(opts: {
         publishedAt: news.publishedAt,
         imageUrl: news.imageUrl,
         category: news.category,
-        tickers: tickersAgg.tickers,
+        tickers: tickersSubquery,
         impact: newsScores.impact,
         sentiment: newsScores.sentiment,
         rationale: newsScores.rationale,
       })
       .from(news)
       .innerJoin(newsTickers, eq(newsTickers.newsId, news.id))
-      .leftJoin(tickersAgg, eq(tickersAgg.newsId, news.id))
       .leftJoin(newsScores, eq(newsScores.newsId, news.id))
       .where(
         and(eq(newsTickers.ticker, opts.symbol.toUpperCase()), ...conditions),
       )
-      .orderBy(
-        ...(opts.rankBySignal
-          ? [desc(SIGNAL_RANK_SQL), desc(news.publishedAt)]
-          : [desc(news.publishedAt)]),
-      )
+      .orderBy(desc(news.publishedAt))
       .limit(limit)
       .offset(offset);
   } else {
@@ -257,20 +292,15 @@ export async function getFeed(opts: {
         publishedAt: news.publishedAt,
         imageUrl: news.imageUrl,
         category: news.category,
-        tickers: tickersAgg.tickers,
+        tickers: tickersSubquery,
         impact: newsScores.impact,
         sentiment: newsScores.sentiment,
         rationale: newsScores.rationale,
       })
       .from(news)
-      .leftJoin(tickersAgg, eq(tickersAgg.newsId, news.id))
       .leftJoin(newsScores, eq(newsScores.newsId, news.id))
       .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(
-        ...(opts.rankBySignal
-          ? [desc(SIGNAL_RANK_SQL), desc(news.publishedAt)]
-          : [desc(news.publishedAt)]),
-      )
+      .orderBy(desc(news.publishedAt))
       .limit(limit)
       .offset(offset);
   }

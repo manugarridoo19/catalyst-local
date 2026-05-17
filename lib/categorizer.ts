@@ -18,6 +18,22 @@ export type NewsCategory =
   | "MACRO"
   | "OTHER";
 
+// Split de categorías entre las dos pestañas. El live feed muestra solo
+// signal accionable; "News" recoge el resto (MACRO + sin categoría
+// reconocida) en una pestaña aparte para no inundar el feed principal.
+export const LIVE_FEED_CATEGORIES: NewsCategory[] = [
+  "ANALYST",
+  "EARNINGS",
+  "MA",
+  "GUIDANCE",
+  "INSIDER",
+  "REGULATORY",
+  "LEGAL",
+  "PRODUCT",
+];
+
+export const NEWS_TAB_CATEGORIES: NewsCategory[] = ["OTHER", "MACRO"];
+
 const SOURCE_OVERRIDES: Record<string, NewsCategory> = {
   "rss:sec-8k": "REGULATORY",
   "rss:marketbeat-ratings": "ANALYST",
@@ -25,41 +41,93 @@ const SOURCE_OVERRIDES: Record<string, NewsCategory> = {
 
 // Sintaxis de bancos / firmas de análisis. Reutilizado en patrones ANALYST
 // para detectar "[FIRM] raises/cuts/maintains/..." donde FIRM no es siempre
-// "JPMorgan" — puede ser cualquier banco/casa de research. Esto cubre el
-// 80% de los headlines ANALYST que el regex viejo no capturaba.
-const ANALYST_FIRM_RE = String.raw`\b(JPMorgan|JP Morgan|Morgan Stanley|Goldman Sachs|Goldman|Bank of America|BofA|Merrill Lynch|Wells Fargo|Citi|Citigroup|Barclays|UBS|Deutsche Bank|HSBC|RBC|BMO|Mizuho|Stifel|Piper Sandler|Jefferies|Truist|Wedbush|Raymond James|Oppenheimer|KBW|BTIG|Cantor Fitzgerald|Cantor|Needham|Baird|Evercore|Macquarie|Credit Suisse|Hana Securities|Bernstein|Susquehanna|Roth|Roth MKM|Morningstar|Argus|Loop Capital|Benchmark|Rosenblatt|Wolfe Research|Seaport|Guggenheim|Cowen|TD Cowen|HC Wainwright|Janney|William Blair|Jeffries)\b`;
+// "JPMorgan" — puede ser cualquier banco/casa de research. Cubre los
+// nombres de research más comunes en headlines de US equities.
+// Nota: solo nombres con ≥3 caracteres. Aliases de 2 letras como "GS" o "MS"
+// disparan FP en body text aleatorio. Adicionalmente, los nombres que
+// también son palabras inglesas comunes ("Benchmark", "Wolfe", "Cantor",
+// "Roth", "Citizens", "Argus", "Northland") solo se aceptan en su forma
+// cualificada (con Research/Capital/Fitzgerald/MKM/JMP). "Benchmark" solo
+// matcheó "benchmark equity index" en un FP real.
+const ANALYST_FIRM_RE = String.raw`(?:JPMorgan|JP Morgan|J\.P\. Morgan|JPM|Morgan Stanley|Goldman Sachs|Goldman|Bank of America|BofA|Merrill Lynch|Wells Fargo|Citigroup|Citi(?=[ ,.])|Barclays|UBS|Deutsche Bank|HSBC|RBC|BMO|Mizuho|Stifel|Piper Sandler|Jefferies|Truist|Wedbush|Raymond James|Oppenheimer|KBW|BTIG|Cantor Fitzgerald|Needham|Baird|Evercore|Macquarie|Credit Suisse|Hana Securities|Bernstein|Susquehanna|Roth MKM|Morningstar|Argus Research|Loop Capital|Benchmark Research|Benchmark Co|Rosenblatt|Wolfe Research|Seaport|Guggenheim|Cowen|TD Cowen|HC Wainwright|Janney|William Blair|Daiwa|Freedom Broker|JMP Securities|Citizens JMP|KeyBanc|Key Banc|Northland Capital|DA Davidson|D\.A\. Davidson|Compass Point)`;
+
+// Rating labels reutilizables. "outperform"/"underperform" bare son peligrosos
+// como falsos positivos ("stocks still outperform" no es rating), por eso solo
+// matchean cuando van con "rating" qualifier o cerca de un verbo de rating.
+const RATING_LABEL_RE = String.raw`(?:strong )?(?:buy|sell|hold|neutral|outperform|underperform|overweight|underweight|market perform|equal[- ]?weight|sector perform|accumulate|reduce)`;
+
+// Verbos de acción de analista. Captura tanto activos como participios.
+const RATING_VERB_RE = String.raw`(?:upgrad(?:e|ed|es|ing)?|downgrad(?:e|ed|es|ing)?|reiterat(?:e|ed|es|ing)?|reaffirm(?:s|ed|ing)?|maintain(?:s|ed|ing)?|initiat(?:e|ed|es|ing)?|resum(?:e|ed|es|ing)?|drop(?:s|ped|ping)?|set[s]?|adjust(?:s|ed|ing)?|rais(?:e|ed|es|ing)?|cut[s]?|lift(?:s|ed|ing)?|lower(?:s|ed|ing)?|boost(?:s|ed|ing)?|trim(?:s|med|ming)?|hike[ds]?|reduc(?:e|ed|es|ing)?|increas(?:e|ed|es|ing)?|start(?:s|ed|ing)?|begin(?:s|ning)?|nam(?:e|ed|es|ing)?|call(?:s|ed|ing)?|rat(?:e|ed|es|ing)?|sees|keep(?:s|ing)?|introduc(?:e|ed|es|ing)?|launch(?:es|ed|ing)?)`;
 
 // Patrones por categoría — primer match gana, así que el orden importa.
-// Más específicos arriba. Audit 2026-05: el regex anterior dejaba 68% de
-// news como OTHER. Esta versión expande patrones con "PT", "[FIRM] raises|
-// cuts|...", "Form 4/13F/DEF", "stock holdings (lifted|reduced)", etc.
+// Más específicos arriba. Audit 2026-05-12: la versión anterior dejaba
+// ~2% de OTHER que eran claramente ANALYST (PT changes, firm+verb no
+// anclado al inicio, "Analyst Report:", "stocks to watch" lists, passive
+// "upgraded at FIRM", "initiated [RATING] at FIRM"). Esta versión
+// descompone ANALYST en 4 patrones acumulativos para cubrir esos casos
+// sin disparar falsos positivos sobre "stocks still outperform" o
+// "Just 3 Companies Drive...".
 const PATTERNS: Array<{ cat: NewsCategory; pattern: RegExp }> = [
-  // ANALYST — upgrades, downgrades, ratings, price targets
-  //   Cobertura nueva:
-  //     - "PT" abreviado ("raises PT", "Oppenheimer Raises PT on")
-  //     - "[FIRM] raises|cuts|maintains|reiterates|initiates|lifts|lowers|
-  //        boosts|reaffirms|trims|hikes|sees|says|calls|names|rates|adjusts"
-  //     - "lowered ... target" / "raised ... target" (más relajado)
-  //     - "top pick", "top stock", "buy alert", "stock to watch"
-  //     - "Strong (Buy|Sell|Momentum) (Stock)?"
-  //     - "reiterates" / "starts coverage" / "begins coverage"
+  // ANALYST (1/4) — frases canónicas de rating / PT / coverage / picks.
+  // Estas son inequívocas: "price target", "rating", "coverage", "PT".
   {
     cat: "ANALYST",
     pattern: new RegExp(
-      String.raw`\b(` +
-        // verbos clásicos
-        String.raw`upgrad|downgrad|price target|target price|raises target|lowers target|raised target|lowered target|cut target|cuts target|adjusts price target|reiterates|initiates? coverage|starts? coverage|begins? coverage|` +
-        // ratings
-        String.raw`(buy|sell|hold|neutral|outperform|underperform|overweight|underweight|market perform) rating|analyst rating|consensus rating|wall street analyst|` +
-        // PT abreviado
-        String.raw`raises? PT|cuts? PT|lifts? PT|lowers? PT|boosts? PT|PT to \$|new PT|` +
-        // top picks / momentum
-        String.raw`top pick|top stock|stock to watch|stocks? to buy|strong (buy|sell|momentum)|momentum stock|growth stock|quality stock|` +
-        // verbo + price/target con firma
-        String.raw`(raises|cuts|lifts|lowers|boosts|reduces|increases|adjusts|hikes|trims|drops|raised|cut|lifted|lowered|boosted) (the )?(price )?target` +
-      String.raw`)\b|` +
-        // pattern compuesto con FIRMA
-        String.raw`^` + ANALYST_FIRM_RE + String.raw`\s+(?:Chase|Group|Securities|Co\.?|Holdings|Capital|Markets|Bank|Sachs|Fitzgerald|Stanley|Inc\.?|Ltd\.?|& Co\.?)?\s*(raises?|cuts?|maintains?|reiterates?|upgrades?|downgrades?|initiates?|lifts?|lowers?|reaffirms?|trims?|boosts?|drops?|hikes?|sees|says|calls?|names?|rates?|adjusts?|reduces?|increases?|starts?|begins?|sets?|trims?)\b`,
+      String.raw`\b(?:` +
+        // verbos canónicos
+        String.raw`upgrad(?:e|ed|es|ing)?|downgrad(?:e|ed|es|ing)?|` +
+        // target / PT
+        String.raw`price target|target price|new (?:price )?target|sets?(?: a)? (?:price )?target|` +
+        String.raw`raises? PT|cuts? PT|lifts? PT|lowers? PT|boosts? PT|trims? PT|hikes? PT|adjusts? PT|sets? PT|PT to \$|new PT|raised PT|cut PT|hiked PT|trimmed PT|adjusted PT|` +
+        String.raw`(?:raises?|cuts?|lifts?|lowers?|boosts?|trims?|hikes?|adjusts?|reduces?|increases?|raised|cut|lifted|lowered|boosted|trimmed|hiked|adjusted) (?:its? |the )?(?:price |stock |estimate |EPS )?target\b|` +
+        String.raw`(?:raises?|cuts?|lifts?|lowers?|trims?|boosts?|hikes?|raised|cut|lifted|lowered|trimmed|boosted|hiked) (?:its? |the )?(?:price )?estimates?\b|` +
+        // coverage
+        String.raw`(?:initiates?|starts?|begins?|resumes?|drops?) coverage|coverage (?:initiated|started|begun|resumed|dropped)|` +
+        // reaffirm / reiterate / maintain
+        String.raw`reiterates? (?:its )?` + RATING_LABEL_RE + String.raw`|reaffirms? (?:its )?` + RATING_LABEL_RE + String.raw`|maintains? (?:its )?` + RATING_LABEL_RE + String.raw`|keeps? (?:its )?['"]?` + RATING_LABEL_RE + String.raw`['"]? (?:rating|outlook|view)|` +
+        // rating label + "rating" qualifier
+        RATING_LABEL_RE + String.raw` rating|` +
+        // analyst keywords
+        String.raw`analyst (?:rating|report|note|outlook|view|forecast|estimate|coverage|day)|` +
+        String.raw`consensus (?:rating|estimate|target|price target)|wall street (?:analyst|view|sees)|` +
+        String.raw`shareholder\/analyst call|` +
+        // picks / conviction
+        String.raw`top pick|top stock|conviction (?:buy|list)|focus list|best ideas?|highest conviction|buy alert|sell alert|strong (?:buy|sell|momentum)` +
+      String.raw`)\b`,
+      "i",
+    ),
+  },
+  // ANALYST (2/4) — FIRMA + verbo, anywhere in headline. Cubre los casos
+  // tipo "X stock jumps after JPMorgan upgrade", "Truist Cut Tests the...",
+  // "MongoDB Stock Jumps as Citi Sees More Upside". El verbo va dentro de
+  // 40 chars desde la firma para evitar false positives en headlines
+  // largos sin relación analyst.
+  {
+    cat: "ANALYST",
+    pattern: new RegExp(
+      String.raw`\b` + ANALYST_FIRM_RE + String.raw`\b[^.?!\n]{0,40}\b` + RATING_VERB_RE + String.raw`\b`,
+      "i",
+    ),
+  },
+  // ANALYST (3/4) — passive "X upgraded at FIRM", "initiated Outperform
+  // at FIRM", "downgraded by FIRM", "X cuts stock rating on Y".
+  {
+    cat: "ANALYST",
+    pattern: new RegExp(
+      String.raw`\b(?:upgraded?|downgraded?|initiated?|reiterated?|maintained?|reaffirmed?|started?|resumed?|raised|cut|lifted|lowered|hiked|trimmed|boosted|adjusted)\b[^.?!\n]{0,30}\b(?:to|at|by|from|with|on)\b[^.?!\n]{0,30}\b` + ANALYST_FIRM_RE + String.raw`\b`,
+      "i",
+    ),
+  },
+  // ANALYST (4/4) — "initiated [RATING] at FIRM" / "Upgraded to Buy"
+  // / "X stocks? to (watch|buy|bet|own|invest)" lists (typical Zacks,
+  // MarketBeat, TipRanks). El numerito + verb pinta clearly como pick list.
+  {
+    cat: "ANALYST",
+    pattern: new RegExp(
+      String.raw`\b(?:upgraded?|downgraded?|initiated?|reiterated?|started?|resumed?|maintains?|reaffirms?) (?:to |at |with )` + RATING_LABEL_RE + String.raw`\b|` +
+        String.raw`\bAnalyst Report:|` +
+        String.raw`\b\d+ (?:best |top |penny |growth |momentum |quality |dividend |value )?stocks? to (?:watch|buy|bet on|own|invest in)\b|` +
+        String.raw`\b(?:best|top) stocks? (?:to (?:watch|buy|bet on|own|invest in)|under \$\d)`,
       "i",
     ),
   },

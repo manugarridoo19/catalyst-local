@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { getFeed, getTickerMetaMap } from "@/lib/db/queries";
 import { fifteenDaysAgo, startOfTodayUtc } from "@/lib/time-windows";
+import {
+  LIVE_FEED_CATEGORIES,
+  NEWS_TAB_CATEGORIES,
+} from "@/lib/categorizer";
 import type { FeedItem } from "@/lib/feed-types";
 
 export const runtime = "nodejs";
@@ -13,6 +17,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const symbol = url.searchParams.get("symbol")?.toUpperCase().trim();
+  const tab = url.searchParams.get("tab"); // "live" | "news" — solo aplica sin symbol
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 100);
   const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
 
@@ -21,10 +26,23 @@ export async function GET(req: Request) {
   }
 
   try {
+    const baseOpts = symbol
+      ? { symbol, since: fifteenDaysAgo() }
+      : tab === "news"
+        ? {
+            since: fifteenDaysAgo(),
+            categories: NEWS_TAB_CATEGORIES,
+            allowUnknownCategory: true,
+            requireTicker: true,
+          }
+        : {
+            since: startOfTodayUtc(),
+            requireTicker: true,
+            categories: LIVE_FEED_CATEGORIES,
+          };
+
     const rows = await getFeed({
-      ...(symbol
-        ? { symbol, since: fifteenDaysAgo(), rankBySignal: true }
-        : { since: startOfTodayUtc(), requireTicker: true, rankBySignal: true }),
+      ...baseOpts,
       limit,
       offset,
     });
