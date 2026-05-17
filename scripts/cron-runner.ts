@@ -43,7 +43,14 @@ async function main() {
   console.log(`[cron-runner] total ${Date.now() - t0}ms`);
 }
 
-main().catch((err) => {
-  console.error("[cron-runner] FAILED:", err);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // Forzar salida — postgres-js + Pusher dejan handles abiertos
+    // (connection pool, websocket) que evitan que Node termine solo
+    // y agotaríamos el timeout del runner.
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error("[cron-runner] FAILED:", err);
+    process.exit(1);
+  });
