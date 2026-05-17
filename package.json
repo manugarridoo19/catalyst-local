@@ -13,7 +13,8 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "backfill": "tsx scripts/backfill-news.ts",
-    "cron:local": "tsx scripts/run-cron-local.ts"
+    "cron:local": "tsx scripts/run-cron-local.ts",
+    "cron:remote": "tsx scripts/cron-runner.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

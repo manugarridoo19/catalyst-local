@@ -54,20 +54,20 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   const topTickers = await getTopTickersForFetch(50).catch(() => []);
 
   // 2) Fetch en paralelo (un proveedor caído no tumba el cron).
-  // Slicing reducido tras el incidente Fluid CPU 2026-05-17: company news
-  // 15→8, gnews por ticker 25→8. Cada Google News query parsea XML
-  // (sync CPU) y Finnhub-company suma sub-fetches. Combinado con cron
-  // a 15min en vez de 5min ⇒ ~12x menos trabajo total que antes.
+  // Slicing restaurado a valores originales tras mover cron a GitHub
+  // Actions runner. CPU del runner no afecta Vercel Fluid; los caps
+  // reales son Finnhub free (60/min) y el wall-clock del workflow
+  // (timeout 3min en cron-runner.yml). Quedamos cómodos en ambos.
   const [finnhubR, finnhubCoR, marketauxR, rssR, gnewsR] =
     await Promise.allSettled([
       fetchGeneralNews(),
       fetchCompanyNewsBatch(
-        topTickers.slice(0, 8).map((t) => t.symbol),
+        topTickers.slice(0, 15).map((t) => t.symbol),
         3,
       ),
       fetchMarketauxNews(),
       fetchAllRssNews(),
-      fetchGoogleNewsByTicker(topTickers.slice(0, 8)),
+      fetchGoogleNewsByTicker(topTickers.slice(0, 25)),
     ]);
 
   const finnhubItems = finnhubR.status === "fulfilled" ? finnhubR.value : [];

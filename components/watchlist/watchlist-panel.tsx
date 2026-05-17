@@ -26,12 +26,12 @@ type Props = {
   initialQuotes?: QuotesMap;
 };
 
-// Refresh cadence. 5min mantiene el feel "live" sin quemar Vercel Fluid
-// Active CPU: cada poll dispara una function invocation, y a 60s × 8h de
-// uso real son ~480 invocs/día por tab — basta para empujarnos sobre el
-// cap Hobby. Si el tab está oculto pausamos. La cuota Finnhub (60/min)
-// nunca fue el cuello — siempre fue Vercel.
-const REFRESH_MS = 300_000;
+// Refresh cadence. 60s — UX original. Tras mover el cron a GitHub Actions
+// el path crítico de Vercel CPU es solo polling + SSR; con watchlist típica
+// <10 símbolos esto es ~480 invocs/día/tab pero cada call es una function
+// liviana que solo hace fetch a Finnhub + JSON.stringify (~50ms Active CPU).
+// La cuota Finnhub (60/min) sigue siendo el cap real.
+const REFRESH_MS = 60_000;
 
 export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
   const [quotes, setQuotes] = useState<QuotesMap>(initialQuotes);
