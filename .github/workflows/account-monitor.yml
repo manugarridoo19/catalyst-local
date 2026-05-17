@@ -1,0 +1,78 @@
+name: vercel-account-monitor
+
+# Verifica cada 6h si la cuenta de Vercel sigue bloqueada (HTTP 402) o si
+# ya se ha desbloqueado. Cuando el dominio principal devuelve 200, abre
+# un issue para avisar al usuario por email (GitHub manda notificacion
+# automatica al ownership). Auto-cierra si Vercel vuelve a bloquear.
+#
+# El cap Hobby resetea el dia 1 de cada mes a las 00:00 UTC, asi que el
+# primer issue suele aparecer entonces.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Probe Vercel projects
+        id: probe
+        run: |
+          urls=(
+            "https://catalyst-local.vercel.app"
+            "https://suenoelvira.com"
+            "https://servily-zeta.vercel.app"
+          )
+          blocked=0
+          alive=0
+          report=""
+          for url in "${urls[@]}"; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "$url" || echo "000")
+            echo "$url -> HTTP $code"
+            report="${report}- ${url} -> HTTP ${code}\n"
+            if [ "$code" = "402" ]; then
+              blocked=$((blocked+1))
+            elif [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ] || [ "$code" = "307" ] || [ "$code" = "308" ]; then
+              alive=$((alive+1))
+            fi
+          done
+          {
+            echo "blocked=$blocked"
+            echo "alive=$alive"
+            echo "report<<EOR"
+            echo -e "$report"
+            echo "EOR"
+          } >> "$GITHUB_OUTPUT"
+      - name: Open or close alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BLOCKED: ${{ steps.probe.outputs.blocked }}
+          ALIVE: ${{ steps.probe.outputs.alive }}
+          REPORT: ${{ steps.probe.outputs.report }}
+        run: |
+          existing=$(gh issue list --label vercel-status --state open --json number --jq '.[0].number // empty')
+          if [ "$ALIVE" -ge 1 ] && [ "$BLOCKED" = "0" ]; then
+            title="[vercel] account back online"
+            body=$(printf "Vercel se ha desbloqueado.\n\n%b\nDetectado: $(date -u +%FT%TZ)" "$REPORT")
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body "$body"
+              gh issue close "$existing" --reason completed
+            else
+              gh issue create --title "$title" --label vercel-status --body "$body"
+            fi
+          elif [ "$BLOCKED" -ge 1 ] && [ "$ALIVE" = "0" ]; then
+            if [ -z "$existing" ]; then
+              title="[vercel] account suspended (402)"
+              body=$(printf "Vercel sigue bloqueado.\n\n%b\nReset previsto: dia 1 del proximo mes a las 00:00 UTC.\nDetectado: $(date -u +%FT%TZ)" "$REPORT")
+              gh issue create --title "$title" --label vercel-status --body "$body"
+            fi
+          else
+            echo "Estado mixto, no se cambia el issue. $ALIVE alive / $BLOCKED blocked"
+          fi
