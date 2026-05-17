@@ -17,6 +17,9 @@ permissions:
   contents: read
   issues: write
 
+env:
+  REPO: manugarridoo19/catalyst-local
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -57,21 +60,21 @@ jobs:
           ALIVE: ${{ steps.probe.outputs.alive }}
           REPORT: ${{ steps.probe.outputs.report }}
         run: |
-          existing=$(gh issue list --label vercel-status --state open --json number --jq '.[0].number // empty')
+          existing=$(gh issue list --repo "$REPO" --label vercel-status --state open --json number --jq '.[0].number // empty')
           if [ "$ALIVE" -ge 1 ] && [ "$BLOCKED" = "0" ]; then
             title="[vercel] account back online"
             body=$(printf "Vercel se ha desbloqueado.\n\n%b\nDetectado: $(date -u +%FT%TZ)" "$REPORT")
             if [ -n "$existing" ]; then
-              gh issue comment "$existing" --body "$body"
-              gh issue close "$existing" --reason completed
+              gh issue comment "$existing" --repo "$REPO" --body "$body"
+              gh issue close "$existing" --repo "$REPO" --reason completed
             else
-              gh issue create --title "$title" --label vercel-status --body "$body"
+              gh issue create --repo "$REPO" --title "$title" --label vercel-status --body "$body"
             fi
           elif [ "$BLOCKED" -ge 1 ] && [ "$ALIVE" = "0" ]; then
             if [ -z "$existing" ]; then
               title="[vercel] account suspended (402)"
               body=$(printf "Vercel sigue bloqueado.\n\n%b\nReset previsto: dia 1 del proximo mes a las 00:00 UTC.\nDetectado: $(date -u +%FT%TZ)" "$REPORT")
-              gh issue create --title "$title" --label vercel-status --body "$body"
+              gh issue create --repo "$REPO" --title "$title" --label vercel-status --body "$body"
             fi
           else
             echo "Estado mixto, no se cambia el issue. $ALIVE alive / $BLOCKED blocked"
