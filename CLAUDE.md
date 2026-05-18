@@ -18,15 +18,31 @@ Realtime market news dashboard inspired by Catalist.Live. Free-tier-only stack.
 - **NO `Co-Authored-By` trailer** — Vercel attribution rule
 - Commit on every meaningful milestone, not in batches
 
-## Cron strategy
+## Cron strategy — DECIDED. Do not change without re-reading the post-mortem.
 
-Vercel Hobby plan limits crons to **once per day** (`vercel.json` has `0 12 * * *` UTC). For sub-minute realtime feel, use one of:
+**The cron runs in GitHub Actions, on the runner itself. Vercel is never
+invoked in the cron path.** This is the result of the 2026-05-17 Vercel
+suspension post-mortem: duplicated cron + 5-min cadence + polling burned
+300% of the Hobby Fluid Active CPU cap in 4 days. See
+`feedback_catalyst_vercel_budget` in user memory for the full incident.
 
-1. **GitHub Actions** (free, 5-min minimum): create `.github/workflows/cron.yml` with `*/5 * * * *` calling `curl -H "Authorization: Bearer $CRON_SECRET" https://catalyst-local.vercel.app/api/cron/refresh-news`
-2. **cron-job.org** (free, 1-min): register the URL with the `Authorization: Bearer ...` header
-3. **Local**: `pnpm cron:local` from the Mac when active
+- Workflow: `.github/workflows/cron-runner.yml` runs `*/5 * * * *`
+- Script: `scripts/cron-runner.ts` (`pnpm cron:remote`)
+- The script connects directly to Neon, Pusher, Groq/OpenRouter
+- `vercel.json` is intentionally empty (no Vercel crons)
+- The repo is **public** so GH Actions minutes are unlimited
 
-`CRON_SECRET` is in Vercel env (production) — don't expose.
+**Forbidden moves** (these all re-introduce the original failure):
+- Re-adding any cron to `vercel.json`
+- Re-creating any `app/api/cron/*` endpoint
+- Re-enabling cron-job.org or any external prodder that hits Vercel
+- Making the repo private without first re-budgeting the GH Actions minutes
+
+`CRON_SECRET` is legacy — the Vercel cron endpoints were deleted on
+2026-05-17. If you see it referenced anywhere outside this file, that's
+dead code; remove it.
+
+Manual trigger if needed: `gh workflow run cron-runner.yml -R manugarridoo19/catalyst-local`
 
 ## File organization
 
