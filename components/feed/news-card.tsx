@@ -81,11 +81,16 @@ export function NewsCard({
     >
       {/* High-impact rail — single 2px copper bar on the far-left, only
           when impact ≥ 4. Replaces the previous sentiment side-stripe
-          (banned pattern) and reserves the marker for a genuine signal. */}
+          (banned pattern) and reserves the marker for a genuine signal.
+          When the card is fresh (just arrived via Pusher) the rail draws
+          downward instead of appearing instantly. */}
       {isHighImpact && (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 w-[2px] bg-primary/80"
+          className={cn(
+            "pointer-events-none absolute inset-y-0 left-0 w-[2px] bg-primary/80",
+            fresh && "rail-draw",
+          )}
         />
       )}
 

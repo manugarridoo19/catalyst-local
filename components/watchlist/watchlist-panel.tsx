@@ -198,9 +198,36 @@ function WatchlistRow({
   );
 }
 
+// Locale-aware price formatter. Intl gives us proper thousands separators
+// (1,234.56) and rounds to a sensible precision tier:
+//   ≥10,000  →  0 decimals  (e.g. BRK-A 678,432)
+//   ≥1,000   →  1 decimal   (avoids 1234.56 noise on four-digit prices)
+//   <1,000   →  2 decimals  (standard equity quote)
+//   <1       →  4 decimals  (sub-dollar tickers and OTC)
+// Built with en-US so the layout stays consistent regardless of the
+// browser locale; switching locale later means changing one constant.
+const PRICE_FMT_BIG = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+const PRICE_FMT_MID = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+const PRICE_FMT_STD = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const PRICE_FMT_SUB = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 4,
+  maximumFractionDigits: 4,
+});
+
 function formatPrice(p: number): string {
-  if (p >= 1000) return p.toFixed(0);
-  return p.toFixed(2);
+  if (p >= 10_000) return PRICE_FMT_BIG.format(p);
+  if (p >= 1_000) return PRICE_FMT_MID.format(p);
+  if (p >= 1) return PRICE_FMT_STD.format(p);
+  return PRICE_FMT_SUB.format(p);
 }
 
 function LastTick({ ts }: { ts: number }) {

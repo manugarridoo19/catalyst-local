@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 // Impact (1-5) → 5-dot scale. Reads at a glance in dense feeds; the eye
@@ -5,6 +6,26 @@ import { cn } from "@/lib/utils";
 // Sentiment (-5..+5) → divergent horizontal bar diverging from a center
 // rule. Direction (left/right) and magnitude (width) are encoded
 // spatially; no parsing required.
+//
+// Both badges run a one-shot `.score-reveal` animation when the value
+// transitions from pending (null) to a real number — the moment when the
+// AI grading lands via Pusher rebroadcast. Useful delight: tells the user
+// that something just changed without forcing focus or moving layout.
+
+function useRevealOnLanding(value: number | null): boolean {
+  const [revealed, setRevealed] = useState(false);
+  const prev = useRef<number | null>(value);
+  useEffect(() => {
+    if (prev.current == null && value != null) {
+      setRevealed(true);
+      const id = setTimeout(() => setRevealed(false), 280);
+      prev.current = value;
+      return () => clearTimeout(id);
+    }
+    prev.current = value;
+  }, [value]);
+  return revealed;
+}
 
 type Size = "sm" | "md";
 
@@ -40,6 +61,7 @@ export function ImpactBadge({
 }) {
   const isPending = value == null;
   const v = value ?? 0;
+  const revealed = useRevealOnLanding(value);
   const label =
     isPending
       ? "Pending grading"
@@ -51,6 +73,7 @@ export function ImpactBadge({
         "inline-flex items-center",
         IMPACT_GAP[size],
         isPending && "animate-pulse",
+        revealed && "score-reveal",
       )}
       aria-label={label}
       title={label}
@@ -93,6 +116,7 @@ export function SentimentBadge({
 }) {
   const isPending = value == null;
   const v = value ?? 0;
+  const revealed = useRevealOnLanding(value);
   const abs = Math.min(Math.abs(v), 5);
   const fillPct = (abs / 5) * 100;
   const isPositive = v > 0;
@@ -118,6 +142,7 @@ export function SentimentBadge({
       className={cn(
         "inline-flex flex-col items-end gap-1",
         isPending && "animate-pulse",
+        revealed && "score-reveal",
       )}
       aria-label={isPending ? "Sentiment pending" : `Sentiment ${sign}${v}`}
       title={isPending ? "Pending grading" : `Sentiment ${sign}${v} of ±5`}

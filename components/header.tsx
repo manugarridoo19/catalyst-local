@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Activity, Search } from "lucide-react";
@@ -17,6 +17,20 @@ export function Header() {
   const [status, setStatus] = useState<Status>("connecting");
   const [now, setNow] = useState<string>("");
   const [lastEvent, setLastEvent] = useState<number | null>(null);
+  // Tracks the previous status so we can run a one-shot flourish animation
+  // on the transition into "live" (handshake landed). Stays false on every
+  // subsequent re-render so the dot doesn't keep replaying.
+  const prevStatus = useRef<Status>("connecting");
+  const [justConnected, setJustConnected] = useState(false);
+  useEffect(() => {
+    if (prevStatus.current !== "live" && status === "live") {
+      setJustConnected(true);
+      const id = setTimeout(() => setJustConnected(false), 720);
+      prevStatus.current = status;
+      return () => clearTimeout(id);
+    }
+    prevStatus.current = status;
+  }, [status]);
 
   // Reloj en UTC — terminal feel, mismo tiempo para todos los usuarios.
   useEffect(() => {
@@ -132,7 +146,8 @@ export function Header() {
                 className={cn(
                   "h-1.5 w-1.5 rounded-full",
                   dotColor,
-                  status === "live" && "live-dot",
+                  status === "live" && !justConnected && "live-dot",
+                  justConnected && "connect-flourish",
                 )}
               />
             </span>

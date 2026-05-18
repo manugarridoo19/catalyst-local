@@ -342,6 +342,73 @@ body > *:not(.ambient-grid) {
 }
 
 /* ============================================================================
+   Score reveal — runs when impact / sentiment transitions from pending
+   (null) to a real value via Pusher rebroadcast. The badge fades and
+   scales up subtly (96% → 100%) so the user notices the AI grading land
+   without the layout reflowing.
+   ============================================================================ */
+
+@keyframes catalyst-score-reveal {
+  0% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.score-reveal {
+  animation: catalyst-score-reveal var(--dur-base) var(--ease-out-expo);
+}
+
+/* ============================================================================
+   High-impact rail entrance — when a fresh item with impact ≥ 4 lands,
+   the copper rail draws downward (scaleY 0 → 1) so the user's eye is
+   pulled to the row that warranted it. Separate animation from the
+   sentiment sweep so the two moments don't fight for attention.
+   ============================================================================ */
+
+@keyframes catalyst-rail-draw {
+  0% {
+    transform: scaleY(0);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+.rail-draw {
+  transform-origin: top;
+  animation: catalyst-rail-draw var(--dur-slow) var(--ease-out-quart);
+}
+
+/* ============================================================================
+   Live-dot first-connect flourish — runs once when the Pusher connection
+   transitions to "live" (state_change handler toggles the class). A brief
+   scale-out ring acknowledges the handshake landed.
+   ============================================================================ */
+
+@keyframes catalyst-connect-flourish {
+  0% {
+    box-shadow: 0 0 0 0 oklch(0.7 0.16 145 / 0.7);
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.15);
+  }
+  100% {
+    box-shadow: 0 0 0 12px oklch(0.7 0.16 145 / 0);
+    transform: scale(1);
+  }
+}
+
+.connect-flourish {
+  animation: catalyst-connect-flourish 700ms var(--ease-out-expo);
+}
+
+/* ============================================================================
    Tab-active underline — slides into place under whichever nav item is
    current. Replaces the boxy active background.
    ============================================================================ */

@@ -198,8 +198,15 @@ export function FeedList({ initial, watchlist = [], mode = "live" }: Props) {
         </div>
       </div>
 
-      {/* Cards */}
-      <div className="cat-scroll flex-1 overflow-y-auto">
+      {/* Cards. aria-live lets screen readers announce new items landing
+          via Pusher without forcing focus; "polite" means it waits for the
+          user to be idle before reading. */}
+      <div
+        className="cat-scroll flex-1 overflow-y-auto"
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-busy={filtered.length === 0 ? "false" : undefined}
+      >
         {filtered.length === 0 ? (
           <EmptyState />
         ) : (
