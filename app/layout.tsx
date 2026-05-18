@@ -38,7 +38,6 @@ export default function RootLayout({
       className={`dark ${geistSans.variable} ${geistMono.variable} ${newsreader.variable} h-full antialiased`}
     >
       <body className="ambient-bg min-h-full flex flex-col bg-background text-foreground">
-        <div aria-hidden className="ambient-scanlines" />
         <div aria-hidden className="ambient-grid" />
         {children}
         <CommandPalette />

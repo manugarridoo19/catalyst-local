@@ -10,29 +10,18 @@ export function cleanSource(source: string): string {
   return source.replace(/^(rss:|finnhub:|marketaux:|gnews:)/, "");
 }
 
-// Clases Tailwind para borde izquierdo + tinte de fondo basadas en sentiment.
-// `extreme` indica si |sentiment| ≥ 3 (controla la intensidad del tinte).
-export function sentimentClasses(sentiment: number | null | undefined): {
-  tone: string;
-  bg: string;
-  isExtreme: boolean;
-} {
-  const isExtreme = Math.abs(sentiment ?? 0) >= 3;
-  const tone =
-    sentiment == null
-      ? "border-l-transparent"
-      : sentiment >= 2
-        ? "border-l-emerald-500/80"
-        : sentiment <= -2
-          ? "border-l-rose-500/80"
-          : "border-l-border/30";
-  const bg =
-    isExtreme && sentiment != null
-      ? sentiment > 0
-        ? "from-emerald-500/[0.04] via-transparent to-transparent"
-        : "from-rose-500/[0.04] via-transparent to-transparent"
-      : "from-transparent via-transparent to-transparent";
-  return { tone, bg, isExtreme };
+// Background tint by sentiment. Replaces the previous side-stripe pattern
+// (banned). At |sentiment| ≥ 3 we apply a very subtle full-surface wash so
+// the card carries the signal without a colored vertical rule.
+export function sentimentBgClass(
+  sentiment: number | null | undefined,
+): string {
+  if (sentiment == null) return "";
+  const abs = Math.abs(sentiment);
+  if (abs < 3) return "";
+  return sentiment > 0
+    ? "bg-emerald-500/[0.035]"
+    : "bg-rose-500/[0.035]";
 }
 
 // Panel expandido: summary + rationale + acción "Read full article".

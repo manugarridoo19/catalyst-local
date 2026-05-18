@@ -70,23 +70,33 @@ export function Header() {
   }
 
   return (
-    <header className="relative flex items-center justify-between border-b border-border bg-card/40 px-6 py-3 backdrop-blur-sm">
-      <div className="flex items-center gap-6">
-        <Link href="/" className="flex items-center gap-3 group">
-          <div className="flex h-8 w-8 items-center justify-center rounded-sm bg-primary text-primary-foreground shadow-[0_0_18px_oklch(0.78_0.13_75/0.45)] transition-transform group-hover:scale-105">
+    <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border/70 bg-card/55 px-6 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-card/40">
+      <div className="flex items-center gap-7">
+        <Link href="/" className="group flex items-center gap-3">
+          <div className="relative flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground transition-transform duration-200 group-hover:scale-[1.04]">
             <Activity className="h-4 w-4" strokeWidth={2.5} />
+            {/* Subtle glow ring — appears only on hover so the logo
+                doesn't compete with the data on resting state. */}
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-0 rounded-md ring-1 ring-primary/30 opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+              style={{ boxShadow: "0 0 18px oklch(0.78 0.13 75 / 0.55)" }}
+            />
           </div>
-          <div>
-            <div className="font-editorial text-lg font-semibold leading-none tracking-tight text-foreground">
+          <div className="flex flex-col leading-none">
+            <div className="font-editorial text-[17px] font-semibold tracking-tight text-foreground">
               Catalyst
             </div>
-            <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+            <div className="eyebrow mt-1 text-[9px] text-muted-foreground/70">
               Realtime market intelligence
             </div>
           </div>
         </Link>
 
-        <nav className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-[0.18em]">
+        <nav
+          className="relative flex items-center font-mono text-[11px] uppercase tracking-[0.18em]"
+          aria-label="Primary"
+        >
           <NavTab href="/" active={pathname === "/"}>
             Live feed
           </NavTab>
@@ -96,53 +106,62 @@ export function Header() {
         </nav>
       </div>
 
-      <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-        {/* Search button — clickable, opens palette */}
+      <div className="flex items-center gap-4">
+        {/* Search */}
         <button
           type="button"
           onClick={openSearch}
-          className="group flex items-center gap-2 rounded-sm border border-border/70 bg-card/40 px-2.5 py-1.5 transition-all duration-150 hover:border-primary/60 hover:bg-primary/[0.06] hover:text-primary"
+          className="group flex items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground transition-colors duration-150 hover:border-primary/50 hover:bg-primary/[0.06] hover:text-primary"
           title="Search tickers (⌘K)"
+          aria-label="Open ticker search"
         >
-          <Search className="h-3.5 w-3.5" strokeWidth={2} />
+          <Search className="h-3.5 w-3.5 transition-transform duration-150 group-hover:scale-110" strokeWidth={2} />
           <span className="hidden sm:inline">Search</span>
-          <kbd className="hidden rounded-sm border border-border/70 bg-background/60 px-1 font-mono text-[10px] tracking-normal sm:inline">
+          <kbd className="hidden rounded border border-border/60 bg-background/60 px-1.5 py-px font-mono text-[10px] tracking-normal text-muted-foreground group-hover:border-primary/40 group-hover:text-primary sm:inline">
             ⌘K
           </kbd>
         </button>
 
-        {/* Connection dot + status */}
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              "h-1.5 w-1.5 rounded-full",
-              dotColor,
-              status === "live" && "live-dot",
-            )}
-          />
-          <span
-            className={cn(
-              "hidden sm:inline",
-              status === "live" && "text-emerald-300",
-              status === "offline" && "text-rose-300",
-            )}
-          >
-            {status === "live" ? "Live" : status === "offline" ? "Offline" : "Connecting"}
-          </span>
-        </div>
-
-        {/* UTC clock */}
-        <div className="hidden items-center gap-2 md:flex">
-          <span className="opacity-50">UTC</span>
-          <span className="tick text-foreground">{now || "—"}</span>
-        </div>
-
-        {lastEvent && (
-          <div className="hidden items-center gap-2 lg:flex">
-            <span className="opacity-50">Last</span>
-            <LastSeen ts={lastEvent} />
+        {/* Status block — dot + label + UTC clock + last event, all in one
+            tight strip with a divider rule so it reads as a single console
+            line rather than three competing badges. */}
+        <div className="hidden items-center gap-3 rounded-md border border-border/50 bg-card/40 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground md:flex">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-1.5 w-1.5 items-center justify-center">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  dotColor,
+                  status === "live" && "live-dot",
+                )}
+              />
+            </span>
+            <span
+              className={cn(
+                "transition-colors duration-200",
+                status === "live" && "text-emerald-300",
+                status === "offline" && "text-rose-300",
+                status === "connecting" && "text-amber-200",
+              )}
+            >
+              {status === "live" ? "Live" : status === "offline" ? "Offline" : "Connecting"}
+            </span>
           </div>
-        )}
+          <span className="h-3 w-px bg-border/70" aria-hidden />
+          <div className="flex items-center gap-1.5">
+            <span className="opacity-50">UTC</span>
+            <span className="tick text-foreground/90">{now || "—"}</span>
+          </div>
+          {lastEvent && (
+            <>
+              <span className="hidden h-3 w-px bg-border/70 lg:block" aria-hidden />
+              <div className="hidden items-center gap-1.5 lg:flex">
+                <span className="opacity-50">Last</span>
+                <LastSeen ts={lastEvent} />
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </header>
   );
@@ -160,14 +179,23 @@ function NavTab({
   return (
     <Link
       href={href}
+      aria-current={active ? "page" : undefined}
       className={cn(
-        "rounded-sm border px-2.5 py-1 transition-all duration-150",
-        active
-          ? "border-primary/60 bg-primary/10 text-primary shadow-[0_0_14px_oklch(0.78_0.13_75/0.25)]"
-          : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+        "relative px-3 py-1.5 transition-colors duration-150",
+        active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
       )}
     >
-      {children}
+      <span className="relative z-10">{children}</span>
+      {/* Sliding active underline. Replaces the boxy active background +
+          glow. Width is animated via Tailwind transitions; the position is
+          determined by which tab has the .active class. */}
+      <span
+        aria-hidden
+        className={cn(
+          "nav-underline pointer-events-none absolute inset-x-3 -bottom-px h-px origin-left bg-primary",
+          active ? "scale-x-100 opacity-100" : "scale-x-0 opacity-0",
+        )}
+      />
     </Link>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import { cn } from "@/lib/utils";
@@ -26,11 +26,7 @@ type Props = {
   initialQuotes?: QuotesMap;
 };
 
-// Refresh cadence. 60s — UX original. Tras mover el cron a GitHub Actions
-// el path crítico de Vercel CPU es solo polling + SSR; con watchlist típica
-// <10 símbolos esto es ~480 invocs/día/tab pero cada call es una function
-// liviana que solo hace fetch a Finnhub + JSON.stringify (~50ms Active CPU).
-// La cuota Finnhub (60/min) sigue siendo el cap real.
+// Refresh cadence. 60s — UX original.
 const REFRESH_MS = 60_000;
 
 export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
@@ -53,11 +49,7 @@ export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     async function fetchQuotes() {
-      if (document.visibilityState === "hidden") {
-        // No quemamos cuota cuando el tab está oculto. Reintentamos cuando
-        // vuelva a ser visible (visibilitychange handler abajo).
-        return;
-      }
+      if (document.visibilityState === "hidden") return;
       try {
         const res = await fetch(`/api/quotes?symbols=${encodeURIComponent(symbolsKey)}`, {
           cache: "no-store",
@@ -72,8 +64,6 @@ export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
       }
     }
 
-    // Tick inicial solo si NO tenemos initial server-fetched data, para
-    // evitar refetch innecesario inmediatamente tras el SSR.
     if (!Object.keys(initialQuotes).length) {
       fetchQuotes();
     }
@@ -92,32 +82,29 @@ export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
   }, [symbolsKey, initialQuotes]);
 
   return (
-    <aside className="flex w-72 flex-col border-l border-border/70 bg-card/30">
-      <div className="flex items-center justify-between border-b border-border/70 px-5 py-2">
-        <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-          Watchlist
-        </div>
+    <aside className="flex w-72 flex-col border-l border-border/60 bg-card/30">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/60 bg-card/55 px-5 py-2.5 backdrop-blur-md">
+        <div className="eyebrow text-muted-foreground">Watchlist</div>
         <div className="flex items-center gap-2">
-          {lastTick ? (
-            <LastTick ts={lastTick} />
-          ) : null}
-          <span className="tick rounded-sm border border-border/60 bg-card/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-            {items.length}
+          {lastTick ? <LastTick ts={lastTick} /> : null}
+          <span
+            className="tick font-mono text-[11px] font-semibold tabular-nums text-foreground/80"
+            aria-label={`${items.length} symbols`}
+          >
+            {items.length.toString().padStart(2, "0")}
           </span>
         </div>
       </div>
       <div className="cat-scroll flex-1 overflow-y-auto">
         {items.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-            <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-              Empty
-            </span>
-            <p className="font-editorial text-sm italic text-muted-foreground/80">
-              Pulsa{" "}
-              <kbd className="rounded-sm border border-border bg-background/60 px-1 font-mono text-[10px] not-italic">
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+            <div className="eyebrow text-muted-foreground/60">Empty</div>
+            <p className="font-editorial max-w-[18ch] text-[14px] leading-relaxed text-muted-foreground/85">
+              Press{" "}
+              <kbd className="rounded border border-border/60 bg-background/60 px-1.5 py-0.5 font-mono text-[10px] not-italic">
                 ⌘K
               </kbd>{" "}
-              para buscar y añadir tickers.
+              to search and pin tickers.
             </p>
           </div>
         ) : (
@@ -143,6 +130,24 @@ function WatchlistRow({
   item: WatchlistItem;
   quote: Quote | null;
 }) {
+  // Track previous price so we can flash the row briefly when it moves.
+  // The flash is on the row background, not the digits, so the number
+  // doesn't reflow or shimmer.
+  const [flash, setFlash] = useState<"up" | "down" | null>(null);
+  const prevPrice = useRef<number | null>(quote?.price ?? null);
+
+  useEffect(() => {
+    if (!quote) return;
+    const prev = prevPrice.current;
+    if (prev != null && prev !== quote.price) {
+      setFlash(quote.price > prev ? "up" : "down");
+      const id = setTimeout(() => setFlash(null), 1400);
+      prevPrice.current = quote.price;
+      return () => clearTimeout(id);
+    }
+    prevPrice.current = quote.price;
+  }, [quote?.price]);
+
   const dp = quote?.changePercent ?? null;
   const tone =
     dp == null
@@ -153,26 +158,38 @@ function WatchlistRow({
           ? "text-rose-300"
           : "text-muted-foreground";
   const sign = dp != null && dp > 0 ? "+" : "";
+
   return (
-    <li className="border-b border-border/40 transition-colors hover:bg-foreground/[0.025]">
+    <li
+      className={cn(
+        "border-b border-border/30 transition-colors duration-200 hover:bg-foreground/[0.025]",
+        flash === "up" && "flash-up",
+        flash === "down" && "flash-down",
+      )}
+    >
       <Link
         href={`/ticker/${item.symbol}`}
-        className="flex items-center gap-3 px-5 py-3"
+        className="grid grid-cols-[auto_1fr_auto] items-center gap-3 px-5 py-3"
       >
         <TickerLogo symbol={item.symbol} logoUrl={item.logoUrl} size="sm" />
-        <div className="min-w-0 flex-1">
-          <div className="tick font-mono text-sm font-bold uppercase text-foreground transition-colors hover:text-primary">
+        <div className="min-w-0">
+          <div className="tick truncate font-mono text-[13px] font-bold uppercase leading-tight text-foreground transition-colors duration-150 hover:text-primary">
             {item.symbol}
           </div>
-          <div className="font-editorial truncate text-xs leading-tight text-muted-foreground">
+          <div className="font-editorial truncate text-[12px] leading-tight text-muted-foreground/85">
             {item.name ?? "—"}
           </div>
         </div>
         <div className="flex flex-col items-end gap-0.5 font-mono">
-          <span className="tick text-sm font-semibold tabular-nums text-foreground">
+          <span className="tick text-[13px] font-semibold tabular-nums text-foreground">
             {quote ? formatPrice(quote.price) : "—"}
           </span>
-          <span className={cn("text-[11px] tabular-nums", tone)}>
+          <span
+            className={cn(
+              "tick text-[11px] font-medium tabular-nums transition-colors duration-200",
+              tone,
+            )}
+          >
             {dp != null ? `${sign}${dp.toFixed(2)}%` : "—"}
           </span>
         </div>
@@ -182,10 +199,7 @@ function WatchlistRow({
 }
 
 function formatPrice(p: number): string {
-  // Cripto / OTC pueden tener precios <1; equities mayoría >$5. Dos
-  // decimales son enough y consistentes con Bloomberg/Reuters.
   if (p >= 1000) return p.toFixed(0);
-  if (p >= 100) return p.toFixed(2);
   return p.toFixed(2);
 }
 
@@ -204,7 +218,7 @@ function LastTick({ ts }: { ts: number }) {
   }, [ts]);
   return (
     <span
-      className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70"
+      className="eyebrow-sm text-muted-foreground/65"
       title="Last quotes refresh"
     >
       {label}

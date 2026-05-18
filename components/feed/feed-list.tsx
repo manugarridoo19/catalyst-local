@@ -167,16 +167,21 @@ export function FeedList({ initial, watchlist = [], mode = "live" }: Props) {
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-4 border-b border-border/70 bg-card/30 px-5 py-2.5 backdrop-blur-sm">
-        <div className="flex items-center gap-3">
-          <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-            {toolbarLabel}
-          </div>
-          <span className="tick rounded-sm border border-border/60 bg-card/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-            {filtered.length}
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-border/60 bg-card/45 px-5 py-2.5 backdrop-blur-md">
+        <div className="flex items-baseline gap-3">
+          <div className="eyebrow text-muted-foreground">{toolbarLabel}</div>
+          <span
+            className="tick font-mono text-[11px] font-semibold tabular-nums text-foreground/80"
+            aria-label={`${filtered.length} items`}
+          >
+            {filtered.length.toString().padStart(2, "0")}
           </span>
         </div>
-        <div className="flex flex-wrap items-center gap-1 font-mono text-[11px]">
+        <div
+          className="flex flex-wrap items-center gap-0.5 font-mono text-[11px]"
+          role="tablist"
+          aria-label="Feed filters"
+        >
           {filters.map((f) => (
             <FilterChip
               key={f.id}
@@ -231,27 +236,34 @@ function FilterChip({
     <button
       onClick={onClick}
       disabled={disabled}
+      role="tab"
+      aria-selected={active}
       className={cn(
-        "rounded-sm border px-2 py-0.5 uppercase tracking-[0.18em] transition-all duration-150",
+        "relative rounded-sm px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.16em] transition-colors duration-150",
         active
-          ? "border-primary/60 bg-primary/10 text-primary shadow-[0_0_14px_oklch(0.78_0.13_75/0.25)]"
-          : "border-border/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+          ? "text-primary"
+          : "text-muted-foreground/80 hover:text-foreground",
         "disabled:cursor-not-allowed disabled:opacity-40",
       )}
     >
-      {children}
+      <span className="relative z-10">{children}</span>
+      {active && (
+        <span
+          aria-hidden
+          className="absolute inset-0 -z-0 rounded-sm border border-primary/40 bg-primary/[0.08]"
+        />
+      )}
     </button>
   );
 }
 
 function EmptyState() {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 p-10 text-center">
-      <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-        No matches for this filter
-      </div>
-      <p className="font-editorial max-w-sm text-base italic leading-relaxed text-muted-foreground/80">
-        Cambia el filtro o espera a que entre la próxima ronda de news.
+    <div className="flex h-full flex-col items-center justify-center gap-4 p-12 text-center">
+      <div className="eyebrow text-muted-foreground/60">No matches</div>
+      <p className="font-editorial max-w-sm text-[15px] leading-relaxed text-muted-foreground/85">
+        Nothing in this slice yet. Change the filter, or wait — the next batch
+        usually lands within a minute.
       </p>
     </div>
   );

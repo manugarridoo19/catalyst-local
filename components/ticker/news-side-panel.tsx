@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ImpactBadge, SentimentBadge } from "@/components/feed/score-badges";
 import { CategoryBadge } from "@/components/feed/category-badge";
-import { NewsExpanded, cleanSource, sentimentClasses } from "@/components/feed/news-shared";
+import { NewsExpanded, cleanSource, sentimentBgClass } from "@/components/feed/news-shared";
 import type { FeedItem } from "@/lib/feed-types";
 import { cn } from "@/lib/utils";
 
@@ -193,20 +193,26 @@ const NewsRow = function NewsRow({
   const ago = formatDistanceToNowStrict(new Date(item.publishedAt), {
     addSuffix: false,
   });
-  const { tone: sentimentTone, bg: sentimentBg } = sentimentClasses(item.sentiment);
+  const sentimentBg = sentimentBgClass(item.sentiment);
+  const isHighImpact = (item.impact ?? 0) >= 4;
 
   return (
     <div
       ref={ref}
       style={{ "--stagger-i": staggerIndex } as React.CSSProperties}
       className={cn(
-        "stagger-in relative border-b border-border/30 bg-gradient-to-r border-l-[3px]",
-        sentimentTone,
+        "stagger-in relative border-b border-border/30",
         sentimentBg,
-        focused && "bg-primary/[0.04]",
+        focused && "bg-primary/[0.05]",
         expanded && "bg-card/40",
       )}
     >
+      {isHighImpact && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 w-[2px] bg-primary/70"
+        />
+      )}
       <button
         type="button"
         onClick={onToggle}

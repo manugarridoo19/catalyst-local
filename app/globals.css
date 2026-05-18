@@ -144,85 +144,120 @@
   }
 }
 
-/* ----- Ambient layer: scanlines + grid texture + vignette --------------- */
+/* ============================================================================
+   Motion tokens — ease-out exponentials, predictable durations.
+   ============================================================================ */
+
+:root {
+  --ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
+  --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-out-expo: cubic-bezier(0.19, 1, 0.22, 1);
+  --dur-instant: 90ms;
+  --dur-fast: 160ms;
+  --dur-base: 220ms;
+  --dur-slow: 360ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+/* ============================================================================
+   Ambient layer — single soft radial wash. Drop the scanlines (terminal
+   cosplay) and quiet the grid to a near-invisible texture. One layer is
+   enough atmosphere; two was noise.
+   ============================================================================ */
 
 .ambient-bg {
   background:
     radial-gradient(
-      ellipse 80% 50% at 50% -10%,
-      oklch(0.78 0.13 75 / 0.06),
-      transparent 60%
+      ellipse 90% 60% at 50% -20%,
+      oklch(0.78 0.13 75 / 0.05),
+      transparent 65%
     ),
     radial-gradient(
-      ellipse 60% 40% at 100% 100%,
-      oklch(0.6 0.05 245 / 0.05),
-      transparent 60%
+      ellipse 70% 50% at 100% 110%,
+      oklch(0.6 0.05 245 / 0.045),
+      transparent 65%
     ),
     var(--background);
 }
 
-.ambient-scanlines,
 .ambient-grid {
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 1;
-}
-
-.ambient-scanlines {
-  background: repeating-linear-gradient(
-    to bottom,
-    transparent 0,
-    transparent 2px,
-    oklch(1 0 0 / 0.012) 2px,
-    oklch(1 0 0 / 0.012) 3px
-  );
-  mix-blend-mode: screen;
-}
-
-.ambient-grid {
   background-image:
-    linear-gradient(to right, oklch(1 0 0 / 0.018) 1px, transparent 1px),
-    linear-gradient(to bottom, oklch(1 0 0 / 0.018) 1px, transparent 1px);
-  background-size: 64px 64px;
+    linear-gradient(to right, oklch(1 0 0 / 0.012) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(1 0 0 / 0.012) 1px, transparent 1px);
+  background-size: 80px 80px;
   mask-image: radial-gradient(
-    ellipse 90% 70% at 50% 50%,
-    black 30%,
-    transparent 90%
+    ellipse 80% 60% at 50% 40%,
+    black 0%,
+    transparent 80%
   );
 }
 
-/* Mantener UI por encima de las capas decorativas. */
-body > *:not(.ambient-scanlines):not(.ambient-grid) {
+body > *:not(.ambient-grid) {
   position: relative;
   z-index: 2;
 }
 
-/* ----- News card glow when freshly arrived via Pusher ------------------- */
+/* ============================================================================
+   Fresh-arrival highlight — sweep, not slab. A pale copper sheen washes
+   from left to right over the new row, then dissolves. Reads as "this just
+   landed" without painting the whole card.
+   ============================================================================ */
 
-@keyframes catalyst-fresh {
+@keyframes catalyst-fresh-sweep {
   0% {
-    background: linear-gradient(
-      90deg,
-      oklch(0.78 0.13 75 / 0.22) 0%,
-      oklch(0.78 0.13 75 / 0.04) 100%
-    );
+    background-position: -100% 0;
+    opacity: 1;
   }
   100% {
-    background: transparent;
+    background-position: 200% 0;
+    opacity: 0;
   }
 }
 
 .news-fresh {
-  animation: catalyst-fresh 2.8s ease-out;
+  position: relative;
+  isolation: isolate;
+}
+.news-fresh::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    transparent 35%,
+    oklch(0.78 0.13 75 / 0.18) 50%,
+    transparent 65%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: catalyst-fresh-sweep 2.4s var(--ease-out-quart) forwards;
 }
 
-/* ----- Card stagger entrance — fade-up con --i delay ------------------- */
+/* ============================================================================
+   Stagger entrance — tighter, lower amplitude. Was 8px/22ms, now 6px/18ms
+   so the cascade resolves before the eye starts reading.
+   ============================================================================ */
 
 @keyframes catalyst-stagger {
   0% {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   100% {
     opacity: 1;
@@ -231,47 +266,147 @@ body > *:not(.ambient-scanlines):not(.ambient-grid) {
 }
 
 .stagger-in {
-  animation: catalyst-stagger 0.36s ease-out backwards;
-  animation-delay: calc(var(--stagger-i, 0) * 22ms);
+  animation: catalyst-stagger var(--dur-slow) var(--ease-out-quart) backwards;
+  animation-delay: calc(var(--stagger-i, 0) * 18ms);
 }
 
-/* ----- Expandable card body reveal -------------------------------------- */
+/* ============================================================================
+   Expandable card body reveal — height transition would jank; we fade and
+   slide the content over a fixed container instead.
+   ============================================================================ */
 
 @keyframes catalyst-expand {
-  0% { opacity: 0; transform: translateY(-2px); }
-  100% { opacity: 1; transform: translateY(0); }
+  0% {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .card-expand {
-  animation: catalyst-expand 0.22s ease-out;
+  animation: catalyst-expand var(--dur-base) var(--ease-out-quint);
 }
 
-/* ----- Live status pulsing dot ------------------------------------------ */
+/* ============================================================================
+   Live status pulse — single source of glow in the whole UI. Anything else
+   pretending to "pulse" should pick a different language.
+   ============================================================================ */
 
 @keyframes catalyst-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.85); }
+  0%, 100% {
+    box-shadow: 0 0 0 0 oklch(0.7 0.16 145 / 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 6px oklch(0.7 0.16 145 / 0);
+  }
 }
 
 .live-dot {
-  animation: catalyst-pulse 1.6s ease-in-out infinite;
+  animation: catalyst-pulse 1.8s var(--ease-out-quart) infinite;
 }
 
-/* ----- Numeric ticker — slight glyph weight bump for legibility --------- */
+/* ============================================================================
+   Price flash — quotes that just changed up/down get a single, brief
+   colored wash on the row, never on the number itself (so the digit
+   doesn't reflow).
+   ============================================================================ */
+
+@keyframes catalyst-flash-up {
+  0% { background-color: oklch(0.7 0.16 145 / 0.22); }
+  100% { background-color: transparent; }
+}
+@keyframes catalyst-flash-down {
+  0% { background-color: oklch(0.66 0.21 24 / 0.22); }
+  100% { background-color: transparent; }
+}
+
+.flash-up { animation: catalyst-flash-up 1.4s var(--ease-out-expo); }
+.flash-down { animation: catalyst-flash-down 1.4s var(--ease-out-expo); }
+
+/* ============================================================================
+   Sentiment bar fill — divergent horizontal bar (-5 … +5) that animates
+   from center on mount.
+   ============================================================================ */
+
+@keyframes catalyst-bar-fill {
+  0% { transform: scaleX(0); }
+  100% { transform: scaleX(1); }
+}
+
+.bar-fill {
+  transform-origin: var(--bar-origin, left);
+  animation: catalyst-bar-fill var(--dur-slow) var(--ease-out-expo);
+}
+
+/* ============================================================================
+   Tab-active underline — slides into place under whichever nav item is
+   current. Replaces the boxy active background.
+   ============================================================================ */
+
+.nav-underline {
+  transition: transform var(--dur-base) var(--ease-out-quart),
+              opacity var(--dur-fast) var(--ease-out-quart),
+              width var(--dur-base) var(--ease-out-quart);
+}
+
+/* ============================================================================
+   Numeric ticker — tabular nums + slashed-zero for legibility at a glance.
+   ============================================================================ */
 
 .tick {
   font-feature-settings: "tnum", "zero", "ss01";
   font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: "tnum" 1, "zero" 1, "ss01" 1, "cv11" 1;
 }
 
-/* ----- Selection — copper amber on dark blue ---------------------------- */
+/* Eyebrow utility — replaces the dozens of inline mono+uppercase+tracking
+   spans peppered across the UI. One canonical eyebrow style. */
+.eyebrow {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  font-feature-settings: "tnum", "ss01";
+}
+
+.eyebrow-sm {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+/* ============================================================================
+   Subtle hover-lift for interactive cards — translateY only (no shadow
+   inflation), 1px is plenty given the tight density.
+   ============================================================================ */
+
+.lift-on-hover {
+  transition: transform var(--dur-fast) var(--ease-out-quart),
+              background-color var(--dur-fast) var(--ease-out-quart);
+}
+.lift-on-hover:hover {
+  transform: translateY(-1px);
+}
+
+/* ============================================================================
+   Selection — copper amber on dark blue. Kept.
+   ============================================================================ */
 
 ::selection {
   background: oklch(0.78 0.13 75 / 0.35);
   color: oklch(0.95 0.012 80);
 }
 
-/* ----- Custom scrollbar within the feed --------------------------------- */
+/* ============================================================================
+   Custom scrollbar within scroll containers. Narrower, less prominent.
+   ============================================================================ */
 
 .cat-scroll::-webkit-scrollbar {
   width: 6px;
@@ -281,9 +416,20 @@ body > *:not(.ambient-scanlines):not(.ambient-grid) {
   background: transparent;
 }
 .cat-scroll::-webkit-scrollbar-thumb {
-  background: oklch(0.92 0.01 80 / 10%);
+  background: oklch(0.92 0.01 80 / 8%);
   border-radius: 3px;
+  transition: background var(--dur-fast) var(--ease-out-quart);
 }
 .cat-scroll::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.78 0.13 75 / 50%);
+  background: oklch(0.78 0.13 75 / 40%);
+}
+
+/* ============================================================================
+   Focus ring — a single coherent focus treatment for keyboard nav.
+   ============================================================================ */
+
+:where(button, a, [role="button"], input, textarea, select):focus-visible {
+  outline: 2px solid oklch(0.78 0.13 75 / 0.65);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
