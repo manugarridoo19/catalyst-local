@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Catalyst Local — macOS LaunchAgent.
+
+  Runs the production `next start` build on port 3030 so the dashboard is
+  reachable from localhost even when Vercel is suspended. Auto-starts on
+  login, restarts on crash (throttled), bounded RAM and FDs.
+
+  Install (copies this plist into ~/Library/LaunchAgents and loads it):
+      scripts/local-daemon.sh install
+
+  This file is the source of truth; the daemon script copies it to
+  ~/Library/LaunchAgents/com.catalyst.local.plist on install.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.catalyst.local</string>
+
+  <!-- Direct invocation of pnpm — no shell wrapper so we don't hit TCC
+       restrictions when launchd tries to chdir into ~/Desktop. PATH is
+       set explicitly via EnvironmentVariables below so child processes
+       (node, etc.) resolve. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/pnpm</string>
+    <string>--dir</string>
+    <string>/Users/manuelgarrido/Desktop/catalyst-local</string>
+    <string>start</string>
+    <string>--port</string>
+    <string>3030</string>
+  </array>
+
+  <!-- WorkingDirectory omitted intentionally — letting launchd start the
+       process in /tmp and using `pnpm --dir` to target the repo avoids
+       the TCC "Operation not permitted" error that fires when a
+       LaunchAgent tries to chdir into a Desktop-protected directory.
+       The user only needs to grant /opt/homebrew/bin/pnpm permission
+       (or accept the per-folder prompt the first time it reads
+       ~/Desktop/catalyst-local). -->
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- KeepAlive with SuccessfulExit=false means: relaunch the process if
+       it exits with a non-zero status. Plain crashes get respawned, but
+       a clean shutdown doesn't loop. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Wait 30 seconds between respawn attempts so a broken build doesn't
+       spin and burn CPU. With launchd's default minimum (10s) plus this,
+       a crash loop is bounded. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <!-- Resource limits applied to the child process. These cap the damage
+       if next-server ever runs away (the original RAM-leak incident was
+       in dev mode, but limits are cheap insurance). -->
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>4096</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>8192</integer>
+  </dict>
+
+  <!-- LOCAL_MODE + LOCAL_DEFAULT_SESSION_ID let the server fall back to a
+       known session UUID when the localhost cookie is missing, so the
+       user's watchlist appears without manual cookie injection. Empty
+       string here = no fallback; set in the user's shell or .env.local
+       to enable. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>LOCAL_MODE</key>
+    <string>1</string>
+    <key>NODE_OPTIONS</key>
+    <string>--max-old-space-size=512</string>
+    <!-- Explicit PATH so pnpm finds node + spawned binaries even though
+         we don't go through a login shell. /opt/homebrew/bin first for
+         Apple Silicon Homebrew. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/manuelgarrido</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/manuelgarrido/Desktop/catalyst-local/.next/daemon-logs/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/manuelgarrido/Desktop/catalyst-local/.next/daemon-logs/stderr.log</string>
+
+  <!-- Throttle CPU priority so the daemon never starves foreground apps
+       on the user's Mac. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>5</integer>
+</dict>
+</plist>

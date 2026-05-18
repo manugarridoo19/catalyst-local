@@ -64,7 +64,7 @@ Manual trigger if needed: `gh workflow run cron-runner.yml -R manugarridoo19/cat
 ## Build & test
 
 ```bash
-pnpm dev              # local dev server
+pnpm dev              # local dev server (port 3000)
 pnpm build            # production build
 pnpm typecheck        # tsc --noEmit
 pnpm lint             # eslint
@@ -72,6 +72,39 @@ pnpm db:generate      # generate migration after schema changes
 pnpm db:migrate       # apply migrations to Neon
 pnpm cron:local       # run cron pipeline once locally
 ```
+
+## Local daemon — Vercel-down fallback
+
+When Vercel is suspended (Hobby cap, account issues), the dashboard can
+keep serving from `localhost:3030` via a macOS LaunchAgent that runs the
+prod `next start` build, auto-restarts on crash, and pins the user's
+session UUID via env vars so the watchlist appears without manual cookie
+injection.
+
+```bash
+pnpm daemon:install   # First-time setup: builds, installs plist, starts agent
+pnpm daemon:status    # Show plist + agent + port + URL
+pnpm daemon:logs      # Tail stdout + stderr
+pnpm daemon:restart   # Stop, rebuild if source newer, start
+pnpm daemon:stop      # Unload agent + kill any stray listener
+```
+
+- Port: `3030` (chosen to coexist with `pnpm dev` on 3000)
+- Plist source: `scripts/com.catalyst.local.plist`
+- Installed at: `~/Library/LaunchAgents/com.catalyst.local.plist`
+- Logs: `.next/daemon-logs/{stdout,stderr}.log`
+- RAM: ~130-200MB RSS (bounded by `--max-old-space-size=512` in plist)
+
+**Session pinning**: set `LOCAL_DEFAULT_SESSION_ID=<your-uuid>` in the user
+environment or `.env.local`. Combined with `LOCAL_MODE=1` (set by the
+plist), `lib/session.ts` falls back to that UUID when no cookie is
+present. Never set `LOCAL_MODE=1` on Vercel — would pin all anonymous
+users to the same watchlist.
+
+**TCC gotcha**: the plist uses `pnpm --dir /abs/path` instead of a shell
+wrapper because LaunchAgents cannot `chdir` into `~/Desktop` on modern
+macOS without Full Disk Access for `/bin/bash`. The `--dir` flag dodges
+the issue. If you move the repo out of `~/Desktop`, you can simplify.
 
 ## Common gotchas
 

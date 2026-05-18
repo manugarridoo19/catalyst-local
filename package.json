@@ -14,7 +14,13 @@
     "db:studio": "drizzle-kit studio",
     "backfill": "tsx scripts/backfill-news.ts",
     "cron:local": "tsx scripts/run-cron-local.ts",
-    "cron:remote": "tsx scripts/cron-runner.ts"
+    "cron:remote": "tsx scripts/cron-runner.ts",
+    "daemon": "bash scripts/local-daemon.sh",
+    "daemon:install": "bash scripts/local-daemon.sh install",
+    "daemon:status": "bash scripts/local-daemon.sh status",
+    "daemon:logs": "bash scripts/local-daemon.sh logs",
+    "daemon:restart": "bash scripts/local-daemon.sh restart",
+    "daemon:stop": "bash scripts/local-daemon.sh stop"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
