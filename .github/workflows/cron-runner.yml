@@ -39,6 +39,10 @@ jobs:
           MARKETAUX_API_KEY: ${{ secrets.MARKETAUX_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+          # Comma-separated pool of OpenRouter keys (multi-account) read by
+          # lib/providers/openrouter.ts. Rotates on free-models-per-day 429s.
+          # Falls back to OPENROUTER_API_KEY when this secret is empty.
+          OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
           PUSHER_APP_ID: ${{ secrets.PUSHER_APP_ID }}

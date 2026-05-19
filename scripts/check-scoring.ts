@@ -64,6 +64,16 @@ async function main() {
   }
   console.log("\n=== models used in last 24h ===");
   console.log(scoreModel);
+
+  // OpenRouter key pool live status (which keys are available right now).
+  const { getKeyPoolStatus } = await import("../lib/providers/openrouter");
+  const pool = getKeyPoolStatus();
+  console.log(`\n=== OpenRouter key pool (${pool.available}/${pool.total} live) ===`);
+  for (const k of pool.pool) {
+    console.log(
+      `  ${k.label}  ${k.available ? "AVAILABLE" : `cooled → ${k.cooldownUntil ?? "?"}`}`,
+    );
+  }
 }
 
 main()

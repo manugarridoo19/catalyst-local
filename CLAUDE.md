@@ -106,6 +106,33 @@ wrapper because LaunchAgents cannot `chdir` into `~/Desktop` on modern
 macOS without Full Disk Access for `/bin/bash`. The `--dir` flag dodges
 the issue. If you move the repo out of `~/Desktop`, you can simplify.
 
+## OpenRouter key pool
+
+Free-tier scoring uses a pool of OpenRouter API keys to multiply the
+`free-models-per-day` cap (1000 calls/day account-wide). When a key
+returns a 429 whose body contains `free-models-per-day`, the provider
+marks that whole key cooled-down until the next 00:00 UTC and rotates
+to the next available key. Per-model RPM/TPM 429s still fall through
+the model fallback chain on the same key.
+
+```bash
+# .env.local  OR  GitHub Secrets
+OPENROUTER_API_KEYS=sk-or-v1-aaa…,sk-or-v1-bbb…,sk-or-v1-ccc…
+# Or single-key (back-compat):
+OPENROUTER_API_KEY=sk-or-v1-aaa…
+```
+
+`getKeyPoolStatus()` in `lib/providers/openrouter.ts` returns the live
+pool state (labels + cooldownUntil) without exposing the keys
+themselves — wire it into a script or `/api/health` when you want to
+see which keys are alive.
+
+**Important**: OpenRouter ToS forbids multiple accounts per person.
+Using key rotation across separate accounts carries account-ban risk
+(detected via IP, payment fingerprint, or email pattern). This is a
+user-accepted tradeoff; never document the multi-account technique
+publicly or commit the keys.
+
 ## Common gotchas
 
 - Drizzle Kit and tsx scripts need explicit `.env.local` loading via `dotenv` config — don't use `dotenv/config` since static imports are hoisted before env loads.
