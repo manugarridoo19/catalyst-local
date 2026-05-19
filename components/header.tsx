@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Activity, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { getPusherClient, NEWS_CHANNEL, NEWS_EVENT } from "@/lib/pusher/client";
 import { cn } from "@/lib/utils";
 
@@ -86,24 +87,27 @@ export function Header() {
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border/70 bg-card/55 px-6 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-card/40">
       <div className="flex items-center gap-7">
-        <Link href="/" className="group flex items-center gap-3">
-          <div className="relative flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground transition-transform duration-200 group-hover:scale-[1.04]">
-            <Activity className="h-4 w-4" strokeWidth={2.5} />
-            {/* Subtle glow ring — appears only on hover so the logo
-                doesn't compete with the data on resting state. */}
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-0 rounded-md ring-1 ring-primary/30 opacity-0 transition-opacity duration-200 group-hover:opacity-100"
-              style={{ boxShadow: "0 0 18px oklch(0.78 0.13 75 / 0.55)" }}
+        <Link
+          href="/"
+          aria-label="Catalyst home"
+          className="group flex items-center gap-3"
+        >
+          {/* Brand wordmark. Source artwork is dark navy serif on cream
+              ground; we frame it in a slim rounded plate so the
+              cream background reads as an intentional brand inset
+              against the dark header. Slight scale on hover only. */}
+          <div className="relative overflow-hidden rounded-md ring-1 ring-border/60 transition-transform duration-200 group-hover:scale-[1.03] group-hover:ring-primary/40">
+            <Image
+              src="/catalyst-logo.png"
+              alt="Catalyst"
+              width={180}
+              height={100}
+              priority
+              className="block h-10 w-auto"
             />
           </div>
-          <div className="flex flex-col leading-none">
-            <div className="font-editorial text-[17px] font-semibold tracking-tight text-foreground">
-              Catalyst
-            </div>
-            <div className="eyebrow mt-1 text-[9px] text-muted-foreground/70">
-              Realtime market intelligence
-            </div>
+          <div className="eyebrow hidden text-[9px] text-muted-foreground/70 lg:block">
+            Realtime market intelligence
           </div>
         </Link>
 

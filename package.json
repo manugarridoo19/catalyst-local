@@ -20,7 +20,8 @@
     "daemon:status": "bash scripts/local-daemon.sh status",
     "daemon:logs": "bash scripts/local-daemon.sh logs",
     "daemon:restart": "bash scripts/local-daemon.sh restart",
-    "daemon:stop": "bash scripts/local-daemon.sh stop"
+    "daemon:stop": "bash scripts/local-daemon.sh stop",
+    "daemon:open": "bash scripts/local-daemon.sh open"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
