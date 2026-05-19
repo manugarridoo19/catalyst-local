@@ -92,18 +92,27 @@ export function Header() {
           aria-label="Catalyst home"
           className="group flex items-center gap-3"
         >
-          {/* Brand wordmark. Source artwork is dark navy serif on cream
-              ground; we frame it in a slim rounded plate so the
-              cream background reads as an intentional brand inset
-              against the dark header. Slight scale on hover only. */}
-          <div className="relative overflow-hidden rounded-md ring-1 ring-border/60 transition-transform duration-200 group-hover:scale-[1.03] group-hover:ring-primary/40">
+          {/* Brand wordmark — bitmap source is dark navy serif on cream
+              ground. To make it cohere with the dark header without a
+              jarring light plate:
+                - filter: invert(1) flips the colors (cream→navy bg,
+                  navy→cream text).
+                - mix-blend-mode: lighten then collapses the now-dark
+                  background into the header surface (max() per channel
+                  keeps the header pixel) while the cream text wins.
+              Result: cream "CATALYST" floating directly on the header,
+              no white block. On a future light theme, we drop the
+              filter so the original cream-on-cream layout reads as
+              warm paper. */}
+          <div className="relative h-9 transition-transform duration-200 group-hover:scale-[1.03]">
             <Image
               src="/catalyst-logo.png"
               alt="Catalyst"
-              width={180}
-              height={100}
+              width={320}
+              height={178}
               priority
-              className="block h-10 w-auto"
+              className="block h-full w-auto select-none dark:[filter:invert(1)] dark:[mix-blend-mode:lighten]"
+              draggable={false}
             />
           </div>
           <div className="eyebrow hidden text-[9px] text-muted-foreground/70 lg:block">
