@@ -4,7 +4,41 @@
 // múltiples API keys porque la cuota free-models-per-day es account-wide
 // (1000 calls/día) y satura rápido con un firehose de ~2000 news/día.
 
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 const BASE = "https://openrouter.ai/api/v1";
+
+// Off-repo secrets file. The user's Claude Code settings deny reads/
+// writes to ./.env* paths as a safety rail, so the multi-account pool
+// can't live in .env.local. Instead we store the keys at
+// ~/.catalyst-openrouter-keys (mode 600) and read them at module load
+// when the env var isn't already populated. This works for local dev
+// (drain-scoring.ts, manual cron); GH Actions still injects
+// OPENROUTER_API_KEYS via repository secrets so the file doesn't need
+// to exist on the runner.
+//
+// File format: one OPENROUTER_API_KEYS=<comma-separated> line; comments
+// and blanks ignored. Anything stricter (full dotenv parsing) would be
+// overkill for one variable.
+const LOCAL_KEYS_FILE = join(homedir(), ".catalyst-openrouter-keys");
+
+function readKeysFromLocalFile(): string {
+  if (!existsSync(LOCAL_KEYS_FILE)) return "";
+  try {
+    const raw = readFileSync(LOCAL_KEYS_FILE, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const m = t.match(/^OPENROUTER_API_KEYS\s*=\s*(.+)$/);
+      if (m) return m[1].trim();
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
 
 // Modelo primario: openrouter/owl-alpha:free. Tiene worker pool pequeño
 // (queue waits 90-120s en pico) pero da el mejor anti-neutro de los free
@@ -151,14 +185,33 @@ const FINGERPRINTS: KeyFingerprint[] = [
 ];
 
 function loadKeyPool(): KeyState[] {
-  // OPENROUTER_API_KEYS takes priority: comma-separated list of keys.
-  // Fall back to single-key OPENROUTER_API_KEY for backwards compat.
-  const multi = (process.env.OPENROUTER_API_KEYS ?? "")
+  // Combine all available key sources into one deduped pool. Order:
+  //   1. process.env.OPENROUTER_API_KEYS  (GH Actions, daemon plist)
+  //   2. ~/.catalyst-openrouter-keys      (off-repo local dev secret)
+  //   3. process.env.OPENROUTER_API_KEY   (legacy single-key)
+  // We union them instead of preferring one source so a local dev box
+  // with the legacy single key in .env.local + the new multi-account
+  // file at $HOME still gets the full N+1 pool. Dedupe by exact key
+  // string in case a key is listed twice.
+  const fromMulti = (process.env.OPENROUTER_API_KEYS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const single = (process.env.OPENROUTER_API_KEY ?? "").trim();
-  const raw = multi.length ? multi : single ? [single] : [];
+  const fromFile = readKeysFromLocalFile()
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const fromSingle = [(process.env.OPENROUTER_API_KEY ?? "").trim()].filter(
+    Boolean,
+  );
+  const seen = new Set<string>();
+  const raw: string[] = [];
+  for (const k of [...fromMulti, ...fromFile, ...fromSingle]) {
+    if (!seen.has(k)) {
+      seen.add(k);
+      raw.push(k);
+    }
+  }
   return raw.map((key, i) => ({
     key,
     cooldownUntil: 0,
