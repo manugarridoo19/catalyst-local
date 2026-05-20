@@ -21,7 +21,12 @@
     "daemon:logs": "bash scripts/local-daemon.sh logs",
     "daemon:restart": "bash scripts/local-daemon.sh restart",
     "daemon:stop": "bash scripts/local-daemon.sh stop",
-    "daemon:open": "bash scripts/local-daemon.sh open"
+    "daemon:open": "bash scripts/local-daemon.sh open",
+    "scorer:install": "bash scripts/local-daemon.sh scorer-install",
+    "scorer:status": "bash scripts/local-daemon.sh status",
+    "scorer:stop": "bash scripts/local-daemon.sh scorer-stop",
+    "scorer:logs": "bash scripts/local-daemon.sh scorer-logs",
+    "scorer:run": "bash scripts/local-daemon.sh scorer-run"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

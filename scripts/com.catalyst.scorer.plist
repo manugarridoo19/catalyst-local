@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Catalyst Local — scorer LaunchAgent.
+
+  Runs `drain-scoring.ts 30` every 15 minutes to keep the news feed
+  graded as items land. Complements the GH Actions cron (which is
+  throttled by GitHub on public repos to 1-4h between scheduled
+  invocations) by using the user's Mac to fire faster, smaller bursts.
+
+  30 items × 4 ticks/h × 12 h/day = ~1440 scoring calls/day, well under
+  the combined daily budget of 3 OpenRouter free-tier keys + Groq. The
+  drain script aborts after 3 zero-score ticks so a quota-exhausted
+  day costs near-zero CPU.
+
+  Install / control via scripts/local-daemon.sh.
+
+  Same TCC workaround as com.catalyst.local.plist: pnpm --dir so we
+  don't chdir into ~/Desktop. Same off-repo secrets file
+  (~/.catalyst-openrouter-keys) is read by lib/providers/openrouter.ts
+  at runtime.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.catalyst.scorer</string>
+
+  <!-- `pnpm exec` runs a binary from node_modules/.bin so the CLI doesn't
+       try to interpret `tsx` as a package.json script (which triggered
+       ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL on the first attempt). The
+       `--dir` flag fixes pnpm's working dir without launchd needing to
+       chdir, dodging the macOS TCC restriction on ~/Desktop. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/pnpm</string>
+    <string>--dir</string>
+    <string>/Users/manuelgarrido/Desktop/catalyst-local</string>
+    <string>exec</string>
+    <string>tsx</string>
+    <string>scripts/drain-scoring.ts</string>
+    <string>30</string>
+  </array>
+
+  <!-- Fire immediately on load, then every 900s = 15 min. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <!-- Don't relaunch on exit — StartInterval handles cadence. KeepAlive
+       would spin a one-shot script in a hot loop. -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>LOCAL_MODE</key>
+    <string>1</string>
+    <key>NODE_OPTIONS</key>
+    <string>--max-old-space-size=384</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/manuelgarrido</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/manuelgarrido/Desktop/catalyst-local/.next/daemon-logs/scorer-stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/manuelgarrido/Desktop/catalyst-local/.next/daemon-logs/scorer-stderr.log</string>
+
+  <!-- Lower priority than the main daemon — scoring catch-up shouldn't
+       steal foreground from the user's actual work. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>2048</integer>
+  </dict>
+</dict>
+</plist>

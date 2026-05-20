@@ -1,19 +1,32 @@
 #!/usr/bin/env bash
 # Catalyst local daemon — keep the dashboard reachable on localhost even
-# when Vercel is suspended. Wraps a macOS LaunchAgent that runs the
-# production `next start` build on port 3030, with auto-restart and
-# bounded resources so we don't reproduce the dev-mode RAM-leak incident.
+# when Vercel is suspended, and (optionally) keep the news feed graded
+# in the background via a second LaunchAgent. Wraps macOS LaunchAgents
+# with auto-restart, bounded resources, and TCC workarounds so we don't
+# reproduce the dev-mode RAM-leak incident.
 #
-# Usage:
-#   scripts/local-daemon.sh install   First-time setup: copies the plist and loads it
-#   scripts/local-daemon.sh start     Start (loads the agent)
-#   scripts/local-daemon.sh stop      Stop (unloads the agent)
-#   scripts/local-daemon.sh restart   Stop, build if needed, start
-#   scripts/local-daemon.sh status    Show agent state + port listener
-#   scripts/local-daemon.sh logs      Tail the daemon log
-#   scripts/local-daemon.sh build     Force-rebuild .next (run after pulling code)
+# Two agents managed here:
+#   com.catalyst.local    Production `next start` on port 3030, always on
+#   com.catalyst.scorer   `drain-scoring.ts 30` every 15 min (auto-grader)
+#
+# Usage (main daemon):
+#   scripts/local-daemon.sh install   First-time setup: build + load
+#   scripts/local-daemon.sh start     Load the agent
+#   scripts/local-daemon.sh stop      Unload the agent
+#   scripts/local-daemon.sh restart   Stop, rebuild if needed, start
+#   scripts/local-daemon.sh status    Both agents' state + port listener
+#   scripts/local-daemon.sh logs      Tail daemon stdout + stderr
+#   scripts/local-daemon.sh build     Force-rebuild .next
 #   scripts/local-daemon.sh uninstall Remove plist + unload
-#   scripts/local-daemon.sh open      Open the dashboard in default browser
+#   scripts/local-daemon.sh open      Open dashboard in default browser
+#
+# Usage (auto-scorer):
+#   scripts/local-daemon.sh scorer-install   Install the scorer plist
+#   scripts/local-daemon.sh scorer-start     Load (runs every 15 min)
+#   scripts/local-daemon.sh scorer-stop      Unload
+#   scripts/local-daemon.sh scorer-logs      Tail scorer stdout + stderr
+#   scripts/local-daemon.sh scorer-run       Run one drain tick now (foreground)
+#   scripts/local-daemon.sh scorer-uninstall Remove plist + unload
 
 set -euo pipefail
 
@@ -21,12 +34,22 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${CATALYST_LOCAL_PORT:-3030}"
+
+# Main daemon (next start)
 PLIST_LABEL="com.catalyst.local"
 PLIST_TARGET="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 PLIST_SOURCE="$REPO_DIR/scripts/${PLIST_LABEL}.plist"
+
+# Auto-scorer (drain-scoring on a 15-min interval)
+SCORER_LABEL="com.catalyst.scorer"
+SCORER_TARGET="$HOME/Library/LaunchAgents/${SCORER_LABEL}.plist"
+SCORER_SOURCE="$REPO_DIR/scripts/${SCORER_LABEL}.plist"
+
 LOG_DIR="$REPO_DIR/.next/daemon-logs"
 LOG_OUT="$LOG_DIR/stdout.log"
 LOG_ERR="$LOG_DIR/stderr.log"
+SCORER_LOG_OUT="$LOG_DIR/scorer-stdout.log"
+SCORER_LOG_ERR="$LOG_DIR/scorer-stderr.log"
 BUILD_MARKER="$REPO_DIR/.next/BUILD_ID"
 
 # --- Helpers -----------------------------------------------------------------
@@ -43,6 +66,10 @@ ensure_dirs() {
 
 is_loaded() {
   launchctl list 2>/dev/null | grep -q "$PLIST_LABEL"
+}
+
+scorer_loaded() {
+  launchctl list 2>/dev/null | grep -q "$SCORER_LABEL"
 }
 
 is_port_busy() {
@@ -136,7 +163,7 @@ cmd_build() {
 
 cmd_status() {
   printf "\n"
-  c_dim "─── catalyst local daemon ───────────────────────"
+  c_dim "─── catalyst main daemon (next start, port $PORT) ──"
   if [ -f "$PLIST_TARGET" ]; then
     c_ok "plist:     installed at $PLIST_TARGET"
   else
@@ -156,8 +183,25 @@ cmd_status() {
     c_warn "port $PORT:  free (server not responding)"
   fi
   printf "\n"
-  c_dim "logs:      $LOG_OUT"
-  c_dim "errors:    $LOG_ERR"
+  c_dim "─── catalyst auto-scorer (drain every 15 min) ──────"
+  if [ -f "$SCORER_TARGET" ]; then
+    c_ok "plist:     installed at $SCORER_TARGET"
+  else
+    c_warn "plist:     NOT installed (run: scripts/local-daemon.sh scorer-install)"
+  fi
+  if scorer_loaded; then
+    SCORER_PID="$(launchctl list | awk -v lbl="$SCORER_LABEL" '$3 == lbl {print $1}')"
+    c_ok "agent:     loaded (PID=${SCORER_PID:-—} when running)"
+    if [ -f "$SCORER_LOG_OUT" ]; then
+      LAST="$(tail -n 1 "$SCORER_LOG_OUT" 2>/dev/null | sed 's/^/             /')"
+      [ -n "$LAST" ] && c_dim "last log:  $(echo "$LAST" | sed 's/^[[:space:]]*//')"
+    fi
+  else
+    c_warn "agent:     not loaded"
+  fi
+  printf "\n"
+  c_dim "logs:      $LOG_OUT, $SCORER_LOG_OUT"
+  c_dim "errors:    $LOG_ERR, $SCORER_LOG_ERR"
   printf "\n"
 }
 
@@ -182,20 +226,93 @@ cmd_open() {
   open "http://localhost:$PORT"
 }
 
+# --- Scorer agent commands ---------------------------------------------------
+
+cmd_scorer_install() {
+  ensure_dirs
+  if [ ! -f "$SCORER_SOURCE" ]; then
+    c_err "Source plist not found at $SCORER_SOURCE"
+    exit 1
+  fi
+  cp "$SCORER_SOURCE" "$SCORER_TARGET"
+  c_ok "Installed $SCORER_TARGET"
+  cmd_scorer_start
+}
+
+cmd_scorer_start() {
+  ensure_dirs
+  if [ ! -f "$SCORER_TARGET" ]; then
+    c_warn "No scorer plist installed yet — running scorer-install first."
+    cmd_scorer_install
+    return
+  fi
+  if scorer_loaded; then
+    c_dim "Scorer already loaded."
+  else
+    launchctl load -w "$SCORER_TARGET"
+    c_ok "Scorer loaded. Will run drain-scoring.ts 30 every 15 minutes."
+  fi
+  sleep 1
+  cmd_status
+}
+
+cmd_scorer_stop() {
+  if [ -f "$SCORER_TARGET" ] && scorer_loaded; then
+    launchctl unload -w "$SCORER_TARGET"
+    c_ok "Scorer unloaded."
+  else
+    c_dim "Scorer was not loaded."
+  fi
+  # Belt-and-suspenders: kill any in-flight drain run from this agent.
+  for p in $(pgrep -f "scripts/drain-scoring.ts" 2>/dev/null); do
+    c_dim "Killing in-flight drain PID $p"
+    kill "$p" 2>/dev/null || true
+  done
+}
+
+cmd_scorer_uninstall() {
+  cmd_scorer_stop
+  if [ -f "$SCORER_TARGET" ]; then
+    rm "$SCORER_TARGET"
+    c_ok "Removed $SCORER_TARGET"
+  fi
+}
+
+cmd_scorer_logs() {
+  ensure_dirs
+  if [ ! -f "$SCORER_LOG_OUT" ] && [ ! -f "$SCORER_LOG_ERR" ]; then
+    c_warn "No scorer logs yet. Start the scorer first."
+    exit 1
+  fi
+  tail -F "$SCORER_LOG_OUT" "$SCORER_LOG_ERR"
+}
+
+cmd_scorer_run() {
+  # One-shot run, foreground. Useful to verify the path / env before
+  # handing it to launchctl. Skips the StartInterval cadence.
+  (cd "$REPO_DIR" && pnpm tsx scripts/drain-scoring.ts "${2:-30}")
+}
+
 # --- Dispatch ----------------------------------------------------------------
 
 case "${1:-}" in
-  install)   cmd_install ;;
-  start)     cmd_start ;;
-  stop)      cmd_stop ;;
-  restart)   cmd_restart ;;
-  status)    cmd_status ;;
-  logs)      cmd_logs ;;
-  build)     cmd_build ;;
-  uninstall) cmd_uninstall ;;
-  open)      cmd_open ;;
+  install)           cmd_install ;;
+  start)             cmd_start ;;
+  stop)              cmd_stop ;;
+  restart)           cmd_restart ;;
+  status)            cmd_status ;;
+  logs)              cmd_logs ;;
+  build)             cmd_build ;;
+  uninstall)         cmd_uninstall ;;
+  open)              cmd_open ;;
+  scorer-install)    cmd_scorer_install ;;
+  scorer-start)      cmd_scorer_start ;;
+  scorer-stop)       cmd_scorer_stop ;;
+  scorer-uninstall)  cmd_scorer_uninstall ;;
+  scorer-logs)       cmd_scorer_logs ;;
+  scorer-run)        cmd_scorer_run "$@" ;;
   ""|help|-h|--help)
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     c_err "Unknown command: $1"

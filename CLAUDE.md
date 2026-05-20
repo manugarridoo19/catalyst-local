@@ -106,6 +106,28 @@ wrapper because LaunchAgents cannot `chdir` into `~/Desktop` on modern
 macOS without Full Disk Access for `/bin/bash`. The `--dir` flag dodges
 the issue. If you move the repo out of `~/Desktop`, you can simplify.
 
+### Auto-scorer (second LaunchAgent)
+
+A companion `com.catalyst.scorer` agent runs
+`drain-scoring.ts 30` every 15 minutes from your Mac. It complements
+the GH Actions cron (which GitHub throttles to 1-4h intervals on public
+repos) by firing smaller, faster bursts. Math: 30 items × 4 ticks/h ×
+~12 awake-hours/day = ~1,440 items/day, enough to maintain coverage
+against the typical ~2,000 news/day inflow.
+
+```bash
+pnpm scorer:install   # First-time: copy plist + load + run immediately
+pnpm scorer:status    # Both daemons' state (same as pnpm daemon:status)
+pnpm scorer:logs      # Tail scorer stdout + stderr
+pnpm scorer:stop      # Unload (kills any in-flight drain)
+pnpm scorer:run       # One-shot foreground tick, useful for debugging
+```
+
+The scorer plist uses `pnpm exec tsx scripts/drain-scoring.ts` rather
+than `pnpm tsx ...` — the latter triggers
+`ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL` because `tsx` isn't in the
+package.json scripts. Same TCC workaround as the main daemon.
+
 ## OpenRouter key pool
 
 Free-tier scoring uses a pool of OpenRouter API keys to multiply the
