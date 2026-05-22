@@ -3,6 +3,7 @@ import { Geist, Geist_Mono, Newsreader } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { CommandPalette } from "@/components/search/command-palette";
+import { ThemeProvider } from "@/components/theme-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -35,13 +36,19 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`dark ${geistSans.variable} ${geistMono.variable} ${newsreader.variable} h-full antialiased`}
+      // `suppressHydrationWarning` es REQUERIDO por next-themes: el provider
+      // muta `class` en <html> en el cliente antes de hydrate y sin esto
+      // React loggea un mismatch warning.
+      suppressHydrationWarning
+      className={`${geistSans.variable} ${geistMono.variable} ${newsreader.variable} h-full antialiased`}
     >
       <body className="ambient-bg min-h-full flex flex-col bg-background text-foreground">
-        <div aria-hidden className="ambient-grid" />
-        {children}
-        <CommandPalette />
-        <Toaster richColors position="bottom-right" theme="dark" />
+        <ThemeProvider>
+          <div aria-hidden className="ambient-grid" />
+          {children}
+          <CommandPalette />
+          <Toaster richColors position="bottom-right" />
+        </ThemeProvider>
       </body>
     </html>
   );

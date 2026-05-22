@@ -217,14 +217,16 @@ export const CATEGORY_META: Record<
   NewsCategory,
   { label: string; tone: string }
 > = {
-  EARNINGS:   { label: "EARN",   tone: "bg-blue-500/15 text-blue-300 border-blue-500/30" },
-  MA:         { label: "M&A",    tone: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30" },
-  ANALYST:    { label: "RATING", tone: "bg-violet-500/15 text-violet-300 border-violet-500/30" },
-  GUIDANCE:   { label: "GUID",   tone: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30" },
-  INSIDER:    { label: "INSIDR", tone: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
-  REGULATORY: { label: "REG",    tone: "bg-orange-500/15 text-orange-300 border-orange-500/30" },
-  PRODUCT:    { label: "PROD",   tone: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
-  LEGAL:      { label: "LEGAL",  tone: "bg-rose-500/15 text-rose-300 border-rose-500/30" },
-  MACRO:      { label: "MACRO",  tone: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30" },
-  OTHER:      { label: "NEWS",   tone: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30" },
+  // Light theme: tono saturado oscuro (xxx-700) + fondo +alpha bajo para legibilidad sobre cream paper.
+  // Dark theme: tono pastel claro (xxx-300) + fondo +alpha bajo sobre vault azul-negro.
+  EARNINGS:   { label: "EARN",   tone: "bg-blue-500/15 text-blue-700 border-blue-500/30 dark:text-blue-300" },
+  MA:         { label: "M&A",    tone: "bg-fuchsia-500/15 text-fuchsia-700 border-fuchsia-500/30 dark:text-fuchsia-300" },
+  ANALYST:    { label: "RATING", tone: "bg-violet-500/15 text-violet-700 border-violet-500/30 dark:text-violet-300" },
+  GUIDANCE:   { label: "GUID",   tone: "bg-cyan-500/15 text-cyan-700 border-cyan-500/30 dark:text-cyan-300" },
+  INSIDER:    { label: "INSIDR", tone: "bg-amber-500/15 text-amber-700 border-amber-500/30 dark:text-amber-300" },
+  REGULATORY: { label: "REG",    tone: "bg-orange-500/15 text-orange-700 border-orange-500/30 dark:text-orange-300" },
+  PRODUCT:    { label: "PROD",   tone: "bg-emerald-500/15 text-emerald-700 border-emerald-500/30 dark:text-emerald-300" },
+  LEGAL:      { label: "LEGAL",  tone: "bg-rose-500/15 text-rose-700 border-rose-500/30 dark:text-rose-300" },
+  MACRO:      { label: "MACRO",  tone: "bg-zinc-500/15 text-zinc-700 border-zinc-500/30 dark:text-zinc-300" },
+  OTHER:      { label: "NEWS",   tone: "bg-zinc-500/15 text-zinc-700 border-zinc-500/30 dark:text-zinc-300" },
 };

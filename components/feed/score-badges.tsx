@@ -129,12 +129,12 @@ export function SentimentBadge({
     ? "bg-muted-foreground/25"
     : isPositive
       ? abs >= 4
-        ? "bg-emerald-400"
-        : "bg-emerald-400/70"
+        ? "bg-emerald-600 dark:bg-emerald-400"
+        : "bg-emerald-600/70 dark:bg-emerald-400/70"
       : isNegative
         ? abs >= 4
-          ? "bg-rose-400"
-          : "bg-rose-400/70"
+          ? "bg-rose-600 dark:bg-rose-400"
+          : "bg-rose-600/70 dark:bg-rose-400/70"
         : "bg-muted-foreground/40";
 
   return (
@@ -151,8 +151,8 @@ export function SentimentBadge({
         className={cn(
           "tick font-mono text-[11px] font-bold tabular-nums leading-none",
           isPending && "text-muted-foreground/40",
-          !isPending && isPositive && "text-emerald-300",
-          !isPending && isNegative && "text-rose-300",
+          !isPending && isPositive && "text-emerald-700 dark:text-emerald-300",
+          !isPending && isNegative && "text-rose-700 dark:text-rose-300",
           !isPending && v === 0 && "text-muted-foreground",
         )}
       >

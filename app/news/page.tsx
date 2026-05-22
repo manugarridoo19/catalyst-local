@@ -101,7 +101,7 @@ export default async function NewsPage() {
     <div className="flex min-h-full flex-1 flex-col">
       <Header />
       {error ? (
-        <div className="border-b border-rose-500/40 bg-rose-500/10 px-6 py-3 font-mono text-xs text-rose-200">
+        <div className="border-b border-rose-500/40 bg-rose-500/10 px-6 py-3 font-mono text-xs text-rose-700 dark:text-rose-200">
           {error}
         </div>
       ) : null}

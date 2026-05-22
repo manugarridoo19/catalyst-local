@@ -6,6 +6,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { Search } from "lucide-react";
 import { getPusherClient, NEWS_CHANNEL, NEWS_EVENT } from "@/lib/pusher/client";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 
 // Evento que abre la paleta de búsqueda (CommandPalette lo escucha).
@@ -71,12 +72,16 @@ export function Header() {
     };
   }, []);
 
+  // Estados semáforo — usamos variantes light/dark explícitas para que
+  // los puntitos sigan legibles tanto sobre el vault azul-negro como
+  // sobre el cream paper. Light: tonos más oscuros (saturados) para
+  // contraste AA sobre fondo claro.
   const dotColor =
     status === "live"
-      ? "bg-emerald-400"
+      ? "bg-emerald-600 dark:bg-emerald-400"
       : status === "offline"
-        ? "bg-rose-500"
-        : "bg-amber-400";
+        ? "bg-rose-600 dark:bg-rose-500"
+        : "bg-amber-600 dark:bg-amber-400";
 
   function openSearch() {
     if (typeof window !== "undefined") {
@@ -149,6 +154,8 @@ export function Header() {
           </kbd>
         </button>
 
+        <ThemeToggle />
+
         {/* Status block — dot + label + UTC clock + last event, all in one
             tight strip with a divider rule so it reads as a single console
             line rather than three competing badges. */}
@@ -167,9 +174,9 @@ export function Header() {
             <span
               className={cn(
                 "transition-colors duration-200",
-                status === "live" && "text-emerald-300",
-                status === "offline" && "text-rose-300",
-                status === "connecting" && "text-amber-200",
+                status === "live" && "text-emerald-700 dark:text-emerald-300",
+                status === "offline" && "text-rose-700 dark:text-rose-300",
+                status === "connecting" && "text-amber-700 dark:text-amber-200",
               )}
             >
               {status === "live" ? "Live" : status === "offline" ? "Offline" : "Connecting"}

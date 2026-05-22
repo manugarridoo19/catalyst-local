@@ -155,7 +155,7 @@ export function PriceChart({
               <span
                 className={cn(
                   "tick font-mono text-xs font-semibold tabular-nums",
-                  isUp ? "text-emerald-400" : "text-rose-400",
+                  isUp ? "text-emerald-700 dark:text-emerald-400" : "text-rose-700 dark:text-rose-400",
                 )}
               >
                 {isUp ? "+" : ""}

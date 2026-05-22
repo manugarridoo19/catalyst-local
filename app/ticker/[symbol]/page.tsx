@@ -140,8 +140,8 @@ export default async function TickerPage({
                     <div
                       className={`tick mt-1.5 inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono text-xs tabular-nums ${
                         change >= 0
-                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                          : "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                          : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
                       }`}
                     >
                       {change >= 0 ? "▲" : "▼"} {change >= 0 ? "+" : ""}

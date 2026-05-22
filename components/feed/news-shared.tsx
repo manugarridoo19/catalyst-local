@@ -20,8 +20,8 @@ export function sentimentBgClass(
   const abs = Math.abs(sentiment);
   if (abs < 3) return "";
   return sentiment > 0
-    ? "bg-emerald-500/[0.035]"
-    : "bg-rose-500/[0.035]";
+    ? "bg-emerald-500/[0.07] dark:bg-emerald-500/[0.035]"
+    : "bg-rose-500/[0.07] dark:bg-rose-500/[0.035]";
 }
 
 // Panel expandido: summary + rationale + acción "Read full article".
