@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { db } from "./index";
 import {
   news,
@@ -363,9 +364,27 @@ export async function deleteOldNews(days: number): Promise<number> {
 // Devuelve los símbolos que deberían recibir per-ticker fetching en el cron:
 // los más mencionados en news + todo lo que esté en watchlist + los seed
 // tickers populares (siempre interesantes).
+//
+// Cache TTL 30min (audit 2026-05-12 #5): el COUNT GROUP BY sobre news_tickers
+// es un full-scan que crece con la tabla (~60k rows hoy). El ranking cambia
+// lento — un ticker que ya está top no sale del top en 30min — así que
+// cachear es gratis. Cron ticks cada 5min ⇒ 1 query DB cada 6 ticks vs cada
+// tick. Cache es módulo-level: warm functions lo comparten; daemon local
+// nunca reinicia. Watchlist toggles invalidan a través del TTL natural,
+// aceptable porque el watchlist tier ya prioriza independiente del COUNT.
+type TopTickersEntry = {
+  data: { symbol: string; name: string | null }[];
+  expiresAt: number;
+};
+const topTickersCache = new Map<number, TopTickersEntry>();
+const TOP_TICKERS_TTL_MS = 30 * 60 * 1000;
+
 export async function getTopTickersForFetch(
   limit = 50,
 ): Promise<{ symbol: string; name: string | null }[]> {
+  const cached = topTickersCache.get(limit);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+
   const result = (await db.execute(sql`
     SELECT t.symbol, t.name FROM tickers t
     LEFT JOIN (
@@ -381,6 +400,10 @@ export async function getTopTickersForFetch(
       t.first_seen_at DESC
     LIMIT ${limit}
   `)) as unknown as Array<{ symbol: string; name: string | null }>;
+  topTickersCache.set(limit, {
+    data: result,
+    expiresAt: Date.now() + TOP_TICKERS_TTL_MS,
+  });
   return result;
 }
 
@@ -393,7 +416,15 @@ export type TickerMeta = {
 
 // Fetch metadata para varios symbols a la vez. Lo usa el feed page loader
 // para inyectar logo+nombre del "primary ticker" en cada noticia.
-export async function getTickerMetaMap(
+//
+// `React.cache` (audit 2026-05-12 #15): dedupe per-request. La key del
+// cache es la lista de symbols normalizada — para que dos llamadas dentro
+// del mismo render con el mismo set vuelvan de cache. Sin esto, si el
+// layout y la página ambos resolvían tickers (caso común al crecer la
+// app), pegábamos la DB dos veces por render.
+export const getTickerMetaMap = cache(_getTickerMetaMap);
+
+async function _getTickerMetaMap(
   symbols: string[],
 ): Promise<Map<string, TickerMeta>> {
   const out = new Map<string, TickerMeta>();

@@ -21,42 +21,60 @@ export async function enrichPendingTickers(limit = ENRICH_BATCH) {
     .where(sql`${tickers.enrichedAt} IS NULL`)
     .limit(limit);
 
+  // Workers paralelos (audit 2026-05-12 #4): antes el for-loop secuencial
+  // hacía 12 × (~500ms Finnhub + UPDATE + N alias INSERTs) ≈ 12-25s. Con
+  // concurrency=4 quedamos en ~3-7s. Finnhub free = 60 RPM compartido con
+  // refresh-news (~10/min) + /api/quotes polling (~20/min) — 4 concurrentes
+  // aquí (~12/min en burst) deja ~18/min de holgura.
+  const CONCURRENCY = 4;
+  let cursor = 0;
   let done = 0;
-  for (const { symbol } of pending) {
-    const profile = await getProfile(symbol);
-    const now = new Date();
-    if (profile && profile.name) {
-      await db
-        .update(tickers)
-        .set({
-          name: profile.name,
-          sector: profile.finnhubIndustry || null,
-          industry: profile.finnhubIndustry || null,
-          marketCap: profile.marketCapitalization
-            ? Math.round(profile.marketCapitalization * 1_000_000)
-            : null,
-          logoUrl: profile.logo || null,
-          enrichedAt: now,
-        })
-        .where(eq(tickers.symbol, symbol));
 
-      // Crear alias automático para futuras detecciones por nombre.
-      const aliasCandidates = uniqueAliases(profile.name);
-      for (const alias of aliasCandidates) {
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= pending.length) return;
+      const { symbol } = pending[i];
+      const profile = await getProfile(symbol);
+      const now = new Date();
+      if (profile && profile.name) {
         await db
-          .insert(tickerAliases)
-          .values({ alias, symbol })
-          .onConflictDoNothing();
+          .update(tickers)
+          .set({
+            name: profile.name,
+            sector: profile.finnhubIndustry || null,
+            industry: profile.finnhubIndustry || null,
+            marketCap: profile.marketCapitalization
+              ? Math.round(profile.marketCapitalization * 1_000_000)
+              : null,
+            logoUrl: profile.logo || null,
+            enrichedAt: now,
+          })
+          .where(eq(tickers.symbol, symbol));
+
+        // Crear alias automático para futuras detecciones por nombre.
+        // Batched insert: un solo round-trip por ticker (vs N antes).
+        const aliasCandidates = uniqueAliases(profile.name);
+        if (aliasCandidates.length) {
+          await db
+            .insert(tickerAliases)
+            .values(aliasCandidates.map((alias) => ({ alias, symbol })))
+            .onConflictDoNothing();
+        }
+        done++;
+      } else {
+        // Marcamos como enriquecido aunque sea sin datos para no reintentar.
+        await db
+          .update(tickers)
+          .set({ enrichedAt: now })
+          .where(eq(tickers.symbol, symbol));
       }
-      done++;
-    } else {
-      // Marcamos como enriquecido aunque sea sin datos para no reintentar.
-      await db
-        .update(tickers)
-        .set({ enrichedAt: now })
-        .where(eq(tickers.symbol, symbol));
     }
   }
+
+  await Promise.all(
+    Array.from({ length: CONCURRENCY }, () => worker()),
+  );
   return { processed: pending.length, succeeded: done };
 }
 
