@@ -16,12 +16,23 @@ config({ path: ".env" });
 
 const TARGET = Math.max(1, parseInt(process.argv[2] ?? "200", 10));
 const BATCH = 10;
-const PAUSE_MS = 4000; // gentle on Groq burst limits
+
+// Adaptive pacing: empezamos en 4s (mismo que antes). Si un tick scored
+// <3, doblamos hasta 30s (Groq rolling window típicamente libera en 30-60s).
+// Si scored >=8, halvemos hasta el suelo de 2s para acelerar cuando hay
+// holgura. Old 4s fijo daba 6% éxito porque batías la ventana de Groq
+// constantemente; este pacing se auto-tunea a la capacidad real.
+const PAUSE_MIN_MS = 2000;
+const PAUSE_BASE_MS = 4000;
+const PAUSE_MAX_MS = 30_000;
 
 async function main() {
   const { runScoreOrphansCron } = await import("../lib/cron/score-orphans");
 
-  console.log(`[drain] target=${TARGET}  batch=${BATCH}  pause=${PAUSE_MS}ms`);
+  let pauseMs = PAUSE_BASE_MS;
+  console.log(
+    `[drain] target=${TARGET}  batch=${BATCH}  pause=adaptive(${PAUSE_MIN_MS}-${PAUSE_MAX_MS}ms, start=${pauseMs}ms)`,
+  );
 
   let totalScored = 0;
   let totalFailed = 0;
@@ -34,8 +45,18 @@ async function main() {
     const res = await runScoreOrphansCron();
     totalScored += res.scored;
     totalFailed += res.failed;
+
+    // Tune pause antes de loggear así el log refleja el próximo pause.
+    const prevPause = pauseMs;
+    if (res.scored < 3) {
+      pauseMs = Math.min(PAUSE_MAX_MS, Math.round(pauseMs * 2));
+    } else if (res.scored >= 8) {
+      pauseMs = Math.max(PAUSE_MIN_MS, Math.round(pauseMs / 2));
+    }
+    const pauseTag = pauseMs !== prevPause ? `pause=${pauseMs}ms*` : `pause=${pauseMs}ms`;
+
     console.log(
-      `[drain] tick ${iteration.toString().padStart(3)}  picked=${res.picked.toString().padStart(3)}  scored=${res.scored.toString().padStart(3)}  failed=${res.failed.toString().padStart(3)}  cum=${totalScored}/${TARGET}  +${(res.durationMs / 1000).toFixed(1)}s`,
+      `[drain] tick ${iteration.toString().padStart(3)}  picked=${res.picked.toString().padStart(3)}  scored=${res.scored.toString().padStart(3)}  failed=${res.failed.toString().padStart(3)}  cum=${totalScored}/${TARGET}  ${pauseTag}  +${(res.durationMs / 1000).toFixed(1)}s`,
     );
 
     if (res.picked === 0) {
@@ -44,8 +65,11 @@ async function main() {
     }
     if (res.scored === 0) {
       zeroRunsInARow++;
-      if (zeroRunsInARow >= 3) {
-        console.log("[drain] 3 ticks scored zero — quota likely exhausted. Aborting.");
+      // Quota verdaderamente agotada: 5 ticks seguidos en 0 con el pause
+      // ya en el máximo. Antes era 3 ticks/0 sin considerar pause — un
+      // burst de 30s podía abortar drainings sanos.
+      if (zeroRunsInARow >= 5 && pauseMs >= PAUSE_MAX_MS) {
+        console.log("[drain] 5 ticks scored zero at max pause — quota exhausted. Aborting.");
         break;
       }
     } else {
@@ -53,13 +77,15 @@ async function main() {
     }
 
     if (totalScored < TARGET) {
-      await new Promise((r) => setTimeout(r, PAUSE_MS));
+      await new Promise((r) => setTimeout(r, pauseMs));
     }
   }
 
   const wall = ((Date.now() - t0) / 1000).toFixed(1);
+  const attempts = totalScored + totalFailed;
+  const rate = attempts ? ((totalScored / attempts) * 100).toFixed(1) : "0";
   console.log(
-    `\n[drain] DONE in ${wall}s — ${totalScored} scored, ${totalFailed} failed across ${iteration} ticks.`,
+    `\n[drain] DONE in ${wall}s — ${totalScored} scored, ${totalFailed} failed across ${iteration} ticks (${rate}% success).`,
   );
 }
 

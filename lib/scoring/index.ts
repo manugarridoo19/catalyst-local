@@ -1,5 +1,9 @@
-import { chatCompletion } from "@/lib/providers/openrouter";
-import { groqChatCompletion, GroqRateLimited } from "@/lib/providers/groq";
+import { chatCompletion, getKeyPoolStatus } from "@/lib/providers/openrouter";
+import {
+  groqChatCompletion,
+  GroqRateLimited,
+  isGroqModelCooled,
+} from "@/lib/providers/groq";
 import { PROMPT_VERSION, SYSTEM_PROMPT, buildUserPrompt } from "./prompt";
 import { parseScore } from "./parser";
 import type { SentimentScore } from "@/lib/types";
@@ -69,6 +73,12 @@ async function scoreViaGroq(input: {
   ];
   let lastErr: unknown = null;
   for (const model of GROQ_MODELS) {
+    // Cortocircuito por cooldown: si el provider ya parseó un Retry-After
+    // anterior, no malgastamos un round-trip. Saltamos al siguiente modelo
+    // (o al provider siguiente si todos están cooled).
+    if (isGroqModelCooled(model)) {
+      continue;
+    }
     try {
       const result = await groqChatCompletion({
         messages,
@@ -89,7 +99,9 @@ async function scoreViaGroq(input: {
       throw err;
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error("All Groq models failed");
+  throw lastErr instanceof Error
+    ? lastErr
+    : new GroqRateLimited("All Groq models cooled / failed");
 }
 
 export async function scoreNewsItem(input: {
@@ -112,6 +124,27 @@ export async function scoreNewsItem(input: {
   for (const provider of order) {
     if (provider === "openrouter" && !hasOpenRouter) continue;
     if (provider === "groq" && !hasGroq) continue;
+
+    // Cortocircuito: si TODAS las keys de OpenRouter están cooled, ni
+    // intentamos. El provider tirará "All N keys cooled until HH:MMZ"
+    // pero antes hacíamos parseo del error string y waste de stack.
+    if (provider === "openrouter") {
+      const pool = getKeyPoolStatus();
+      if (pool.total > 0 && pool.available === 0) {
+        console.warn(
+          `[scoring] openrouter pool fully cooled (${pool.total} keys) — skipping`,
+        );
+        continue;
+      }
+    }
+    // Cortocircuito groq: si los DOS modelos están en cooldown por
+    // Retry-After, mismo tratamiento.
+    if (provider === "groq") {
+      if (GROQ_MODELS.every((m) => isGroqModelCooled(m))) {
+        console.warn(`[scoring] groq all models in cooldown — skipping`);
+        continue;
+      }
+    }
 
     try {
       const { content, model } =

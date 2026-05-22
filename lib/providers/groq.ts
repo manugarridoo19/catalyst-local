@@ -26,10 +26,49 @@ export type ChatCompletionResult = {
 };
 
 export class GroqRateLimited extends Error {
-  constructor(message: string) {
+  /** ms epoch hasta el que el modelo está agotado (parsed from Retry-After).
+   *  null si Groq no envió el header. */
+  retryAtMs: number | null;
+  constructor(message: string, retryAtMs: number | null = null) {
     super(message);
     this.name = "GroqRateLimited";
+    this.retryAtMs = retryAtMs;
   }
+}
+
+// Cooldown módulo-level por modelo. Cuando Groq devuelve 429 con
+// Retry-After=N, marcamos ese modelo como agotado hasta now+N segundos.
+// El siguiente intento al mismo modelo cortocircuita sin tocar la red,
+// ahorrando ~300-800ms y una unidad de cuota burst (Groq cuenta los
+// requests rechazados igualmente para algunos windows). El cooldown vive
+// dentro del proceso — daemon local lo mantiene siempre, GH Actions
+// runner lo pierde al terminar el tick (aceptable: cada tick es nuevo).
+const modelCooldownUntil = new Map<string, number>();
+
+export function isGroqModelCooled(model: string): boolean {
+  const until = modelCooldownUntil.get(model);
+  return until !== undefined && until > Date.now();
+}
+
+export function groqCooldownStatus(): Array<{ model: string; secondsRemaining: number }> {
+  const now = Date.now();
+  const out: Array<{ model: string; secondsRemaining: number }> = [];
+  for (const [model, until] of modelCooldownUntil.entries()) {
+    if (until > now) out.push({ model, secondsRemaining: Math.ceil((until - now) / 1000) });
+  }
+  return out;
+}
+
+function parseRetryAfter(header: string | null): number | null {
+  if (!header) return null;
+  // RFC 7231: o bien segundos enteros, o bien HTTP-date.
+  const asSeconds = Number(header);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return Date.now() + Math.ceil(asSeconds * 1000);
+  }
+  const asDate = Date.parse(header);
+  if (!Number.isNaN(asDate)) return asDate;
+  return null;
 }
 
 // Timeout por intento. Groq normalmente <2s pero rate-limit + cola interna
@@ -79,7 +118,11 @@ async function groqOnce(
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     if (res.status === 429) {
-      throw new GroqRateLimited(`Groq 429: ${text.slice(0, 120)}`);
+      const retryAtMs = parseRetryAfter(res.headers.get("retry-after"));
+      if (retryAtMs) {
+        modelCooldownUntil.set(model, retryAtMs);
+      }
+      throw new GroqRateLimited(`Groq 429: ${text.slice(0, 120)}`, retryAtMs);
     }
     throw new Error(`Groq ${res.status} ${res.statusText}: ${text.slice(0, 200)}`);
   }
@@ -109,6 +152,17 @@ export async function groqChatCompletion(opts: {
   const model = opts.model || process.env.GROQ_MODEL || DEFAULT_MODEL;
   const maxRetries = opts.retries ?? 3;
 
+  // Cortocircuito: si el modelo está en cooldown (parsed Retry-After) lo
+  // declaramos rate-limited inmediatamente. Ahorra fetch + ~1 burst-unit
+  // por intento.
+  if (isGroqModelCooled(model)) {
+    const remaining = (modelCooldownUntil.get(model)! - Date.now()) / 1000;
+    throw new GroqRateLimited(
+      `Groq model ${model} cooled for ${remaining.toFixed(1)}s`,
+      modelCooldownUntil.get(model)!,
+    );
+  }
+
   let lastErr: unknown = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -118,9 +172,15 @@ export async function groqChatCompletion(opts: {
       if (!(err instanceof GroqRateLimited) || attempt === maxRetries) {
         throw err;
       }
-      // Backoff exponencial: 2s, 4s, 8s. Da margen para que el rolling
-      // window de Groq libere capacidad antes de reintentar.
-      const wait = 2000 * Math.pow(2, attempt);
+      // Si Groq dio Retry-After, esperar ese tiempo exacto (capado a 30s
+      // para no bloquear el cron). Si no, backoff exponencial 2/4/8s.
+      let wait: number;
+      if (err.retryAtMs) {
+        const delta = err.retryAtMs - Date.now();
+        wait = Math.min(30_000, Math.max(500, delta));
+      } else {
+        wait = 2000 * Math.pow(2, attempt);
+      }
       await new Promise((r) => setTimeout(r, wait));
     }
   }
