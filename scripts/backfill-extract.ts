@@ -1,18 +1,33 @@
 // One-shot: re-aplica el extractor de tickers sobre TODAS las noticias
 // existentes que aún no tienen ticker asociado. Útil tras seed-major.
 //
-//   pnpm tsx scripts/backfill-extract.ts
+//   pnpm tsx scripts/backfill-extract.ts            # solo DB
+//   pnpm tsx scripts/backfill-extract.ts --broadcast # + Pusher updates
+//
+// Con `--broadcast` emite un FeedNewsPayload por noticia retroactivamente
+// taggeada (audit 2026-05-12 #11) — el cliente del feed live actualiza
+// el card in-place gracias al match por id, y los ticker pages reciben
+// la noticia en tiempo real sin esperar al próximo SSR.
 
 import { config } from "dotenv";
 config({ path: ".env.local" });
 config({ path: ".env" });
 
+const BROADCAST = process.argv.includes("--broadcast");
+
 async function main() {
   const { db, unwrapRows } = await import("../lib/db");
-  const { news, newsTickers, tickers } = await import("../lib/db/schema");
+  const { newsTickers } = await import("../lib/db/schema");
   const { sql } = await import("drizzle-orm");
   const { extractTickers } = await import("../lib/tickers/extractor");
-  const { loadAliases, loadKnownSymbols, upsertTickers } = await import("../lib/db/queries");
+  const {
+    loadAliases,
+    loadKnownSymbols,
+    upsertTickers,
+    getTickerMetaMap,
+  } = await import("../lib/db/queries");
+  const { broadcastNews } = await import("../lib/pusher/server");
+  type Payload = import("../lib/pusher/server").FeedNewsPayload;
 
   // Cargar aliases + known symbols (para leading-ticker regex).
   const [aliases, knownSymbols] = await Promise.all([
@@ -21,12 +36,16 @@ async function main() {
   ]);
   console.log(`[backfill-extract] ${aliases.length} aliases + ${knownSymbols.size} known symbols loaded`);
 
-  // Noticias sin ningún ticker asociado.
+  // Noticias sin ningún ticker asociado. SELECT extendido para construir
+  // payloads de broadcast sin segunda query — published_at + url + body
+  // ya están en la fila.
   const orphaned = await db.execute(sql`
-    SELECT id, headline, body, source
-    FROM news
-    WHERE id NOT IN (SELECT news_id FROM news_tickers)
-    ORDER BY published_at DESC
+    SELECT n.id, n.headline, n.body, n.source, n.published_at, n.url,
+      s.impact, s.sentiment, s.rationale
+    FROM news n
+    LEFT JOIN news_scores s ON s.news_id = n.id
+    WHERE n.id NOT IN (SELECT news_id FROM news_tickers)
+    ORDER BY n.published_at DESC
     LIMIT 5000
   `);
 
@@ -35,11 +54,17 @@ async function main() {
     headline: string;
     body: string | null;
     source: string;
+    published_at: Date;
+    url: string;
+    impact: number | null;
+    sentiment: number | null;
+    rationale: string | null;
   }>(orphaned);
-  console.log(`[backfill-extract] ${rows.length} orphaned news to process`);
+  console.log(`[backfill-extract] ${rows.length} orphaned news to process${BROADCAST ? " (broadcast=ON)" : ""}`);
 
   let totalTagged = 0;
   let newsWithTickers = 0;
+  const broadcastQueue: Payload[] = [];
 
   for (const r of rows) {
     const item = {
@@ -71,6 +96,23 @@ async function main() {
 
     totalTagged += extracted.length;
     newsWithTickers++;
+
+    if (BROADCAST) {
+      broadcastQueue.push({
+        id: r.id,
+        headline: r.headline,
+        body: r.body,
+        source: r.source,
+        publishedAt: new Date(r.published_at).toISOString(),
+        url: r.url,
+        tickers: extracted.map((t) => t.symbol),
+        primarySymbol: extracted[0]?.symbol ?? null,
+        impact: r.impact,
+        sentiment: r.sentiment,
+        rationale: r.rationale,
+      });
+    }
+
     if (newsWithTickers % 100 === 0) {
       console.log(
         `[backfill-extract] progress: ${newsWithTickers} news tagged (${totalTagged} ticker links)`,
@@ -81,6 +123,33 @@ async function main() {
   console.log(
     `[backfill-extract] done: ${newsWithTickers}/${rows.length} news got tickers (${totalTagged} total links)`,
   );
+
+  // Broadcast en batches. Pusher acepta 10 events por trigger, broadcastNews
+  // ya hace el chunking; enriquecemos antes con logo+nombre del primary.
+  if (BROADCAST && broadcastQueue.length) {
+    console.log(`[backfill-extract] broadcasting ${broadcastQueue.length} retroactive payloads…`);
+    const primarySymbols = broadcastQueue
+      .map((b) => b.primarySymbol)
+      .filter((s): s is string => Boolean(s));
+    const meta = await getTickerMetaMap(primarySymbols);
+    for (const b of broadcastQueue) {
+      if (b.primarySymbol) {
+        const m = meta.get(b.primarySymbol);
+        b.primaryName = m?.name ?? null;
+        b.primaryLogo = m?.logoUrl ?? null;
+      }
+    }
+    // Chunked manualmente para dar visibilidad de progreso y no saturar
+    // Pusher si la cola es grande (5000 items posibles).
+    const CHUNK = 50;
+    for (let i = 0; i < broadcastQueue.length; i += CHUNK) {
+      await broadcastNews(broadcastQueue.slice(i, i + CHUNK));
+      if (i + CHUNK < broadcastQueue.length) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    console.log(`[backfill-extract] broadcast complete.`);
+  }
 
   // Verificar el rate de cobertura final.
   const finalStats = await db.execute(sql`

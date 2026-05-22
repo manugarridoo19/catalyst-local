@@ -67,6 +67,21 @@ export async function fetchCompanyNews(
   return items.map(toNormalized);
 }
 
+// Log throttle por símbolo (audit 2026-05-12 #8): antes el catch desnudo
+// enmascaraba 403/500 globales — el cron salía con "fetched.finnhubCompany=0"
+// sin pista de la causa. Con TTL 5min por símbolo evitamos spam si Finnhub
+// está caído (5min × ~60 símbolos = log cap razonable).
+const lastErrorLog = new Map<string, number>();
+const ERROR_LOG_TTL_MS = 5 * 60 * 1000;
+function maybeLogFinnhubError(symbol: string, err: unknown) {
+  const now = Date.now();
+  const prev = lastErrorLog.get(symbol);
+  if (prev && now - prev < ERROR_LOG_TTL_MS) return;
+  lastErrorLog.set(symbol, now);
+  const msg = err instanceof Error ? err.message : String(err);
+  console.warn(`[finnhub] company-news ${symbol} failed: ${msg.slice(0, 200)}`);
+}
+
 // Bulk: noticias para varios tickers a la vez. Respeta el rate-limit de
 // Finnhub (60 req/min) usando un semáforo de concurrencia 8 con 100ms de
 // espaciado entre requests dentro del mismo "slot".
@@ -84,8 +99,8 @@ export async function fetchCompanyNewsBatch(
       try {
         const items = await fetchCompanyNews(sym, days);
         out.push(...items);
-      } catch {
-        // skip failed ticker
+      } catch (err) {
+        maybeLogFinnhubError(sym, err);
       }
       await new Promise((r) => setTimeout(r, 100));
     }

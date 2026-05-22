@@ -147,37 +147,3 @@ export async function getBars(
   return [];
 }
 
-// Quote snapshot: precio actual + cambio. Yahoo v7 quote endpoint.
-export async function getQuoteSnapshot(symbol: string): Promise<{
-  price: number;
-  changePct: number;
-  marketState?: string;
-} | null> {
-  try {
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(
-      symbol,
-    )}`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
-    });
-    if (!res.ok) return null;
-    const json = (await res.json()) as {
-      quoteResponse: {
-        result: Array<{
-          regularMarketPrice?: number;
-          regularMarketChangePercent?: number;
-          marketState?: string;
-        }>;
-      };
-    };
-    const r = json.quoteResponse?.result?.[0];
-    if (!r || r.regularMarketPrice == null) return null;
-    return {
-      price: r.regularMarketPrice,
-      changePct: r.regularMarketChangePercent ?? 0,
-      marketState: r.marketState,
-    };
-  } catch {
-    return null;
-  }
-}
