@@ -24,10 +24,18 @@ type MarketauxNews = {
 
 // Marketaux free tier: 100 requests/día. Devolvemos hasta 100 noticias por
 // llamada y filtramos a equity-only. Si no hay key, devolvemos array vacío
-// para que el cron siga funcionando sólo con Finnhub + RSS.
+// (con warn — audit 2026-05-12 #14) para que el cron siga funcionando
+// sólo con Finnhub + RSS y el operador vea que falta una key.
+let warnedMissingKey = false;
 export async function fetchMarketauxNews(): Promise<NormalizedNewsItem[]> {
   const apiKey = process.env.MARKETAUX_API_KEY;
-  if (!apiKey) return [];
+  if (!apiKey) {
+    if (!warnedMissingKey) {
+      console.warn("[marketaux] MARKETAUX_API_KEY missing — skipping provider");
+      warnedMissingKey = true;
+    }
+    return [];
+  }
 
   const url = new URL(`${BASE}/news/all`);
   url.searchParams.set("api_token", apiKey);

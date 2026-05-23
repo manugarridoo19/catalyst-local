@@ -8,7 +8,7 @@ import {
   tickers,
   watchlist,
 } from "./schema";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type {
   ExtractedTicker,
   NormalizedNewsItem,
@@ -22,7 +22,7 @@ import { categorizeHeuristic, type NewsCategory } from "@/lib/categorizer";
 function categoryCondition(
   categories: NewsCategory[],
   allowNull: boolean,
-) {
+): SQL<unknown> {
   const inList = inArray(news.category, categories);
   return allowNull ? sql`(${inList} OR ${news.category} IS NULL)` : inList;
 }
@@ -234,26 +234,30 @@ export async function getFeed(opts: {
     WHERE nt.news_id = ${news.id}
   )`;
 
-  const conditions = [] as ReturnType<typeof eq>[];
+  // Audit 2026-05-12 #12: tipar como `SQL<unknown>[]` (no `ReturnType<typeof eq>[]`).
+  // Las condiciones son una mezcla de `eq(...)` y `sql\`\``; ambas devuelven
+  // `SQL<unknown>`, así que el array las acepta sin `as never` cast. Drizzle
+  // `and(...SQL<unknown>[])` consume el array directamente.
+  const conditions: SQL<unknown>[] = [];
   // Postgres-js serializa Date con toString() ("Tue May 12 2026 ..."), no
   // como timestamp. Convertimos a ISO string + cast explícito.
   if (opts.before)
     conditions.push(
-      sql`${news.publishedAt} < ${opts.before.toISOString()}::timestamptz` as never,
+      sql`${news.publishedAt} < ${opts.before.toISOString()}::timestamptz`,
     );
   if (opts.since)
     conditions.push(
-      sql`${news.publishedAt} >= ${opts.since.toISOString()}::timestamptz` as never,
+      sql`${news.publishedAt} >= ${opts.since.toISOString()}::timestamptz`,
     );
   if (opts.minImpact)
-    conditions.push(sql`${newsScores.impact} >= ${opts.minImpact}` as never);
+    conditions.push(sql`${newsScores.impact} >= ${opts.minImpact}`);
   if (opts.requireTicker)
     conditions.push(
-      sql`EXISTS (SELECT 1 FROM news_tickers nt WHERE nt.news_id = ${news.id})` as never,
+      sql`EXISTS (SELECT 1 FROM news_tickers nt WHERE nt.news_id = ${news.id})`,
     );
   if (opts.categories?.length)
     conditions.push(
-      categoryCondition(opts.categories, opts.allowUnknownCategory ?? false) as never,
+      categoryCondition(opts.categories, opts.allowUnknownCategory ?? false),
     );
 
   let rows;
