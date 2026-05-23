@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import { getKeyPoolStatus } from "@/lib/providers/openrouter";
+import { groqCooldownStatus } from "@/lib/providers/groq";
 
 // Endpoint público de health-check para monitoring. No expone secretos, solo
 // agregados que necesita el alerting (GitHub Actions / cron-job.org / etc).
@@ -34,6 +36,12 @@ export async function GET() {
       ? Math.round((now - lastInserted.getTime()) / 60000)
       : null;
 
+    // Pool + cooldown diagnostic. Sin exponer keys: solo labels + flags.
+    // Útil para correlacionar gaps de scoring con saturación de providers
+    // antes de mirar logs.
+    const openrouterPool = getKeyPoolStatus();
+    const groqCooldowns = groqCooldownStatus();
+
     return NextResponse.json({
       ok: true,
       now: new Date(now).toISOString(),
@@ -44,6 +52,16 @@ export async function GET() {
       insertedLastHour: row.inserted_last_hour,
       unscoredWithTickers: row.unscored_with_tickers,
       scoredTotal: row.scored_total,
+      scoring: {
+        openrouter: {
+          total: openrouterPool.total,
+          available: openrouterPool.available,
+          pool: openrouterPool.pool,
+        },
+        groq: {
+          cooldowns: groqCooldowns,
+        },
+      },
     });
   } catch (err) {
     return NextResponse.json(
