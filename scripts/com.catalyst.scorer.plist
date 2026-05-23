@@ -60,8 +60,11 @@
     <string>1</string>
     <key>NODE_OPTIONS</key>
     <string>--max-old-space-size=384</string>
+    <!-- node@22 prefix: Node 23.6.1 ESM loader bug crashes long-running
+         Node procs on macOS. Scorer corre tsx que importa la app entera
+         vía dynamic imports — mismo riesgo que el daemon principal. -->
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>/Users/manuelgarrido</string>
   </dict>

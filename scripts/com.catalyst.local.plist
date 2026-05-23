@@ -58,18 +58,20 @@
   <key>ThrottleInterval</key>
   <integer>30</integer>
 
-  <!-- Resource limits applied to the child process. These cap the damage
-       if next-server ever runs away (the original RAM-leak incident was
-       in dev mode, but limits are cheap insurance). -->
+  <!-- Resource limits applied to the child process. Subidos 2026-05-23
+       tras EAGAIN -11 en ESM reads: launchd default soft limit (256) era
+       muy bajo para Next 16 + React 19 production que abre ~600 fds
+       durante el bootstrap. SoftResourceLimits 8192 / Hard 16384 deja
+       margen 10× sin riesgo (sistema típicamente cap a 200k). -->
   <key>SoftResourceLimits</key>
   <dict>
     <key>NumberOfFiles</key>
-    <integer>4096</integer>
+    <integer>8192</integer>
   </dict>
   <key>HardResourceLimits</key>
   <dict>
     <key>NumberOfFiles</key>
-    <integer>8192</integer>
+    <integer>16384</integer>
   </dict>
 
   <!-- LOCAL_MODE + LOCAL_DEFAULT_SESSION_ID let the server fall back to a
@@ -83,13 +85,24 @@
     <string>production</string>
     <key>LOCAL_MODE</key>
     <string>1</string>
-    <key>NODE_OPTIONS</key>
-    <string>--max-old-space-size=512</string>
+    <!-- NODE_OPTIONS removido 2026-05-23: con --max-old-space-size=N
+         (cualquier valor) el ESM loader sync-read crashea con EAGAIN
+         -11 al cargar chunks de la app desde launchd. Sin la flag, V8
+         usa el default ~1.7GB y el bootstrap pasa. Hipótesis: una
+         interacción de heap-sizing temprano con la lazy load del
+         loader que solo dispara cuando libuv arranca con un budget
+         restringido. Default heap es suficiente porque Next 16 ronda
+         ~250-400MB en idle. -->
     <!-- Explicit PATH so pnpm finds node + spawned binaries even though
-         we don't go through a login shell. /opt/homebrew/bin first for
-         Apple Silicon Homebrew. -->
+         we don't go through a login shell.
+         IMPORTANT: /opt/homebrew/opt/node@22/bin must precede the default
+         /opt/homebrew/bin because Node 23.6.1 (current Homebrew default)
+         has an ESM loader regression on macOS that crashes `next start`
+         with EAGAIN -11 in readFileHandle. node@22 LTS does not. When
+         brew default catches up to 23.7+ or 24 LTS the prefix can drop.
+         See user memory: feedback_node_23_macos_eagain. -->
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>/Users/manuelgarrido</string>
   </dict>
