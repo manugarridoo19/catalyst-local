@@ -1,19 +1,26 @@
 // One-shot: re-aplica el extractor de tickers sobre TODAS las noticias
 // existentes que aún no tienen ticker asociado. Útil tras seed-major.
 //
-//   pnpm tsx scripts/backfill-extract.ts            # solo DB
-//   pnpm tsx scripts/backfill-extract.ts --broadcast # + Pusher updates
+//   pnpm tsx scripts/backfill-extract.ts                  # 5000 default
+//   pnpm tsx scripts/backfill-extract.ts --limit=10000    # 10k en un run
+//   pnpm tsx scripts/backfill-extract.ts --broadcast      # + Pusher updates
 //
 // Con `--broadcast` emite un FeedNewsPayload por noticia retroactivamente
 // taggeada (audit 2026-05-12 #11) — el cliente del feed live actualiza
 // el card in-place gracias al match por id, y los ticker pages reciben
 // la noticia en tiempo real sin esperar al próximo SSR.
+//
+// --limit cap: 50000 para no quedarse sin RAM con el array de payloads.
 
 import { config } from "dotenv";
 config({ path: ".env.local" });
 config({ path: ".env" });
 
 const BROADCAST = process.argv.includes("--broadcast");
+const LIMIT_ARG = process.argv.find((a) => a.startsWith("--limit="));
+const LIMIT = LIMIT_ARG
+  ? Math.min(50_000, Math.max(1, parseInt(LIMIT_ARG.split("=")[1] ?? "5000", 10) || 5000))
+  : 5000;
 
 async function main() {
   const { db, unwrapRows } = await import("../lib/db");
@@ -46,7 +53,7 @@ async function main() {
     LEFT JOIN news_scores s ON s.news_id = n.id
     WHERE n.id NOT IN (SELECT news_id FROM news_tickers)
     ORDER BY n.published_at DESC
-    LIMIT 5000
+    LIMIT ${LIMIT}
   `);
 
   const rows = unwrapRows<{
@@ -60,7 +67,7 @@ async function main() {
     sentiment: number | null;
     rationale: string | null;
   }>(orphaned);
-  console.log(`[backfill-extract] ${rows.length} orphaned news to process${BROADCAST ? " (broadcast=ON)" : ""}`);
+  console.log(`[backfill-extract] ${rows.length} orphaned news to process (limit=${LIMIT}${BROADCAST ? ", broadcast=ON" : ""})`);
 
   let totalTagged = 0;
   let newsWithTickers = 0;

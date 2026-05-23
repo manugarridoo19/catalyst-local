@@ -74,6 +74,21 @@ async function main() {
       `  ${k.label}  ${k.available ? "AVAILABLE" : `cooled → ${k.cooldownUntil ?? "?"}`}`,
     );
   }
+
+  // Groq cooldown state (per-model). Solo aparece si algún modelo ha
+  // recibido un 429 con Retry-After en este proceso. En scripts one-shot
+  // estará vacío al arrancar; útil principalmente en el daemon local
+  // donde el proceso vive mucho.
+  const { groqCooldownStatus } = await import("../lib/providers/groq");
+  const groqCool = groqCooldownStatus();
+  console.log(`\n=== Groq cooldowns (${groqCool.length} model${groqCool.length === 1 ? "" : "s"} in cooldown) ===`);
+  if (groqCool.length === 0) {
+    console.log("  all clear");
+  } else {
+    for (const c of groqCool) {
+      console.log(`  ${c.model.padEnd(28)} ${c.secondsRemaining}s remaining`);
+    }
+  }
 }
 
 main()
