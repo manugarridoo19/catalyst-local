@@ -66,10 +66,14 @@ const SOURCES: { name: string; url: string }[] = [
     name: "kiplinger",
     url: "https://news.google.com/rss/search?q=site:kiplinger.com&hl=en-US&gl=US&ceid=US:en",
   },
-  {
-    name: "finviz",
-    url: "https://news.google.com/rss/search?q=site:finviz.com&hl=en-US&gl=US&ceid=US:en",
-  },
+  // finviz, sec-8k REMOVIDOS 2026-05-23 (audit-orphans):
+  // - finviz: 85% orphan, 95% son "Person Name - Insider Trading - Form 4"
+  //   (nombres de personas, no se puede atribuir a empresa desde headline).
+  // - sec-8k: 88% orphan, 90% son IDs/slugs ("EDGAR Filing Documents for
+  //   0001555280-26-000029", "zd-20260518") sin company name extraíble.
+  // Los pocos hits útiles no compensan el ruido en /news tab. Si en el
+  // futuro quieres signal SEC, mejor consumir EDGAR direct API + parsear
+  // el form body (no RSS title).
   {
     name: "247wallst",
     url: "https://news.google.com/rss/search?q=site:247wallst.com&hl=en-US&gl=US&ceid=US:en",
@@ -77,10 +81,6 @@ const SOURCES: { name: string; url: string }[] = [
   {
     name: "tipranks",
     url: "https://news.google.com/rss/search?q=site:tipranks.com&hl=en-US&gl=US&ceid=US:en",
-  },
-  {
-    name: "sec-8k",
-    url: "https://news.google.com/rss/search?q=site:sec.gov+8-K&hl=en-US&gl=US&ceid=US:en",
   },
   // -- Google News mirrors (para outlets que matan RSS directo) -----------
   {
