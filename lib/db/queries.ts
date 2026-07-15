@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { db } from "./index";
+import { db, unwrapRows } from "./index";
 import {
   news,
   newsScores,
@@ -359,10 +359,12 @@ export async function deleteOldNews(days: number): Promise<number> {
   const cutoff = new Date(
     Date.now() - days * 24 * 60 * 60 * 1000,
   ).toISOString();
+  // El driver de Neon devuelve el nº de filas afectadas en `rowCount`
+  // (postgres-js lo exponía como `count`).
   const result = (await db.execute(sql`
     DELETE FROM news WHERE published_at < ${cutoff}::timestamptz
-  `)) as unknown as { count?: number };
-  return result.count ?? 0;
+  `)) as unknown as { rowCount?: number };
+  return result.rowCount ?? 0;
 }
 
 // Devuelve los símbolos que deberían recibir per-ticker fetching en el cron:
@@ -389,21 +391,23 @@ export async function getTopTickersForFetch(
   const cached = topTickersCache.get(limit);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  const result = (await db.execute(sql`
-    SELECT t.symbol, t.name FROM tickers t
-    LEFT JOIN (
-      SELECT ticker, COUNT(*) AS n FROM news_tickers GROUP BY ticker
-    ) c ON c.ticker = t.symbol
-    LEFT JOIN (
-      SELECT DISTINCT symbol FROM watchlist
-    ) w ON w.symbol = t.symbol
-    ORDER BY
-      (w.symbol IS NOT NULL) DESC,
-      (t.source = 'seed') DESC,
-      COALESCE(c.n, 0) DESC,
-      t.first_seen_at DESC
-    LIMIT ${limit}
-  `)) as unknown as Array<{ symbol: string; name: string | null }>;
+  const result = unwrapRows<{ symbol: string; name: string | null }>(
+    await db.execute(sql`
+      SELECT t.symbol, t.name FROM tickers t
+      LEFT JOIN (
+        SELECT ticker, COUNT(*) AS n FROM news_tickers GROUP BY ticker
+      ) c ON c.ticker = t.symbol
+      LEFT JOIN (
+        SELECT DISTINCT symbol FROM watchlist
+      ) w ON w.symbol = t.symbol
+      ORDER BY
+        (w.symbol IS NOT NULL) DESC,
+        (t.source = 'seed') DESC,
+        COALESCE(c.n, 0) DESC,
+        t.first_seen_at DESC
+      LIMIT ${limit}
+    `),
+  );
   topTickersCache.set(limit, {
     data: result,
     expiresAt: Date.now() + TOP_TICKERS_TTL_MS,
