@@ -34,7 +34,7 @@
   <array>
     <string>/opt/homebrew/bin/pnpm</string>
     <string>--dir</string>
-    <string>/Users/manuelgarrido/Desktop/catalyst-local</string>
+    <string>/Users/manuelgarrido/dev/catalyst-local</string>
     <string>exec</string>
     <string>tsx</string>
     <string>scripts/drain-scoring.ts</string>
@@ -70,9 +70,9 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/manuelgarrido/Desktop/catalyst-local/.next/daemon-logs/scorer-stdout.log</string>
+  <string>/Users/manuelgarrido/dev/catalyst-local/.next/daemon-logs/scorer-stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/manuelgarrido/Desktop/catalyst-local/.next/daemon-logs/scorer-stderr.log</string>
+  <string>/Users/manuelgarrido/dev/catalyst-local/.next/daemon-logs/scorer-stderr.log</string>
 
   <!-- Lower priority than the main daemon — scoring catch-up shouldn't
        steal foreground from the user's actual work. -->

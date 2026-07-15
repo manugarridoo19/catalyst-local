@@ -26,7 +26,7 @@
   <array>
     <string>/opt/homebrew/bin/pnpm</string>
     <string>--dir</string>
-    <string>/Users/manuelgarrido/Desktop/catalyst-local</string>
+    <string>/Users/manuelgarrido/dev/catalyst-local</string>
     <string>start</string>
     <string>--port</string>
     <string>3030</string>
@@ -108,9 +108,9 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/manuelgarrido/Desktop/catalyst-local/.next/daemon-logs/stdout.log</string>
+  <string>/Users/manuelgarrido/dev/catalyst-local/.next/daemon-logs/stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/manuelgarrido/Desktop/catalyst-local/.next/daemon-logs/stderr.log</string>
+  <string>/Users/manuelgarrido/dev/catalyst-local/.next/daemon-logs/stderr.log</string>
 
   <!-- Throttle CPU priority so the daemon never starves foreground apps
        on the user's Mac. -->
