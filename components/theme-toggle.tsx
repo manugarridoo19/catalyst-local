@@ -1,18 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 
 // Toggle dark ↔ light. Mantenemos shape de botón consistente con los
 // otros botones del header (border rounded-md font-mono). Hydration-safe:
-// el primer render renderiza neutro hasta que `mounted` flag confirma
-// el theme del cliente (sino hay flash dark→light en SSR).
+// el primer render renderiza neutro hasta confirmar el theme del cliente
+// (sino hay flash dark→light en SSR). `mounted` via useSyncExternalStore
+// (false en SSR, true en cliente) — sin setState síncrono en efecto.
+const emptySubscribe = () => () => {};
+
 export function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  const mounted = useSyncExternalStore(
+    emptySubscribe,
+    () => true,
+    () => false,
+  );
 
   const isDark = resolvedTheme === "dark";
   const next = isDark ? "light" : "dark";

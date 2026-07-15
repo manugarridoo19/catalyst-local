@@ -43,7 +43,7 @@ function shortAlias(name: string): string | null {
 async function main() {
   const { db } = await import("../lib/db");
   const { tickers, tickerAliases } = await import("../lib/db/schema");
-  const { isNotNull, eq, and, sql, inArray } = await import("drizzle-orm");
+  const { isNotNull, eq, and } = await import("drizzle-orm");
 
   const rows = await db
     .select({ symbol: tickers.symbol, name: tickers.name })

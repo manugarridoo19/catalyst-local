@@ -25,7 +25,7 @@ const PURGE_ALIASES: Array<{ alias: string; symbol?: string; reason: string }> =
 ];
 
 async function main() {
-  const { sql, and, eq, inArray } = await import("drizzle-orm");
+  const { sql, and, eq } = await import("drizzle-orm");
   const { db } = await import("../lib/db");
   const { tickerAliases, newsTickers } = await import("../lib/db/schema");
 

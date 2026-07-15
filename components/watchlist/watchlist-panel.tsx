@@ -31,20 +31,19 @@ const REFRESH_MS = 60_000;
 
 export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
   const [quotes, setQuotes] = useState<QuotesMap>(initialQuotes);
-  const [lastTick, setLastTick] = useState<number | null>(
-    Object.keys(initialQuotes).length ? Date.now() : null,
-  );
+  // null hasta el primer fetch del cliente — Date.now() en el initializer
+  // sería una llamada impura durante render (regla del compilador de React).
+  const [lastTick, setLastTick] = useState<number | null>(null);
   const symbolsKey = useMemo(
     () => items.map((it) => it.symbol).sort().join(","),
     [items],
   );
 
   useEffect(() => {
-    if (!symbolsKey) {
-      setQuotes({});
-      setLastTick(null);
-      return;
-    }
+    // Sin símbolos no hay nada que refrescar. No reseteamos estado aquí
+    // (setState síncrono en efecto): el stale queda oculto por derivación
+    // en render — las rows se pintan por item y shownTick filtra el tick.
+    if (!symbolsKey) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -64,9 +63,10 @@ export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
       }
     }
 
-    if (!Object.keys(initialQuotes).length) {
-      fetchQuotes();
-    }
+    // Fetch inmediato también con initialQuotes del SSR: fija lastTick con
+    // datos reales y /api/quotes lleva s-maxage=30, así que el hit
+    // pos-hidratación suele salir de la CDN.
+    fetchQuotes();
 
     timer = setInterval(fetchQuotes, REFRESH_MS);
     const onVis = () => {
@@ -79,14 +79,17 @@ export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
       if (timer) clearInterval(timer);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [symbolsKey, initialQuotes]);
+  }, [symbolsKey]);
+
+  // Derivado: sin items no se muestra tick aunque quede estado stale.
+  const shownTick = items.length ? lastTick : null;
 
   return (
     <aside className="flex w-72 flex-col border-l border-border/60 bg-card/30">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/60 bg-card/55 px-5 py-2.5 backdrop-blur-md">
         <div className="eyebrow text-muted-foreground">Watchlist</div>
         <div className="flex items-center gap-2">
-          {lastTick ? <LastTick ts={lastTick} /> : null}
+          {shownTick ? <LastTick ts={shownTick} /> : null}
           <span
             className="tick font-mono text-[11px] font-semibold tabular-nums text-foreground/80"
             aria-label={`${items.length} symbols`}
@@ -136,17 +139,20 @@ function WatchlistRow({
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
   const prevPrice = useRef<number | null>(quote?.price ?? null);
 
+  // Precio destructurado fuera del efecto: la dep es el primitivo exacto
+  // que se lee, no el objeto `quote` (identidad nueva en cada refresh).
+  const price = quote?.price ?? null;
   useEffect(() => {
-    if (!quote) return;
+    if (price == null) return;
     const prev = prevPrice.current;
-    if (prev != null && prev !== quote.price) {
-      setFlash(quote.price > prev ? "up" : "down");
+    if (prev != null && prev !== price) {
+      setFlash(price > prev ? "up" : "down");
       const id = setTimeout(() => setFlash(null), 1400);
-      prevPrice.current = quote.price;
+      prevPrice.current = price;
       return () => clearTimeout(id);
     }
-    prevPrice.current = quote.price;
-  }, [quote?.price]);
+    prevPrice.current = price;
+  }, [price]);
 
   const dp = quote?.changePercent ?? null;
   const tone =

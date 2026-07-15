@@ -2,7 +2,7 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 
 async function main() {
-  const { sql, inArray } = await import("drizzle-orm");
+  const { inArray } = await import("drizzle-orm");
   const { db } = await import("../lib/db");
   const { tickers } = await import("../lib/db/schema");
 

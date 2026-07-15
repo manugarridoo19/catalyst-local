@@ -28,7 +28,7 @@ async function main() {
     ORDER BY n.published_at DESC
     LIMIT 20
   `);
-  for (const r of (news.rows ?? news) as any[]) {
+  for (const r of (news.rows ?? news) as Array<{ extraction_method: string; source: string; headline: string | null }>) {
     console.log(`  [${r.extraction_method}] (${r.source}) ${r.headline?.slice(0, 100)}`);
   }
 
@@ -40,7 +40,7 @@ async function main() {
     ORDER BY n DESC
     LIMIT 30
   `);
-  for (const r of (counts.rows ?? counts) as any[]) {
+  for (const r of (counts.rows ?? counts) as Array<{ ticker: string; n: number; dict_n: number }>) {
     console.log(`  ${r.ticker.padEnd(8)} total=${String(r.n).padStart(5)}  dict=${r.dict_n}`);
   }
 

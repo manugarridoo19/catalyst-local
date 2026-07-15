@@ -49,12 +49,11 @@ export function CommandPalette() {
     };
   }, []);
 
-  // Búsqueda contra Finnhub via /api/search.
+  // Búsqueda contra Finnhub via /api/search. Con query vacía no reseteamos
+  // el estado (setState síncrono en efecto = render en cascada): los results
+  // stale quedan en memoria y `shown` (derivado) los oculta en render.
   useEffect(() => {
-    if (!debounced) {
-      setResults([]);
-      return;
-    }
+    if (!debounced) return;
     let cancelled = false;
     fetch(`/api/search?q=${encodeURIComponent(debounced)}`)
       .then((r) => r.json())
@@ -68,6 +67,10 @@ export function CommandPalette() {
       cancelled = true;
     };
   }, [debounced]);
+
+  // Derivado en render: con query vacía no se muestran results aunque el
+  // estado conserve los de la última búsqueda.
+  const shown = debounced ? results : [];
 
   async function addWatchlist(symbol: string) {
     const res = await fetch("/api/watchlist", {
@@ -91,7 +94,7 @@ export function CommandPalette() {
         onValueChange={setQuery}
       />
       <CommandList>
-        {results.length === 0 ? (
+        {shown.length === 0 ? (
           <CommandEmpty>
             {query.length === 0
               ? "Type a ticker or company name."
@@ -99,7 +102,7 @@ export function CommandPalette() {
           </CommandEmpty>
         ) : (
           <CommandGroup heading="Results">
-            {results.map((r) => (
+            {shown.map((r) => (
               <CommandItem
                 key={r.symbol}
                 value={`${r.symbol} ${r.name}`}

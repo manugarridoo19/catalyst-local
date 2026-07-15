@@ -180,7 +180,6 @@ export function extractTickers(
   options: { maxPerItem?: number; knownSymbols?: Set<string> } = {},
 ): ExtractedTicker[] {
   const max = options.maxPerItem ?? 8;
-  const known = options.knownSymbols ?? null;
   const seen = new Map<string, ExtractedTicker>();
 
   // Detecta "<FIRMA analista> raises/cuts/maintains/... <empresa>" en el

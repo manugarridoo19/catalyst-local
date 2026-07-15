@@ -40,7 +40,7 @@ async function main() {
   let totalSuspect = 0;
 
   for (const r of items) {
-    let matched: string[] = [];
+    const matched: string[] = [];
     for (const h of HINTS) if (h.re.test(r.headline)) matched.push(h.name);
     if (!matched.length) continue;
     totalSuspect++;

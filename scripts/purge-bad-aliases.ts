@@ -33,7 +33,7 @@ async function main() {
   const dropAliases = await db.execute(sql`
     DELETE FROM ticker_aliases WHERE alias = ANY(ARRAY[${sql.raw(BAD_ALIASES.map((s) => `'${s}'`).join(","))}]::text[]) RETURNING alias, symbol
   `);
-  for (const r of (dropAliases.rows ?? dropAliases) as any[]) {
+  for (const r of (dropAliases.rows ?? dropAliases) as Array<{ alias: string; symbol: string }>) {
     console.log(`  drop  ${r.alias.padEnd(15)} → ${r.symbol}`);
   }
 
@@ -44,7 +44,7 @@ async function main() {
       AND extraction_method = 'dict'
     RETURNING news_id, ticker
   `);
-  const purgedRows = (purged.rows ?? purged) as any[];
+  const purgedRows = (purged.rows ?? purged) as unknown[];
   console.log(`  purged ${purgedRows.length} rows`);
 
   // Borrar también rows regex de tickers API-only que se autoetiquetaron
@@ -67,7 +67,7 @@ async function main() {
     ORDER BY n DESC
     LIMIT 20
   `);
-  for (const r of (after.rows ?? after) as any[]) {
+  for (const r of (after.rows ?? after) as Array<{ ticker: string; n: number; dict_n: number; api_n: number }>) {
     console.log(`  ${r.ticker.padEnd(8)} total=${String(r.n).padStart(5)}  dict=${r.dict_n}  api=${r.api_n}`);
   }
 
@@ -78,7 +78,7 @@ async function main() {
     WHERE NOT EXISTS (SELECT 1 FROM news_tickers nt WHERE nt.ticker = t.symbol)
     RETURNING symbol
   `);
-  const orphanedRows = (orphaned.rows ?? orphaned) as any[];
+  const orphanedRows = (orphaned.rows ?? orphaned) as Array<{ symbol: string }>;
   if (orphanedRows.length) {
     console.log(`\n=== removed ${orphanedRows.length} orphan tickers (no news links) ===`);
     console.log("  " + orphanedRows.map((r) => r.symbol).join(", "));

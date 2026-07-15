@@ -14,13 +14,8 @@ async function main() {
   const { db, unwrapRows } = await import("../lib/db");
   const { sql } = await import("drizzle-orm");
 
-  // Import lazy del módulo para acceder a internals via reflexión.
-  const cat = await import("../lib/categorizer");
-  const internals = cat as unknown as {
-    PATTERNS?: Array<{ cat: string; pattern: RegExp }>;
-  };
-  // PATTERNS no está exportado; re-build a partir del source con eval truco
-  // no es necesario — usamos categorizeHeuristic + manual regex test.
+  // PATTERNS no está exportado; no hace falta reflexión sobre el módulo —
+  // usamos categorizeHeuristic + manual regex test.
 
   const rows = await db.execute(sql`
     SELECT id, headline, body, source, category

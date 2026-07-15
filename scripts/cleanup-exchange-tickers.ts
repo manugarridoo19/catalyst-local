@@ -11,7 +11,7 @@ const FAKE_TICKERS = [
 ];
 
 async function main() {
-  const { sql, inArray } = await import("drizzle-orm");
+  const { inArray } = await import("drizzle-orm");
   const { db } = await import("../lib/db");
   const { tickers, newsTickers } = await import("../lib/db/schema");
 

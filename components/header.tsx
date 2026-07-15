@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
@@ -14,9 +14,27 @@ export const OPEN_SEARCH_EVENT = "catalyst:open-search";
 
 type Status = "connecting" | "live" | "offline";
 
+// La conexión Pusher es un external store: useSyncExternalStore lee su
+// estado sin el setState-síncrono-en-efecto que prohíbe el compilador de
+// React. getSnapshot devuelve primitivas estables (string), como exige React.
+const subscribeConnection = (cb: () => void) => {
+  const pusher = getPusherClient();
+  if (!pusher) return () => {};
+  pusher.connection.bind("state_change", cb);
+  return () => {
+    pusher.connection.unbind("state_change", cb);
+  };
+};
+const readStatus = (): Status => {
+  const pusher = getPusherClient();
+  if (!pusher) return "offline";
+  return pusher.connection.state === "connected" ? "live" : "connecting";
+};
+const serverStatus = (): Status => "connecting";
+
 export function Header() {
   const pathname = usePathname();
-  const [status, setStatus] = useState<Status>("connecting");
+  const status = useSyncExternalStore(subscribeConnection, readStatus, serverStatus);
   const [now, setNow] = useState<string>("");
   const [lastEvent, setLastEvent] = useState<number | null>(null);
   // Tracks the previous status so we can run a one-shot flourish animation
@@ -48,25 +66,16 @@ export function Header() {
     return () => clearInterval(id);
   }, []);
 
-  // Estado de la conexión Pusher.
+  // Canal de noticias — solo lastEvent; el estado de conexión ya lo cubre
+  // useSyncExternalStore arriba.
   useEffect(() => {
     const pusher = getPusherClient();
-    if (!pusher) {
-      setStatus("offline");
-      return;
-    }
-    const onState = (states: { current: string }) => {
-      setStatus(states.current === "connected" ? "live" : "connecting");
-    };
-    pusher.connection.bind("state_change", onState);
-    setStatus(pusher.connection.state === "connected" ? "live" : "connecting");
-
+    if (!pusher) return;
     const channel = pusher.subscribe(NEWS_CHANNEL);
     const onEvent = () => setLastEvent(Date.now());
     channel.bind(NEWS_EVENT, onEvent);
 
     return () => {
-      pusher.connection.unbind("state_change", onState);
       channel.unbind(NEWS_EVENT, onEvent);
       pusher.unsubscribe(NEWS_CHANNEL);
     };

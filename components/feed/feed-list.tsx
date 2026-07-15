@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getPusherClient,
   NEWS_CHANNEL,
@@ -13,7 +13,6 @@ import { cn } from "@/lib/utils";
 import {
   LIVE_FEED_CATEGORIES,
   NEWS_TAB_CATEGORIES,
-  type NewsCategory,
 } from "@/lib/categorizer";
 
 type Mode = "live" | "news";
@@ -67,13 +66,18 @@ export function FeedList({ initial, watchlist = [], mode = "live" }: Props) {
     [mode],
   );
 
-  const matchesCategory = (it: FeedItem): boolean => {
-    if (mode === "news") {
-      // News tab acepta MACRO, OTHER y items sin categoría conocida.
-      return it.category == null || allowedCategories.has(it.category);
-    }
-    return it.category != null && allowedCategories.has(it.category);
-  };
+  // useCallback para poder declararlo como dep del efecto Pusher sin
+  // re-suscribir en cada render — solo cambia cuando cambia `mode`.
+  const matchesCategory = useCallback(
+    (it: FeedItem): boolean => {
+      if (mode === "news") {
+        // News tab acepta MACRO, OTHER y items sin categoría conocida.
+        return it.category == null || allowedCategories.has(it.category);
+      }
+      return it.category != null && allowedCategories.has(it.category);
+    },
+    [mode, allowedCategories],
+  );
 
   useEffect(() => {
     const pusher = getPusherClient();
@@ -141,7 +145,7 @@ export function FeedList({ initial, watchlist = [], mode = "live" }: Props) {
       channel.unbind(NEWS_EVENT, onNew);
       pusher.unsubscribe(NEWS_CHANNEL);
     };
-  }, [watchlist, mode]);
+  }, [watchlist, mode, matchesCategory]);
 
   const filtered = useMemo(() => {
     if (filter === "watchlist" && watchlist.length) {

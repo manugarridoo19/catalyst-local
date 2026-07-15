@@ -19,7 +19,7 @@ async function main() {
   const shorts = await db.execute(sql`
     SELECT alias, symbol FROM ticker_aliases WHERE length(alias) <= 5 ORDER BY length(alias), alias
   `);
-  for (const r of (shorts.rows ?? shorts) as any[]) {
+  for (const r of (shorts.rows ?? shorts) as Array<{ alias: string; symbol: string }>) {
     const flag = COMMON_WORDS.has(r.alias.toLowerCase()) ? "  ⚠ COMMON" : "";
     console.log(`  ${r.alias.padEnd(8)} → ${r.symbol}${flag}`);
   }
@@ -27,7 +27,7 @@ async function main() {
   console.log("\n=== aliases matching common english words (any length) ===");
   const all = await db.execute(sql`SELECT alias, symbol FROM ticker_aliases`);
   const flagged: Array<{ alias: string; symbol: string }> = [];
-  for (const r of (all.rows ?? all) as any[]) {
+  for (const r of (all.rows ?? all) as Array<{ alias: string; symbol: string }>) {
     if (COMMON_WORDS.has(r.alias.toLowerCase())) {
       flagged.push(r);
       console.log(`  ${r.alias.padEnd(20)} → ${r.symbol}`);
