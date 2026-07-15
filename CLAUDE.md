@@ -6,16 +6,17 @@ Realtime market news dashboard inspired by Catalist.Live. Free-tier-only stack.
 
 ## Stack
 
+- **Hosting: Cloudflare Workers** via `@opennextjs/cloudflare` (migrated off Vercel 2026-07-15 — see "Hosting" below). Live at `https://catalyst-local.manubisbal19.workers.dev`.
 - **Next.js 16** (App Router, Turbopack) + **React 19** + **Tailwind 4** + **shadcn/ui** (base-nova preset)
-- **Drizzle ORM** + **Neon Postgres** (via Vercel Marketplace)
-- **OpenRouter** free models for sentiment scoring (Llama 3.3 70B → Mistral Nemo → Qwen → Gemma → Llama 3.2 3B fallback chain)
+- **Drizzle ORM** + **Neon Postgres** via `@neondatabase/serverless` (WebSocket/443 — required on Workers; also sidesteps the university-network TCP-5432 block). NOT `postgres-js`.
+- **Groq** (primary scorer, Llama 3.1 8b instant) + **OpenRouter** free models (primary `nvidia/nemotron-3-ultra-550b-a55b:free` → `meta-llama/llama-3.3-70b-instruct:free` → `nvidia/nemotron-3-super-120b-a12b:free`). OpenRouter requests send `reasoning:{enabled:false}` — Nemotron otherwise burns the token budget on prose and never emits JSON.
 - **Pusher Channels** for realtime broadcast to clients
-- **Finnhub** REST + WebSocket for quotes/news/search; **Marketaux** + 7 RSS feeds for additional news; **Yahoo Finance** for historical bars
+- **Finnhub** REST + WebSocket for quotes/news/search; **Marketaux** + RSS feeds for additional news; **Yahoo Finance** for historical bars
 
-## Commit conventions (Vercel-deployed)
+## Commit conventions
 
-- Commit email: `manubisbal19@gmail.com` (already set in local git config)
-- **NO `Co-Authored-By` trailer** — Vercel attribution rule
+- Commit email: `manubisbal19@gmail.com` (already set in local git config; also the Cloudflare account email)
+- **NO `Co-Authored-By` trailer** — established convention for this repo
 - Commit on every meaningful milestone, not in batches
 
 ## Cron strategy — DECIDED. Do not change without re-reading the post-mortem.
@@ -44,6 +45,28 @@ dead code; remove it.
 
 Manual trigger if needed: `gh workflow run cron-runner.yml -R manugarridoo19/catalyst-local`
 
+## Hosting — Cloudflare Workers (migrated off Vercel 2026-07-15)
+
+**Vercel is abandoned** (account suspended since May; not coming back). Public
+site is a Cloudflare Worker: `https://catalyst-local.manubisbal19.workers.dev`.
+
+- **Adapter**: `@opennextjs/cloudflare` (Workers with `nodejs_compat`, so
+  `runtime="nodejs"` routes and the Neon driver work). NOT `next-on-pages`
+  (edge-only — would break the DB). Config: `wrangler.jsonc`,
+  `open-next.config.ts`, `initOpenNextCloudflareForDev()` in `next.config.ts`,
+  `serverExternalPackages: ["@neondatabase/serverless"]`.
+- **Deploy**: `set -a; source ~/.catalyst-cf-token; set +a; pnpm cf:deploy`.
+  Auth is a long-lived API token in `~/.catalyst-cf-token` (mode 600,
+  `CLOUDFLARE_API_TOKEN=…`), NOT `wrangler login` (OAuth expires). Scripts:
+  `cf:build` / `cf:preview` / `cf:deploy`.
+- **Secrets**: on the Worker via `wrangler secret bulk` (persist across
+  deploys). `.dev.vars` (gitignored) mirrors `.env.local` for local preview.
+  **NEVER upload `LOCAL_MODE` / `LOCAL_DEFAULT_SESSION_ID` to the Worker** —
+  they'd pin every anonymous visitor to one user's watchlist.
+- Flags live only in `wrangler.jsonc` (wrangler 4.92+ rejects `--compatibility-flag` on the CLI).
+- Desktop launcher: `~/Desktop/Catalyst.app` (opens localhost:3030 if the
+  daemon is up, else the public URL, in Brave app-mode).
+
 ## File organization
 
 - `/app` — Next.js App Router pages + route handlers
@@ -57,7 +80,7 @@ Manual trigger if needed: `gh workflow run cron-runner.yml -R manugarridoo19/cat
 
 - **Universe is dynamic.** Tickers enter the `tickers` table only when a provider mentions them. Don't hardcode an SP500 list.
 - **Providers must be resilient.** All cron fetches go through `Promise.allSettled` — a failing source must not tumble the cycle.
-- **Scoring has a cap.** `SCORING_BATCH=8` per cron run keeps us under Vercel's 60s function limit and respects OpenRouter free rate limits.
+- **Scoring has a cap.** `SCORING_BATCH=8` per cron run respects the free-tier LLM rate limits (and keeps runs short). The Worker never scores — scoring lives in the GH Actions cron + the local scorer daemon.
 - **Score 1-5 + sentiment -5..+5.** Don't change the range without bumping `PROMPT_VERSION` in `lib/scoring/prompt.ts`.
 - **`NEXT_PUBLIC_PUSHER_*`** are the only client-side Pusher creds; `PUSHER_SECRET` is server-only and never exposed.
 
@@ -73,13 +96,15 @@ pnpm db:migrate       # apply migrations to Neon
 pnpm cron:local       # run cron pipeline once locally
 ```
 
-## Local daemon — Vercel-down fallback
+## Local daemon — fast local access with pinned watchlist
 
-When Vercel is suspended (Hobby cap, account issues), the dashboard can
-keep serving from `localhost:3030` via a macOS LaunchAgent that runs the
-prod `next start` build, auto-restarts on crash, and pins the user's
-session UUID via env vars so the watchlist appears without manual cookie
-injection.
+The public Worker is anonymous (no `LOCAL_MODE`), so the user's watchlist
+won't auto-appear there. For daily personal use the dashboard serves from
+`localhost:3030` via a macOS LaunchAgent that runs the prod `next start`
+build, auto-restarts on crash, and pins the user's session UUID via env
+vars so the watchlist appears without manual cookie injection. The repo
+lives at `~/dev/catalyst-local` (moved off `~/Desktop` — iCloud File
+Provider broke launchd reads there).
 
 ```bash
 pnpm daemon:install   # First-time setup: builds, installs plist, starts agent
@@ -98,13 +123,13 @@ pnpm daemon:stop      # Unload agent + kill any stray listener
 **Session pinning**: set `LOCAL_DEFAULT_SESSION_ID=<your-uuid>` in the user
 environment or `.env.local`. Combined with `LOCAL_MODE=1` (set by the
 plist), `lib/session.ts` falls back to that UUID when no cookie is
-present. Never set `LOCAL_MODE=1` on Vercel — would pin all anonymous
-users to the same watchlist.
+present. Never set `LOCAL_MODE=1` on the public Worker (or any shared
+host) — would pin all anonymous users to the same watchlist.
 
 **TCC gotcha**: the plist uses `pnpm --dir /abs/path` instead of a shell
-wrapper because LaunchAgents cannot `chdir` into `~/Desktop` on modern
-macOS without Full Disk Access for `/bin/bash`. The `--dir` flag dodges
-the issue. If you move the repo out of `~/Desktop`, you can simplify.
+wrapper because LaunchAgents cannot `chdir` into TCC-protected dirs on
+modern macOS without Full Disk Access for `/bin/bash`. The `--dir` flag
+dodges the issue.
 
 ### Auto-scorer (second LaunchAgent)
 
@@ -157,6 +182,8 @@ publicly or commit the keys.
 
 ## Common gotchas
 
+- **DB result shape**: `@neondatabase/serverless` `db.execute(sql\`\`)` returns `{ rows, rowCount }`, NOT an array-like RowList (postgres-js did). Use `unwrapRows()` from `lib/db/index.ts` on raw execute results, and read `rowCount` for affected-row counts. Drizzle query-builders (`db.select()`) still return arrays. Don't reintroduce `postgres-js`.
+- **No top-level await in `lib/db`** (or anything imported by tsx scripts) — tsx compiles scripts to CJS and rejects it. The `ws` fallback for Node <22 uses a guarded `require`.
 - Drizzle Kit and tsx scripts need explicit `.env.local` loading via `dotenv` config — don't use `dotenv/config` since static imports are hoisted before env loads.
 - Yahoo Finance unofficial may break — wrap calls in try/catch and degrade gracefully.
-- OpenRouter `:free` models are frequently rate-limited upstream. The `chatCompletion` helper rotates through 5 models; if all fail, news is left unscored (UI shows "—").
+- OpenRouter `:free` models are frequently rate-limited upstream and the catalog changes (owl-alpha was pulled 2026-07 → 404). If a model 404s, check availability at `https://openrouter.ai/api/v1/models` and swap in the fallback chain (`lib/providers/openrouter.ts`). If all fail, news is left unscored (UI shows "—").
