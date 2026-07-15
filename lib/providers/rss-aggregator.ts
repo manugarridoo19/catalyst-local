@@ -59,8 +59,11 @@ const SOURCES: { name: string; url: string }[] = [
     url: "https://news.google.com/rss/search?q=site:forbes.com+markets&hl=en-US&gl=US&ceid=US:en",
   },
   {
+    // 2026-07-15: feed directo devuelve 403 desde los runners de GH Actions
+    // (bloqueo de IPs de datacenter; desde red residencial responde 200).
+    // Mirror de Google News, mismo patrón que Reuters/Bloomberg/FT.
     name: "etftrends",
-    url: "https://www.etftrends.com/feed/",
+    url: "https://news.google.com/rss/search?q=site:etftrends.com&hl=en-US&gl=US&ceid=US:en",
   },
   {
     name: "kiplinger",
