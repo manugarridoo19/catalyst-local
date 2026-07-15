@@ -43,3 +43,5 @@ next-env.d.ts
 
 # claude-flow session data
 .claude-flow/
+.open-next/
+.dev.vars
