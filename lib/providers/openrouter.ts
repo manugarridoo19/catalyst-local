@@ -40,13 +40,15 @@ function readKeysFromLocalFile(): string {
   }
 }
 
-// Modelo primario: openrouter/owl-alpha:free. Tiene worker pool pequeño
-// (queue waits 90-120s en pico) pero da el mejor anti-neutro de los free
-// y es el que el usuario prefiere. Fallbacks: llama-3.3-70b y
-// nvidia/nemotron-3-super-120b — los otros endpoints (DeepSeek, Qwen,
-// Gemini) devuelven 404 "No endpoints found" en REST.
+// Modelo primario: nvidia/nemotron-3-ultra-550b-a55b:free — elegido por el
+// usuario 2026-07-15. Sustituye a openrouter/owl-alpha:free, retirado del
+// catálogo en 2026-07 (404 "No endpoints found"). Nemotron puede emitir
+// bloques de thinking según el system prompt — cleanThinking() los filtra.
+// Fallbacks: llama-3.3-70b (Meta) y nemotron-3-super-120b (NVIDIA, mismo
+// proveedor que el primario — si NVIDIA rate-limita a nivel proveedor,
+// caeremos dos veces seguidas antes de llegar a Meta).
 const DEFAULT_MODEL_FALLBACKS = [
-  "openrouter/owl-alpha:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
   "meta-llama/llama-3.3-70b-instruct:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
 ];
@@ -271,6 +273,10 @@ async function tryOnceWithKey(
     messages,
     temperature: Math.max(0, Math.min(2, baseTemp + fp.tempOffset)),
     max_tokens: opts.maxTokens ?? 256,
+    // Nemotron-3 (y otros híbridos) razonan por defecto y queman todo el
+    // max_tokens en prosa antes de emitir el JSON → "unparseable". El param
+    // unificado de OpenRouter lo apaga; los modelos sin reasoning lo ignoran.
+    reasoning: { enabled: false },
   };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
 

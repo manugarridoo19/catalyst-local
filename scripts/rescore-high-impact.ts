@@ -2,9 +2,9 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 config({ path: ".env" });
 
-// Rescore selectivo: pasa por owl-alpha SOLO las noticias high-impact
-// (i≥4) que ahora mismo están scoreadas con Groq 8b. Owl-alpha es ~30×
-// más caro en latencia pero da mucha mejor calidad — y son justo las
+// Rescore selectivo: pasa por el primario OpenRouter (nemotron-3-ultra)
+// SOLO las noticias high-impact (i≥4) que ahora mismo están scoreadas con
+// Groq 8b. Más caro en latencia pero mejor calidad — y son justo las
 // noticias accionables donde la calidad importa más.
 //
 // Uso:
@@ -14,9 +14,9 @@ config({ path: ".env" });
 //
 // Variables que conviene tener seteadas (override en el comando):
 //   SCORER_PRIMARY=openrouter
-//   OPENROUTER_MODEL=openrouter/owl-alpha
+//   OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
 //
-// Owl-alpha tiene worker pool ~2-3, así que CONCURRENCY=1 con delay
+// Los :free rate-limitan agresivo, así que CONCURRENCY=1 con delay
 // pequeño es lo óptimo. Cada call ~5-10s; 100 items ≈ 15min.
 
 const args = new Set(process.argv.slice(2));
@@ -49,11 +49,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Forzamos owl-alpha como primary. OVERRIDE INCONDICIONAL — si .env.local
+  // Forzamos el primario OpenRouter. OVERRIDE INCONDICIONAL — si .env.local
   // tiene OPENROUTER_MODEL apuntando a otro modelo (ej. el fantasma viejo),
-  // el `||` lo respetaba en vez de owl-alpha. Lo pisamos siempre.
+  // el `||` lo respetaba en vez del primario. Lo pisamos siempre.
   process.env.SCORER_PRIMARY = "openrouter";
-  process.env.OPENROUTER_MODEL = "openrouter/owl-alpha";
+  process.env.OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
 
   const { sql } = await import("drizzle-orm");
   const { db } = await import("../lib/db");
@@ -61,7 +61,7 @@ async function main() {
   const { insertScore } = await import("../lib/db/queries");
 
   const limitClause = LIMIT ? sql`LIMIT ${LIMIT}` : sql``;
-  // Cogemos noticias high-impact que NO se hayan ya rescoreado con owl-alpha.
+  // Cogemos noticias high-impact que NO se hayan ya rescoreado.
   // Prioridad: más recientes primero (las viejas perderán retención pronto).
   const raw = await db.execute(sql`
     SELECT n.id, n.headline, n.body, n.source,

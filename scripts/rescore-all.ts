@@ -14,7 +14,7 @@ const args = new Set(process.argv.slice(2));
 const KEEP = args.has("--keep");
 const LIMIT_ARG = process.argv.find((a) => a.startsWith("--limit="));
 const LIMIT = LIMIT_ARG ? Number(LIMIT_ARG.split("=")[1]) : null;
-// Concurrencia=1 porque owl-alpha rate-limita brutal (429 tras una call).
+// Concurrencia=1 porque los :free rate-limitan brutal (429 tras una call).
 // Sumamos delay entre llamadas. Si quieres ir más rápido vía Groq directo:
 //   SCORER_PRIMARY=groq pnpm tsx scripts/rescore-all.ts
 const CONCURRENCY = 1;
