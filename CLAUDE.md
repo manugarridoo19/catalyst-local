@@ -55,8 +55,11 @@ site is a Cloudflare Worker: `https://catalyst-local.manubisbal19.workers.dev`.
   (edge-only — would break the DB). Config: `wrangler.jsonc`,
   `open-next.config.ts`, `initOpenNextCloudflareForDev()` in `next.config.ts`,
   `serverExternalPackages: ["@neondatabase/serverless"]`.
-- **Deploy**: `set -a; source ~/.catalyst-cf-token; set +a; pnpm cf:deploy`.
-  Auth is a long-lived API token in `~/.catalyst-cf-token` (mode 600,
+- **Deploy**: `set -a; source ~/.catalyst-cf-token; set +a; pnpm cf:build && pnpm cf:deploy`.
+  ⚠️ **`cf:deploy` does NOT rebuild** — it uploads whatever is already in
+  `.open-next/`. Skipping `cf:build` silently ships a stale bundle (bitten
+  2026-07-16: three deploys shipped the previous day's build). Auth is a
+  long-lived API token in `~/.catalyst-cf-token` (mode 600,
   `CLOUDFLARE_API_TOKEN=…`), NOT `wrangler login` (OAuth expires). Scripts:
   `cf:build` / `cf:preview` / `cf:deploy`.
 - **Secrets**: on the Worker via `wrangler secret bulk` (persist across

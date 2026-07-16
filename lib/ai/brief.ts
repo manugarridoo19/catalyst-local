@@ -118,19 +118,32 @@ export async function generateBrief(): Promise<BriefRow> {
   } catch (err) {
     // Pool OpenRouter agotado o proveedores free saturados (pico horario).
     // Groq llama-3.3-70b es instruction-tuned y sirve prosa digna — mejor
-    // un brief de Groq que ninguno.
+    // un brief de Groq que ninguno. Último recurso: 8b-instant (prosa más
+    // plana pero cuota diaria holgada; los guards de longitud/scratchpad
+    // descartan salidas malas y conservan el brief anterior).
     console.warn(
       "[brief] openrouter chain failed, falling back to groq:",
       err instanceof Error ? err.message.slice(0, 120) : err,
     );
-    result = await groqChatCompletion({
-      messages,
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.4,
-      maxTokens: 700,
-      timeoutMs: 25_000,
-      retries: 1,
-    });
+    try {
+      result = await groqChatCompletion({
+        messages,
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.4,
+        maxTokens: 700,
+        timeoutMs: 25_000,
+        retries: 1,
+      });
+    } catch {
+      result = await groqChatCompletion({
+        messages,
+        model: "llama-3.1-8b-instant",
+        temperature: 0.4,
+        maxTokens: 700,
+        timeoutMs: 25_000,
+        retries: 1,
+      });
+    }
   }
 
   const content = cleanBrief(result.content);
