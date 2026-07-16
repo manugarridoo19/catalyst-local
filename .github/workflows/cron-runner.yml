@@ -44,6 +44,10 @@ jobs:
           # Falls back to OPENROUTER_API_KEY when this secret is empty.
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Pool de Google AI Studio (gemini flash-lite) — colchón cuando el
+          # pool de OpenRouter agota su free-models-per-day. Round-robin en
+          # lib/providers/gemini.ts.
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
           PUSHER_APP_ID: ${{ secrets.PUSHER_APP_ID }}
           PUSHER_KEY: ${{ secrets.PUSHER_KEY }}

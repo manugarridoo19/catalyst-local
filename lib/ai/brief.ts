@@ -1,9 +1,8 @@
 import { sql, desc } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { aiBriefs } from "@/lib/db/schema";
-import { chatCompletion } from "@/lib/providers/openrouter";
-import { groqChatCompletion } from "@/lib/providers/groq";
 import { getQuotesMap } from "@/lib/providers/finnhub";
+import { proseCompletion } from "@/lib/ai/prose-chain";
 import { cleanModelProse, looksLikeScratchpad } from "@/lib/ai/guards";
 
 // AI Brief — resumen accionable del día para el dashboard. Junta las
@@ -186,45 +185,13 @@ export async function generateBrief(): Promise<BriefRow> {
     { role: "system" as const, content: BRIEF_SYSTEM_PROMPT },
     { role: "user" as const, content: userPrompt },
   ];
-  let result: { content: string; model: string };
-  try {
-    result = await chatCompletion({
-      messages,
-      task: "brief",
-      temperature: 0.4,
-      maxTokens: 800,
-      timeoutMs: 30_000,
-    });
-  } catch (err) {
-    // Pool OpenRouter agotado o proveedores free saturados (pico horario).
-    // Groq llama-3.3-70b es instruction-tuned y sirve prosa digna — mejor
-    // un brief de Groq que ninguno. Último recurso: 8b-instant (prosa más
-    // plana pero cuota diaria holgada; los guards de longitud/scratchpad
-    // descartan salidas malas y conservan el brief anterior).
-    console.warn(
-      "[brief] openrouter chain failed, falling back to groq:",
-      err instanceof Error ? err.message.slice(0, 120) : err,
-    );
-    try {
-      result = await groqChatCompletion({
-        messages,
-        model: "llama-3.3-70b-versatile",
-        temperature: 0.4,
-        maxTokens: 800,
-        timeoutMs: 25_000,
-        retries: 1,
-      });
-    } catch {
-      result = await groqChatCompletion({
-        messages,
-        model: "llama-3.1-8b-instant",
-        temperature: 0.4,
-        maxTokens: 800,
-        timeoutMs: 25_000,
-        retries: 1,
-      });
-    }
-  }
+  // Cadena completa (openrouter → gemini → groq 70b → 8b) en prose-chain.
+  const result = await proseCompletion({
+    messages,
+    temperature: 0.4,
+    maxTokens: 800,
+    tag: "brief",
+  });
 
   const content = cleanModelProse(result.content);
   if (!content || content.length < 40) {

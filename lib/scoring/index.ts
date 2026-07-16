@@ -1,5 +1,9 @@
 import { chatCompletion, getKeyPoolStatus } from "@/lib/providers/openrouter";
 import {
+  geminiChatCompletion,
+  getGeminiPoolStatus,
+} from "@/lib/providers/gemini";
+import {
   groqChatCompletion,
   GroqRateLimited,
   isGroqModelCooled,
@@ -16,14 +20,15 @@ import { parseScore, parseBatchScores } from "./parser";
 import type { SentimentScore } from "@/lib/types";
 
 // Stack de scoring:
-//   1) OpenRouter Nemotron (nvidia/nemotron-3-super-120b-a12b:free) primario
-//      — modelo big de NVIDIA con razonamiento más fino que Llama 3.1 8b
-//   2) Groq llama-3.1-8b-instant como fallback rápido si OpenRouter cae
-//   3) Si ambos fallan, dejamos sin score y el siguiente cron retry
+//   1) OpenRouter (cadena task="scoring", nemotron-ultra primero) primario
+//   2) Gemini flash-lite (pool 3 keys AI Studio, round-robin) cuando el
+//      pool de OpenRouter agota su free-models-per-day (2026-07-16)
+//   3) Groq llama 70b→8b como último recurso
+//   4) Si todo falla, dejamos sin score y el siguiente cron retry
 //
 // Si quieres forzar otro modelo: SCORER_PRIMARY=groq | openrouter
 
-type Provider = "openrouter" | "groq";
+type Provider = "openrouter" | "gemini" | "groq";
 
 // 2026-07: default de vuelta a OpenRouter. El motivo del cambio a Groq
 // (2026-05) era latencia por-noticia con Vercel Hobby de por medio: 5-15s
@@ -50,6 +55,25 @@ async function scoreViaOpenRouter(input: {
   const result = await chatCompletion({
     messages,
     task: "scoring",
+    temperature: 0.1,
+    maxTokens: 220,
+    jsonMode: true,
+  });
+  return { content: result.content, model: result.model };
+}
+
+async function scoreViaGemini(input: {
+  headline: string;
+  body?: string;
+  tickers: string[];
+  source?: string;
+}) {
+  const messages = [
+    { role: "system" as const, content: SYSTEM_PROMPT },
+    { role: "user" as const, content: buildUserPrompt(input) },
+  ];
+  const result = await geminiChatCompletion({
+    messages,
     temperature: 0.1,
     maxTokens: 220,
     jsonMode: true,
@@ -109,56 +133,76 @@ async function scoreViaGroq(input: {
     : new GroqRateLimited("All Groq models cooled / failed");
 }
 
+// Disponibilidad de un provider con cortocircuito por cooldown: si todas
+// sus keys/modelos están enfriados, ni intentamos (antes parseábamos el
+// error string y malgastábamos stack). OJO: los pools tienen múltiples
+// fuentes de keys (env multi, archivo off-repo, env legacy) — comprobar
+// solo la env legacy desactivaba el provider cuando únicamente existía el
+// pool multi-key.
+function providerAvailable(provider: Provider, ctx: string): boolean {
+  if (provider === "openrouter") {
+    const pool = getKeyPoolStatus();
+    if (pool.total === 0) return false;
+    if (pool.available === 0) {
+      console.warn(
+        `[scoring] openrouter pool fully cooled (${pool.total} keys) — skipping ${ctx}`,
+      );
+      return false;
+    }
+    return true;
+  }
+  if (provider === "gemini") {
+    const pool = getGeminiPoolStatus();
+    if (pool.total === 0) return false;
+    if (pool.available === 0) {
+      console.warn(
+        `[scoring] gemini pool fully cooled (${pool.total} keys) — skipping ${ctx}`,
+      );
+      return false;
+    }
+    return true;
+  }
+  if (!process.env.GROQ_API_KEY) return false;
+  if (GROQ_MODELS.every((m) => isGroqModelCooled(m))) {
+    console.warn(`[scoring] groq all models in cooldown — skipping ${ctx}`);
+    return false;
+  }
+  return true;
+}
+
+// Orden de proveedores: el primario elegido delante, gemini siempre como
+// colchón intermedio antes de groq (salvo que groq sea el primario).
+function providerOrder(): Provider[] {
+  return PRIMARY === "groq"
+    ? ["groq", "openrouter", "gemini"]
+    : ["openrouter", "gemini", "groq"];
+}
+
 export async function scoreNewsItem(input: {
   headline: string;
   body?: string;
   tickers: string[];
   source?: string;
 }): Promise<SentimentScore | null> {
-  // OJO: el pool de OpenRouter tiene 3 fuentes (OPENROUTER_API_KEYS, archivo
-  // off-repo, OPENROUTER_API_KEY legacy) — comprobar solo la env legacy
-  // desactivaba el provider cuando únicamente existía el pool multi-key.
-  const hasOpenRouter = getKeyPoolStatus().total > 0;
-  const hasGroq = Boolean(process.env.GROQ_API_KEY);
-  if (!hasOpenRouter && !hasGroq) {
+  const anyKeys =
+    getKeyPoolStatus().total > 0 ||
+    getGeminiPoolStatus().total > 0 ||
+    Boolean(process.env.GROQ_API_KEY);
+  if (!anyKeys) {
     console.warn("[scoring] no provider keys set — skipping");
     return null;
   }
 
-  // Orden de proveedores según preferencia.
-  const order: Provider[] =
-    PRIMARY === "groq" ? ["groq", "openrouter"] : ["openrouter", "groq"];
-
-  for (const provider of order) {
-    if (provider === "openrouter" && !hasOpenRouter) continue;
-    if (provider === "groq" && !hasGroq) continue;
-
-    // Cortocircuito: si TODAS las keys de OpenRouter están cooled, ni
-    // intentamos. El provider tirará "All N keys cooled until HH:MMZ"
-    // pero antes hacíamos parseo del error string y waste de stack.
-    if (provider === "openrouter") {
-      const pool = getKeyPoolStatus();
-      if (pool.total > 0 && pool.available === 0) {
-        console.warn(
-          `[scoring] openrouter pool fully cooled (${pool.total} keys) — skipping`,
-        );
-        continue;
-      }
-    }
-    // Cortocircuito groq: si los DOS modelos están en cooldown por
-    // Retry-After, mismo tratamiento.
-    if (provider === "groq") {
-      if (GROQ_MODELS.every((m) => isGroqModelCooled(m))) {
-        console.warn(`[scoring] groq all models in cooldown — skipping`);
-        continue;
-      }
-    }
+  for (const provider of providerOrder()) {
+    if (!providerAvailable(provider, "item")) continue;
 
     try {
       const { content, model } =
         provider === "openrouter"
           ? await scoreViaOpenRouter(input)
-          : await scoreViaGroq(input);
+          : provider === "gemini"
+            ? await scoreViaGemini(input)
+            : await scoreViaGroq(input);
       const parsed = parseScore(content);
       if (!parsed) {
         console.warn(
@@ -203,6 +247,7 @@ export const BATCH_SIZE = 10;
 // los ~5s de una call single. Timeouts propios del modo batch.
 const BATCH_MAX_TOKENS = 1400;
 const OPENROUTER_BATCH_TIMEOUT_MS = 45_000;
+const GEMINI_BATCH_TIMEOUT_MS = 30_000;
 const GROQ_BATCH_TIMEOUT_MS = 25_000;
 
 export type BatchScoredItem = SentimentScore & {
@@ -222,6 +267,20 @@ async function batchViaOpenRouter(items: BatchPromptItem[]) {
     maxTokens: BATCH_MAX_TOKENS,
     jsonMode: true,
     timeoutMs: OPENROUTER_BATCH_TIMEOUT_MS,
+  });
+  return { content: result.content, model: result.model };
+}
+
+async function batchViaGemini(items: BatchPromptItem[]) {
+  const result = await geminiChatCompletion({
+    messages: [
+      { role: "system", content: BATCH_SYSTEM_PROMPT },
+      { role: "user", content: buildBatchUserPrompt(items) },
+    ],
+    temperature: 0.1,
+    maxTokens: BATCH_MAX_TOKENS,
+    jsonMode: true,
+    timeoutMs: GEMINI_BATCH_TIMEOUT_MS,
   });
   return { content: result.content, model: result.model };
 }
@@ -271,38 +330,25 @@ export async function scoreNewsBatch(
   if (!items.length) return [];
   const empty: Array<BatchScoredItem | null> = items.map(() => null);
 
-  const hasOpenRouter = getKeyPoolStatus().total > 0;
-  const hasGroq = Boolean(process.env.GROQ_API_KEY);
-  if (!hasOpenRouter && !hasGroq) {
+  const anyKeys =
+    getKeyPoolStatus().total > 0 ||
+    getGeminiPoolStatus().total > 0 ||
+    Boolean(process.env.GROQ_API_KEY);
+  if (!anyKeys) {
     console.warn("[scoring] no provider keys set — skipping batch");
     return empty;
   }
 
-  const order: Provider[] =
-    PRIMARY === "groq" ? ["groq", "openrouter"] : ["openrouter", "groq"];
-
-  for (const provider of order) {
-    if (provider === "openrouter" && !hasOpenRouter) continue;
-    if (provider === "groq" && !hasGroq) continue;
-    if (provider === "openrouter") {
-      const pool = getKeyPoolStatus();
-      if (pool.total > 0 && pool.available === 0) {
-        console.warn(
-          `[scoring] openrouter pool fully cooled (${pool.total} keys) — skipping batch`,
-        );
-        continue;
-      }
-    }
-    if (provider === "groq" && GROQ_MODELS.every((m) => isGroqModelCooled(m))) {
-      console.warn(`[scoring] groq all models in cooldown — skipping batch`);
-      continue;
-    }
+  for (const provider of providerOrder()) {
+    if (!providerAvailable(provider, "batch")) continue;
 
     try {
       const { content, model } =
         provider === "openrouter"
           ? await batchViaOpenRouter(items)
-          : await batchViaGroq(items);
+          : provider === "gemini"
+            ? await batchViaGemini(items)
+            : await batchViaGroq(items);
       const parsed = parseBatchScores(content, items.length);
       if (!parsed.size) {
         console.warn(

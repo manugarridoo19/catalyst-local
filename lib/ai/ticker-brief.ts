@@ -1,9 +1,8 @@
 import { sql, desc, eq } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { tickerBriefs } from "@/lib/db/schema";
-import { chatCompletion } from "@/lib/providers/openrouter";
-import { groqChatCompletion } from "@/lib/providers/groq";
 import { getQuote } from "@/lib/providers/finnhub";
+import { proseCompletion } from "@/lib/ai/prose-chain";
 import { cleanModelProse, looksLikeScratchpad } from "@/lib/ai/guards";
 
 // Ticker Day Brief — "qué está pasando HOY con este stock". Al entrar en
@@ -137,44 +136,13 @@ async function generateFromTape(
     { role: "user" as const, content: userPrompt },
   ];
 
-  let result: { content: string; model: string };
-  try {
-    result = await chatCompletion({
-      messages,
-      task: "brief",
-      temperature: 0.35,
-      maxTokens: 450,
-      timeoutMs: 30_000,
-    });
-  } catch (err) {
-    // Mismo fallback que el brief global: mejor un desk note de Groq que
-    // dejar el cuadro vacío cuando el pool free está saturado.
-    console.warn(
-      `[ticker-brief] ${symbol} openrouter chain failed, falling back to groq:`,
-      err instanceof Error ? err.message.slice(0, 120) : err,
-    );
-    try {
-      result = await groqChatCompletion({
-        messages,
-        model: "llama-3.3-70b-versatile",
-        temperature: 0.35,
-        maxTokens: 450,
-        timeoutMs: 25_000,
-        retries: 1,
-      });
-    } catch {
-      // Último recurso, mismo escalón que el brief global: prosa más plana
-      // pero cuota diaria holgada. Los guards descartan salidas malas.
-      result = await groqChatCompletion({
-        messages,
-        model: "llama-3.1-8b-instant",
-        temperature: 0.35,
-        maxTokens: 450,
-        timeoutMs: 25_000,
-        retries: 1,
-      });
-    }
-  }
+  // Cadena completa (openrouter → gemini → groq 70b → 8b) en prose-chain.
+  const result = await proseCompletion({
+    messages,
+    temperature: 0.35,
+    maxTokens: 450,
+    tag: `ticker-brief:${symbol}`,
+  });
 
   const content = cleanModelProse(result.content);
   if (!content || content.length < 30) {

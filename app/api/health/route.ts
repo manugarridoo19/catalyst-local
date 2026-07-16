@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { getKeyPoolStatus } from "@/lib/providers/openrouter";
+import { getGeminiPoolStatus } from "@/lib/providers/gemini";
 import { groqCooldownStatus } from "@/lib/providers/groq";
 
 // Endpoint público de health-check para monitoring. No expone secretos, solo
@@ -40,6 +41,7 @@ export async function GET() {
     // Útil para correlacionar gaps de scoring con saturación de providers
     // antes de mirar logs.
     const openrouterPool = getKeyPoolStatus();
+    const geminiPool = getGeminiPoolStatus();
     const groqCooldowns = groqCooldownStatus();
 
     return NextResponse.json({
@@ -57,6 +59,11 @@ export async function GET() {
           total: openrouterPool.total,
           available: openrouterPool.available,
           pool: openrouterPool.pool,
+        },
+        gemini: {
+          total: geminiPool.total,
+          available: geminiPool.available,
+          pool: geminiPool.pool,
         },
         groq: {
           cooldowns: groqCooldowns,
