@@ -51,10 +51,13 @@ function readKeysFromLocalFile(): string {
 //     nano-omni es un reasoning model: válido aquí SOLO porque enviamos
 //     reasoning:{enabled:false} en el body (sin eso quema el max_tokens
 //     en prosa y el JSON nunca llega).
-//   brief — prosa user-facing (AI Brief del dashboard). PROHIBIDOS los
-//     reasoning models (sueltan scratchpad al usuario — post-mortem
-//     sueño-de-elvira 2026-05-21). Instruction-tuned only, diversidad
-//     Google → Meta → Qwen.
+//   brief — prosa user-facing (AI Brief del dashboard). Primario
+//     nemotron-ultra (elección del usuario 2026-07-16: máxima inteligencia
+//     para el resumen). Es un reasoning híbrido — seguro aquí SOLO porque
+//     (a) todo request lleva reasoning:{enabled:false} y (b) el generador
+//     tiene guard anti-scratchpad que descarta fugas y conserva el brief
+//     anterior (post-mortem sueño-de-elvira 2026-05-21). Los fallbacks son
+//     instruction-tuned puros, diversidad Google → Meta → Qwen.
 export type LlmTask = "scoring" | "brief";
 
 const TASK_MODEL_CHAINS: Record<LlmTask, string[]> = {
@@ -65,6 +68,7 @@ const TASK_MODEL_CHAINS: Record<LlmTask, string[]> = {
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
   ],
   brief: [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
     "google/gemma-4-31b-it:free",
     "meta-llama/llama-3.3-70b-instruct:free",
     "qwen/qwen3-next-80b-a3b-instruct:free",

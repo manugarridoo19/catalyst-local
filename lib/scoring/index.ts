@@ -25,12 +25,14 @@ import type { SentimentScore } from "@/lib/types";
 
 type Provider = "openrouter" | "groq";
 
-// 2026-05: cambio el default a Groq. OpenRouter free (incl. owl-alpha)
-// rate-limita brutal — cada call 5-15s con retries, así no entra ni 1 batch
-// en el 60s de Vercel Hobby. Groq llama-3.1-8b-instant: 0.5-2s/call. Para
-// pruebas de calidad puntuales: SCORER_PRIMARY=openrouter en env.
+// 2026-07: default de vuelta a OpenRouter. El motivo del cambio a Groq
+// (2026-05) era latencia por-noticia con Vercel Hobby de por medio: 5-15s
+// por call × 1 noticia. Con batch v4 (10 noticias/call, sin Vercel en el
+// path) el coste amortizado es ~1s/noticia y la calidad de nemotron-ultra
+// ≫ llama-3.1-8b (56% neutro perezoso en el audit de mayo). Groq queda de
+// fallback. Override puntual: SCORER_PRIMARY=groq en env.
 const PRIMARY: Provider =
-  (process.env.SCORER_PRIMARY?.toLowerCase() as Provider) || "groq";
+  (process.env.SCORER_PRIMARY?.toLowerCase() as Provider) || "openrouter";
 
 // 2026-07: la cadena de modelos de scoring vive en TASK_MODEL_CHAINS
 // (lib/providers/openrouter.ts, task="scoring"). OPENROUTER_MODEL en env
