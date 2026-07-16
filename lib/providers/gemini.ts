@@ -302,9 +302,14 @@ export async function geminiChatCompletion(opts: {
           if (rotate) rrCursor = (rrCursor + i + 1) % keys.length;
           return result;
         } catch (err) {
+          // SKIP-and-continue en CUALQUIER fallo per-key, no solo los
+          // GeminiRetriable. Un error duro (400 API_KEY_INVALID, 403, reset
+          // de red, body malformado) NO debe abortar el resto de keys ni el
+          // tier de reserva — si de verdad es fatal para todas, sale por el
+          // throw final. Antes, un error no-listado con el cursor parado en
+          // una key mala dejaba todo el proveedor muerto hasta reinicio.
           lastErr = err;
-          if (err instanceof GeminiRetriable) continue;
-          throw err;
+          continue;
         }
       }
     }

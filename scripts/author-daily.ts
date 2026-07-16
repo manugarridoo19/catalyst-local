@@ -52,6 +52,7 @@ async function main() {
   // Upsert de tweets. Idempotente por tweet_id (PK). Actualiza texto/tickers
   // por si un tweet se editó entre pasadas.
   let inserted = 0;
+  let skipped = 0;
   for (const t of tweets) {
     const text = String(t.text ?? "");
     const tickers = extractCashtags(text);
@@ -63,20 +64,33 @@ async function main() {
           sql`, `,
         )}]::text[]`
       : sql`ARRAY[]::text[]`;
-    await db.execute(sql`
-      INSERT INTO author_tweets
-        (tweet_id, author, text, created_at, url, is_retweet, tickers, fetched_at)
-      VALUES (
-        ${String(t.tweet_id)}, ${handle}, ${text},
-        ${String(t.created_at)}::timestamptz, ${t.url ? String(t.url) : null},
-        ${Number(t.is_retweet ?? 0)}, ${tickerArray}, now()
-      )
-      ON CONFLICT (tweet_id) DO UPDATE SET
-        text = EXCLUDED.text, tickers = EXCLUDED.tickers, fetched_at = now()
-    `);
-    inserted++;
+    // Guard por tweet: un created_at que falle el cast ::timestamptz (o
+    // cualquier fila corrupta del scraper) NO debe abortar el ingest entero
+    // ni saltarse el brief. Lo saltamos y seguimos.
+    try {
+      await db.execute(sql`
+        INSERT INTO author_tweets
+          (tweet_id, author, text, created_at, url, is_retweet, tickers, fetched_at)
+        VALUES (
+          ${String(t.tweet_id)}, ${handle}, ${text},
+          ${String(t.created_at)}::timestamptz, ${t.url ? String(t.url) : null},
+          ${Number(t.is_retweet ?? 0)}, ${tickerArray}, now()
+        )
+        ON CONFLICT (tweet_id) DO UPDATE SET
+          text = EXCLUDED.text, tickers = EXCLUDED.tickers, fetched_at = now()
+      `);
+      inserted++;
+    } catch (e) {
+      skipped++;
+      console.warn(
+        `[author-daily] skipped tweet ${t.tweet_id}:`,
+        e instanceof Error ? e.message.slice(0, 100) : e,
+      );
+    }
   }
-  console.log(`[author-daily] ${handle}: upserted ${inserted} tweets`);
+  console.log(
+    `[author-daily] ${handle}: upserted ${inserted} tweets${skipped ? ` (${skipped} skipped)` : ""}`,
+  );
 
   // Genera el brief del día.
   try {

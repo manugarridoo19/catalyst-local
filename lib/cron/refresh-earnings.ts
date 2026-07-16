@@ -42,6 +42,9 @@ export async function runRefreshEarningsCron(): Promise<EarningsRefreshResult> {
     while (cursor < stale.length) {
       const { symbol } = stale[cursor++];
       const cal = await getEarningsCalendar(symbol, HORIZON_DAYS);
+      // null = el fetch falló (429/red). NO tocamos la cache: conservamos
+      // las filas buenas y reintentamos el símbolo el próximo tick.
+      if (cal === null) continue;
       // Reemplazo completo por símbolo: borra fechas pasadas/movidas y
       // marca frescura aunque el símbolo no tenga earnings en el horizonte
       // (fila sentinel no — usamos fetched_at de las filas; si no hay

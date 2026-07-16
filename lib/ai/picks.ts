@@ -61,6 +61,7 @@ function parseRow(r: {
       generatedAt: r.generatedAt,
     };
   } catch {
+    console.warn(`[picks] corrupt row id=${r.id} — skipping`);
     return null;
   }
 }

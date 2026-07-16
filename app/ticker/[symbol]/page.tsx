@@ -80,7 +80,7 @@ export default async function TickerPage({
 
   const price = quote?.c ?? null;
   const change = quote?.dp ?? null;
-  const nextEarnings = earnings[0] ?? null;
+  const nextEarnings = (earnings ?? [])[0] ?? null;
   const nextEarningsLabel = nextEarnings
     ? new Date(`${nextEarnings.date}T00:00:00Z`).toLocaleDateString("en-US", {
         month: "short",

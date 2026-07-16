@@ -197,12 +197,13 @@ export type FinnhubEarningsEvent = {
 };
 
 // Próximos earnings de un símbolo (horizonte `days`). Free tier incluye
-// /calendar/earnings; devolvemos [] en cualquier fallo — el calendario es
-// una feature best-effort.
+// /calendar/earnings. Devuelve `[]` = "Finnhub respondió, sin earnings en el
+// horizonte" (resultado real) vs `null` = "el fetch falló" — el caller de la
+// cache NO debe borrar filas buenas por un 429/red transitorio.
 export async function getEarningsCalendar(
   symbol: string,
   days = 90,
-): Promise<FinnhubEarningsEvent[]> {
+): Promise<FinnhubEarningsEvent[] | null> {
   try {
     const from = new Date().toISOString().slice(0, 10);
     const to = new Date(Date.now() + days * 86400_000)
@@ -229,7 +230,7 @@ export async function getEarningsCalendar(
       revenueEstimate: e.revenueEstimate ?? null,
     }));
   } catch {
-    return [];
+    return null; // fetch falló — distinto de "sin earnings"
   }
 }
 

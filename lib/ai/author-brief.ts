@@ -65,6 +65,7 @@ function parseRow(r: {
     if (!content || !Array.isArray(content.stocks)) return null;
     return { ...r, content };
   } catch {
+    console.warn(`[author-brief] corrupt row id=${r.id} — skipping`);
     return null;
   }
 }
