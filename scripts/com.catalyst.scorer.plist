@@ -2,7 +2,7 @@
 <!--
   Catalyst Local — scorer LaunchAgent.
 
-  Runs `drain-scoring.ts 30` every 15 minutes to keep the news feed
+  Runs `drain-scoring.ts 60` every 15 minutes to keep the news feed
   graded as items land. Complements the GH Actions cron (which is
   throttled by GitHub on public repos to 1-4h between scheduled
   invocations) by using the user's Mac to fire faster, smaller bursts.
@@ -38,7 +38,7 @@
     <string>exec</string>
     <string>tsx</string>
     <string>scripts/drain-scoring.ts</string>
-    <string>30</string>
+    <string>60</string>
   </array>
 
   <!-- Fire immediately on load, then every 900s = 15 min. -->

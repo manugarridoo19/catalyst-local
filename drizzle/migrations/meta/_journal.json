@@ -43,6 +43,13 @@
       "when": 1784217876510,
       "tag": "0005_daffy_toxin",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784230238757,
+      "tag": "0006_rainy_meteorite",
+      "breakpoints": true
     }
   ]
 }

@@ -69,6 +69,11 @@ export const news = pgTable(
     body: text("body"),
     imageUrl: text("image_url"),
     category: newsCategoryEnum("category"),
+    // Nº de veces que un batch de scoring devolvió respuesta PERO omitió/
+    // malformó este item. Con >= 5 el picker lo abandona (badge "—" para
+    // siempre) en vez de reintentar eternamente. Solo se incrementa cuando
+    // el batch produjo al menos un score (fallo de provider ≠ item malo).
+    scoringAttempts: smallint("scoring_attempts").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

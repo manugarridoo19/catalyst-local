@@ -11,10 +11,20 @@ import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 // v4 (2026-07): scoring por LOTES. Antes: 1 noticia = 1 llamada LLM, o sea
 // 10 llamadas/tick y un techo de ~3.000 news/día con el pool entero — por
 // debajo del inflow (~2.000/día) + backlog. Ahora: ORPHAN_BATCH noticias por
-// tick en lotes de BATCH_SIZE (10) → 3 llamadas/tick, mismo rate-limit
-// budget, ×10 throughput. La prioridad publishedAt DESC se mantiene: las
-// noticias más recientes SIEMPRE entran en el primer lote.
-const ORPHAN_BATCH = 30;
+// tick en lotes de BATCH_SIZE (10), mismo rate-limit budget, ×10 throughput.
+//
+// v4.1 (2026-07-16): pick HÍBRIDO. El picker puro publishedAt DESC tenía
+// starvation estructural: con inflow ≈ capacidad, todo lo que perdía su
+// ventana (horas de cuota agotada) se hundía y no se volvía a tocar jamás
+// — 18k del backlog tenían >7 días. Ahora cada tick coge 2/3 de lo más
+// nuevo (el feed sigue viendo scores frescos al momento) + 1/3 del FONDO
+// del backlog (oldest-first, garantiza convergencia a cero). Subida 30→60
+// (6 llamadas/tick): el pool de Gemini (2026-07-16) absorbe el extra.
+const ORPHAN_BATCH = 60;
+const BACKLOG_SHARE = ORPHAN_BATCH / 3; // 20 del fondo del backlog
+// Items que un batch respondido omite/malforma >= MAX_ATTEMPTS veces se
+// abandonan (badge "—" permanente) en vez de reintentar eternamente.
+const MAX_ATTEMPTS = 5;
 
 export type OrphanResult = {
   picked: number;
@@ -42,18 +52,43 @@ function unwrap(r: unknown): OrphanRow[] {
 export async function runScoreOrphansCron(): Promise<OrphanResult> {
   const t0 = Date.now();
 
-  // Cogemos las noticias con ticker SIN score, priorizando las más recientes
-  // para que el feed siempre vea las nuevas con score primero.
-  const raw = await db.execute(sql`
-    SELECT n.id, n.headline, n.body, n.source, n.published_at, n.url,
-      ARRAY(SELECT ticker FROM news_tickers WHERE news_id = n.id) AS tickers
-    FROM news n
-    WHERE NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
-      AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id)
-    ORDER BY n.published_at DESC
-    LIMIT ${ORPHAN_BATCH}
-  `);
-  const rows = unwrap(raw);
+  // Pick híbrido: primero lo más reciente (freshness del feed), después el
+  // fondo del backlog (anti-starvation). Ambas mitades excluyen items ya
+  // abandonados por el cap de intentos.
+  const fresh = unwrap(
+    await db.execute(sql`
+      SELECT n.id, n.headline, n.body, n.source, n.published_at, n.url,
+        ARRAY(SELECT ticker FROM news_tickers WHERE news_id = n.id) AS tickers
+      FROM news n
+      WHERE NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
+        AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id)
+        AND n.scoring_attempts < ${MAX_ATTEMPTS}
+      ORDER BY n.published_at DESC
+      LIMIT ${ORPHAN_BATCH - BACKLOG_SHARE}
+    `),
+  );
+  // OJO driver Neon: `= ANY(${jsArray})` llega como escalar y peta con
+  // 42809 — hay que interpolar la lista con sql.join.
+  const freshIdList = fresh.length
+    ? sql.join(
+        fresh.map((r) => sql`${r.id}`),
+        sql`, `,
+      )
+    : sql`-1`;
+  const backlog = unwrap(
+    await db.execute(sql`
+      SELECT n.id, n.headline, n.body, n.source, n.published_at, n.url,
+        ARRAY(SELECT ticker FROM news_tickers WHERE news_id = n.id) AS tickers
+      FROM news n
+      WHERE NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
+        AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id)
+        AND n.scoring_attempts < ${MAX_ATTEMPTS}
+        AND n.id NOT IN (${freshIdList})
+      ORDER BY n.published_at ASC
+      LIMIT ${BACKLOG_SHARE}
+    `),
+  );
+  const rows = [...fresh, ...backlog];
 
   let scored = 0;
   let failed = 0;
@@ -72,6 +107,25 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
         source: r.source,
       })),
     );
+
+    // Cap de intentos: si el batch produjo AL MENOS un score (= el provider
+    // respondió), los items que vinieron omitidos/malformados suman intento.
+    // Un batch entero a null es fallo de provider (cuota) — no cuenta.
+    const chunkScored = results.filter(Boolean).length;
+    if (chunkScored > 0) {
+      const omittedIds = chunk
+        .filter((_, j) => !results[j])
+        .map((r) => r.id);
+      if (omittedIds.length) {
+        await db.execute(sql`
+          UPDATE news SET scoring_attempts = scoring_attempts + 1
+          WHERE id IN (${sql.join(
+            omittedIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})
+        `);
+      }
+    }
 
     for (let j = 0; j < chunk.length; j++) {
       const r = chunk[j];

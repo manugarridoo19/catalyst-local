@@ -15,9 +15,10 @@ config({ path: ".env.local" });
 config({ path: ".env" });
 
 const TARGET = Math.max(1, parseInt(process.argv[2] ?? "200", 10));
-// v4: cada tick de runScoreOrphansCron coge 30 noticias en 3 lotes de 10
-// (3 llamadas LLM). El pacing se calcula proporcional al picked del tick.
-const BATCH = 30;
+// v4.1: cada tick de runScoreOrphansCron coge 60 noticias (40 frescas +
+// 20 del fondo del backlog) en 6 lotes de 10. El pacing se calcula
+// proporcional al picked del tick.
+const BATCH = 60;
 
 // Adaptive pacing: empezamos en 4s (mismo que antes). Si un tick scored
 // <3, doblamos hasta 30s (Groq rolling window típicamente libera en 30-60s).

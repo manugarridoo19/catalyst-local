@@ -1,0 +1,1 @@
+ALTER TABLE "news" ADD COLUMN "scoring_attempts" smallint DEFAULT 0 NOT NULL;
