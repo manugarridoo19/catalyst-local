@@ -34,6 +34,22 @@ async function main() {
       err instanceof Error ? err.message : err,
     );
   }
+
+  // AI Picks: misma cadencia efectiva que el brief (~4-6/día).
+  try {
+    const { maybeGeneratePicks } = await import("../lib/ai/picks");
+    const picks = await maybeGeneratePicks();
+    if (picks.generated) {
+      console.log(
+        `[refresh-once] picks regenerated (${picks.picks?.model}, ${picks.picks?.picks.length} picks)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[refresh-once] picks generation failed (keeping previous):",
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 main()

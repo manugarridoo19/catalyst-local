@@ -202,6 +202,21 @@ export const tickerBriefs = pgTable(
   (t) => [index("ticker_briefs_symbol_generated_idx").on(t.symbol, t.generatedAt)],
 );
 
+// AI Picks — "qué stocks comenta hoy el tape como buenas inversiones".
+// Agregado 24h de cobertura bullish (upgrades, beats, sentimiento alto) →
+// el LLM selecciona 3-6 y redacta la tesis de cada uno. `content` es un
+// JSON array de picks ({symbol, thesis, catalysts, caution?}) validado por
+// código antes de insertar. Misma cadencia y patrón que ai_briefs.
+export const aiPicks = pgTable("ai_picks", {
+  id: serial("id").primaryKey(),
+  content: text("content").notNull(), // JSON array de TickerPick
+  model: text("model").notNull(),
+  newsCount: integer("news_count").notNull(),
+  generatedAt: timestamp("generated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type Ticker = typeof tickers.$inferSelect;
 export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;

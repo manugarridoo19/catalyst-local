@@ -29,8 +29,11 @@ export async function proseCompletion(opts: {
   maxTokens: number;
   /** Etiqueta para logs, p.ej. "brief" | "ticker-brief". */
   tag: string;
+  /** Salida JSON estructurada (AI Picks). Los tres proveedores lo soportan
+   *  (response_format / responseMimeType). */
+  jsonMode?: boolean;
 }): Promise<ChatCompletionResult> {
-  const { messages, temperature, maxTokens, tag } = opts;
+  const { messages, temperature, maxTokens, tag, jsonMode } = opts;
 
   const warn = (provider: string, err: unknown) =>
     console.warn(
@@ -44,6 +47,7 @@ export async function proseCompletion(opts: {
       task: "brief",
       temperature,
       maxTokens,
+      jsonMode,
       timeoutMs: 30_000,
     });
   } catch (err) {
@@ -56,6 +60,7 @@ export async function proseCompletion(opts: {
         messages,
         temperature,
         maxTokens,
+        jsonMode,
         timeoutMs: 25_000,
       });
     } catch (err) {
@@ -69,6 +74,7 @@ export async function proseCompletion(opts: {
       model: "llama-3.3-70b-versatile",
       temperature,
       maxTokens,
+      jsonMode,
       timeoutMs: 25_000,
       retries: 1,
     });
@@ -81,6 +87,7 @@ export async function proseCompletion(opts: {
     model: "llama-3.1-8b-instant",
     temperature,
     maxTokens,
+    jsonMode,
     timeoutMs: 25_000,
     retries: 1,
   });

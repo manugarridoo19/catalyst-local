@@ -1,9 +1,11 @@
 import { Header } from "@/components/header";
 import { FeedList } from "@/components/feed/feed-list";
 import { BriefPanel } from "@/components/feed/brief-panel";
+import { PicksPanel } from "@/components/feed/picks-panel";
 import { WatchlistPanel } from "@/components/watchlist/watchlist-panel";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getLatestBrief, type BriefRow } from "@/lib/ai/brief";
+import { getLatestPicks, type PicksRow } from "@/lib/ai/picks";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
 import { getSessionId } from "@/lib/session";
 import { startOfTodayUtc } from "@/lib/time-windows";
@@ -23,11 +25,12 @@ async function loadInitial(): Promise<{
   }[];
   quotes: Record<string, CompactQuote | null>;
   brief: BriefRow | null;
+  picks: PicksRow | null;
   error?: string;
 }> {
   try {
     const session = await getSessionId();
-    const [feedRows, watchRows, brief] = await Promise.all([
+    const [feedRows, watchRows, brief, picks] = await Promise.all([
       // Live feed: solo noticias del día (UTC) con ticker asociado y
       // categoría de signal (ANALYST/EARNINGS/MA/GUIDANCE/INSIDER/REG/
       // LEGAL/PRODUCT). MACRO y OTHER viven en /news. Orden estricto por
@@ -43,6 +46,7 @@ async function loadInitial(): Promise<{
       getWatchlist(session),
       // Brief más reciente — puede no existir aún (tabla vacía → null).
       getLatestBrief().catch(() => null),
+      getLatestPicks().catch(() => null),
     ]);
 
     // Recolectar symbols primarios + watchlist para una sola query de meta.
@@ -80,32 +84,39 @@ async function loadInitial(): Promise<{
       logoUrl: meta.get(w.symbol)?.logoUrl ?? null,
     }));
 
-    // Quotes iniciales para watchlist — evita el flash "—" en SSR. Si
-    // Finnhub está lento o caído, devolvemos {} y el cliente refresca.
-    const quotes = watchlist.length
-      ? await getQuotesMap(watchlist.map((w) => w.symbol)).catch(() => ({}))
+    // Quotes iniciales para watchlist + AI Picks (una sola pasada) — evita
+    // el flash "—" en SSR. Si Finnhub está lento o caído, devolvemos {} y
+    // el cliente refresca (los picks pierden su % del día, no pasa nada).
+    const quoteSymbols = [
+      ...watchlist.map((w) => w.symbol),
+      ...(picks?.picks.map((p) => p.symbol) ?? []),
+    ];
+    const quotes = quoteSymbols.length
+      ? await getQuotesMap(quoteSymbols).catch(() => ({}))
       : {};
 
-    return { feed, watchlist, quotes, brief };
+    return { feed, watchlist, quotes, brief, picks };
   } catch (err) {
     return {
       feed: [],
       watchlist: [],
       quotes: {},
       brief: null,
+      picks: null,
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function HomePage() {
-  const { feed, watchlist, quotes, brief, error } = await loadInitial();
+  const { feed, watchlist, quotes, brief, picks, error } = await loadInitial();
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <Header />
       {error ? <SetupBanner message={error} /> : null}
       <BriefPanel brief={brief} />
+      <PicksPanel picks={picks} quotes={quotes} />
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1 overflow-hidden">
           <FeedList

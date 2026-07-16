@@ -58,6 +58,22 @@ async function main() {
     );
   }
 
+  // AI Picks: mismo patrón que el brief (age check 4h, fallo no tumba).
+  try {
+    const { maybeGeneratePicks } = await import("../lib/ai/picks");
+    const picks = await maybeGeneratePicks();
+    console.log(
+      picks.generated
+        ? `[cron-runner] picks regenerated (${picks.picks?.model}, ${picks.picks?.picks.length} picks)`
+        : "[cron-runner] picks still fresh — skipped",
+    );
+  } catch (err) {
+    console.warn(
+      "[cron-runner] picks generation failed (keeping previous):",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   console.log(`[cron-runner] total ${Date.now() - t0}ms`);
 }
 

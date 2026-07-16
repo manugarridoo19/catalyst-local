@@ -50,6 +50,13 @@
       "when": 1784230238757,
       "tag": "0006_rainy_meteorite",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784230545684,
+      "tag": "0007_fair_overlord",
+      "breakpoints": true
     }
   ]
 }
