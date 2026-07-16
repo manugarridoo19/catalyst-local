@@ -21,10 +21,12 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const raw = url.searchParams.get("symbols") ?? "";
+  // Valida cada símbolo con el mismo patrón que /ticker y /feed antes de
+  // gastar quota Finnhub — evita fan-out de peticiones basura.
   const symbols = raw
     .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => /^[A-Z0-9.\-]{1,10}$/.test(s))
     .slice(0, 20);
   if (!symbols.length) return NextResponse.json({ quotes: {} });
   const quotes = await getQuotesMap(symbols);

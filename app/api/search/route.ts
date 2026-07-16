@@ -42,10 +42,18 @@ function writeCache(key: string, data: { symbol: string; name: string }[]) {
 }
 
 // Autocomplete: cliente debouncea y nos llama con `q`. Devolvemos top 10.
+// Caracteres válidos en un query de búsqueda de símbolo/empresa: letras,
+// dígitos, espacio y los separadores que Finnhub acepta. Bloquea payloads
+// raros antes de gastar quota en el proxy.
+const SEARCH_Q_RE = /^[A-Za-z0-9 .&:\-]{1,48}$/;
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const q = url.searchParams.get("q")?.trim() ?? "";
   if (q.length < 1) return NextResponse.json({ results: [] });
+  // Cap de longitud + charset: q basura no debe llegar a Finnhub (protege la
+  // quota de 60 RPM de un fan-out de queries inútiles).
+  if (!SEARCH_Q_RE.test(q)) return NextResponse.json({ results: [] });
 
   const key = q.toLowerCase();
   const cached = readCache(key);

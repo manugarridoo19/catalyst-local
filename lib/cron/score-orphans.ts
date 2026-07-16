@@ -7,6 +7,7 @@ import {
   removeTickersFromNews,
 } from "@/lib/db/queries";
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
+import { UNSCORED_RETENTION_DAYS } from "@/lib/time-windows";
 
 // v4 (2026-07): scoring por LOTES. Antes: 1 noticia = 1 llamada LLM, o sea
 // 10 llamadas/tick y un techo de ~3.000 news/día con el pool entero — por
@@ -63,6 +64,7 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
       WHERE NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
         AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id)
         AND n.scoring_attempts < ${MAX_ATTEMPTS}
+        AND n.published_at >= now() - make_interval(days => ${UNSCORED_RETENTION_DAYS})
       ORDER BY n.published_at DESC
       LIMIT ${ORPHAN_BATCH - BACKLOG_SHARE}
     `),
@@ -83,6 +85,7 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
       WHERE NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
         AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id)
         AND n.scoring_attempts < ${MAX_ATTEMPTS}
+        AND n.published_at >= now() - make_interval(days => ${UNSCORED_RETENTION_DAYS})
         AND n.id NOT IN (${freshIdList})
       ORDER BY n.published_at ASC
       LIMIT ${BACKLOG_SHARE}

@@ -385,6 +385,21 @@ export async function deleteOldNews(days: number): Promise<number> {
   return result.rowCount ?? 0;
 }
 
+// Purga noticias SIN score de más de `days` días. Mantiene las scored (esas
+// las recorta deleteOldNews a RETENTION_DAYS). Recorta el backlog de scoring
+// a lo accionable — puntuar una noticia de hace una semana no aporta valor.
+export async function deleteUnscoredOlderThan(days: number): Promise<number> {
+  const cutoff = new Date(
+    Date.now() - days * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const result = (await db.execute(sql`
+    DELETE FROM news n
+    WHERE n.published_at < ${cutoff}::timestamptz
+      AND NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
+  `)) as unknown as { rowCount?: number };
+  return result.rowCount ?? 0;
+}
+
 // Devuelve los símbolos que deberían recibir per-ticker fetching en el cron:
 // los más mencionados en news + todo lo que esté en watchlist + los seed
 // tickers populares (siempre interesantes).

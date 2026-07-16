@@ -9,6 +9,7 @@ import { extractTickers } from "@/lib/tickers/extractor";
 import { enrichPendingTickers } from "@/lib/tickers/enricher";
 import {
   deleteOldNews,
+  deleteUnscoredOlderThan,
   getTickerMetaMap,
   getTopTickersForFetch,
   insertNewsBatch,
@@ -17,7 +18,7 @@ import {
   upsertTickers,
 } from "@/lib/db/queries";
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
-import { RETENTION_DAYS } from "@/lib/time-windows";
+import { RETENTION_DAYS, UNSCORED_RETENTION_DAYS } from "@/lib/time-windows";
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 
 // Refresh-news NO scorea. Fetch + insert + enrich ya consume 30-40s en
@@ -190,8 +191,11 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   const enriched = await enrichPendingTickers();
 
   // 9) Retention: borrar noticias antiguas. Los FK con onDelete: cascade
-  // limpian news_tickers y news_scores automáticamente.
+  // limpian news_tickers y news_scores automáticamente. Además purga las
+  // noticias SIN score de >5 días (ya no vale la pena puntuarlas — recorta
+  // el backlog de scoring a lo accionable).
   await deleteOldNews(RETENTION_DAYS);
+  await deleteUnscoredOlderThan(UNSCORED_RETENTION_DAYS);
 
   return {
     fetched: {

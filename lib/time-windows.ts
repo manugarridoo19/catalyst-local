@@ -19,3 +19,9 @@ export function fifteenDaysAgo(): Date {
 
 // Retención: ≥20 días se purga del DB en cada tick de refresh-news.
 export const RETENTION_DAYS = 20;
+
+// Retención agresiva para noticias SIN puntuar: pasados estos días ya no
+// vale la pena puntuarlas (el feed muestra lo de hoy) — se descartan. Baja
+// el backlog de scoring a lo realmente accionable. Las noticias CON score
+// se conservan hasta RETENTION_DAYS. (Decisión del usuario 2026-07-16.)
+export const UNSCORED_RETENTION_DAYS = 5;
