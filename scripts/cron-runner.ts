@@ -37,8 +37,26 @@ async function main() {
       picked: score.picked,
       scored: score.scored,
       failed: score.failed,
+      unlinked: score.unlinked,
     }),
   );
+
+  // AI Brief: regenera solo si el último tiene >4h (age check dentro).
+  // Un fallo aquí no tumba el cron — el dashboard conserva el anterior.
+  try {
+    const { maybeGenerateBrief } = await import("../lib/ai/brief");
+    const brief = await maybeGenerateBrief();
+    console.log(
+      brief.generated
+        ? `[cron-runner] brief regenerated (${brief.brief?.model})`
+        : "[cron-runner] brief still fresh — skipped",
+    );
+  } catch (err) {
+    console.warn(
+      "[cron-runner] brief generation failed (keeping previous):",
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   console.log(`[cron-runner] total ${Date.now() - t0}ms`);
 }

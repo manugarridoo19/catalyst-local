@@ -19,6 +19,21 @@ async function main() {
   console.log(
     `[refresh-once] fetched f=${res.fetched.finnhub} fc=${res.fetched.finnhubCompany} mx=${res.fetched.marketaux} rss=${res.fetched.rss} gn=${res.fetched.gnewsTickers} → inserted=${res.inserted} enriched=${res.enriched.succeeded}/${res.enriched.processed} in ${(res.durationMs / 1000).toFixed(1)}s`,
   );
+
+  // AI Brief: regenera si el último tiene >4h. Con el age check, aunque
+  // este tick corre cada 10min la generación real es ~4-6/día.
+  try {
+    const { maybeGenerateBrief } = await import("../lib/ai/brief");
+    const brief = await maybeGenerateBrief();
+    if (brief.generated) {
+      console.log(`[refresh-once] brief regenerated (${brief.brief?.model})`);
+    }
+  } catch (err) {
+    console.warn(
+      "[refresh-once] brief generation failed (keeping previous):",
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 main()

@@ -71,8 +71,6 @@ const TASK_MODEL_CHAINS: Record<LlmTask, string[]> = {
   ],
 };
 
-// Back-compat: chain por defecto cuando el caller no indica tarea.
-const DEFAULT_MODEL_FALLBACKS = TASK_MODEL_CHAINS.scoring;
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";

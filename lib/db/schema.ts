@@ -162,6 +162,18 @@ export const tickerAliases = pgTable("ticker_aliases", {
     .references(() => tickers.symbol, { onDelete: "cascade" }),
 });
 
+// AI Brief — resumen accionable del día generado por LLM (task="brief" en
+// lib/providers/openrouter.ts). Se regenera cuando el último tiene >4h;
+// el dashboard muestra siempre el más reciente.
+export const aiBriefs = pgTable("ai_briefs", {
+  id: serial("id").primaryKey(),
+  content: text("content").notNull(), // markdown-lite (bullets)
+  model: text("model").notNull(),
+  generatedAt: timestamp("generated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type Ticker = typeof tickers.$inferSelect;
 export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;

@@ -1,7 +1,9 @@
 import { Header } from "@/components/header";
 import { FeedList } from "@/components/feed/feed-list";
+import { BriefPanel } from "@/components/feed/brief-panel";
 import { WatchlistPanel } from "@/components/watchlist/watchlist-panel";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
+import { getLatestBrief, type BriefRow } from "@/lib/ai/brief";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
 import { getSessionId } from "@/lib/session";
 import { startOfTodayUtc } from "@/lib/time-windows";
@@ -20,11 +22,12 @@ async function loadInitial(): Promise<{
     logoUrl: string | null;
   }[];
   quotes: Record<string, CompactQuote | null>;
+  brief: BriefRow | null;
   error?: string;
 }> {
   try {
     const session = await getSessionId();
-    const [feedRows, watchRows] = await Promise.all([
+    const [feedRows, watchRows, brief] = await Promise.all([
       // Live feed: solo noticias del día (UTC) con ticker asociado y
       // categoría de signal (ANALYST/EARNINGS/MA/GUIDANCE/INSIDER/REG/
       // LEGAL/PRODUCT). MACRO y OTHER viven en /news. Orden estricto por
@@ -38,6 +41,8 @@ async function loadInitial(): Promise<{
         categories: LIVE_FEED_CATEGORIES,
       }),
       getWatchlist(session),
+      // Brief más reciente — puede no existir aún (tabla vacía → null).
+      getLatestBrief().catch(() => null),
     ]);
 
     // Recolectar symbols primarios + watchlist para una sola query de meta.
@@ -81,24 +86,26 @@ async function loadInitial(): Promise<{
       ? await getQuotesMap(watchlist.map((w) => w.symbol)).catch(() => ({}))
       : {};
 
-    return { feed, watchlist, quotes };
+    return { feed, watchlist, quotes, brief };
   } catch (err) {
     return {
       feed: [],
       watchlist: [],
       quotes: {},
+      brief: null,
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function HomePage() {
-  const { feed, watchlist, quotes, error } = await loadInitial();
+  const { feed, watchlist, quotes, brief, error } = await loadInitial();
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <Header />
       {error ? <SetupBanner message={error} /> : null}
+      <BriefPanel brief={brief} />
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1 overflow-hidden">
           <FeedList
