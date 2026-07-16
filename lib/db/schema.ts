@@ -174,6 +174,29 @@ export const aiBriefs = pgTable("ai_briefs", {
     .defaultNow(),
 });
 
+// Ticker Day Brief — resumen LLM de "qué está pasando HOY" para un símbolo
+// concreto (página /ticker/[symbol]). Se genera on-demand al visitar la
+// página y se cachea aquí; `newestNewsAt` guarda el publishedAt más reciente
+// de las noticias usadas como input, para invalidar el caché solo cuando
+// hay cobertura nueva (y no quemar cuota regenerando lo mismo).
+export const tickerBriefs = pgTable(
+  "ticker_briefs",
+  {
+    id: serial("id").primaryKey(),
+    symbol: text("symbol")
+      .notNull()
+      .references(() => tickers.symbol, { onDelete: "cascade" }),
+    content: text("content").notNull(), // markdown-lite (párrafo lead + bullets)
+    model: text("model").notNull(),
+    newsCount: integer("news_count").notNull(),
+    newestNewsAt: timestamp("newest_news_at", { withTimezone: true }),
+    generatedAt: timestamp("generated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("ticker_briefs_symbol_generated_idx").on(t.symbol, t.generatedAt)],
+);
+
 export type Ticker = typeof tickers.$inferSelect;
 export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;

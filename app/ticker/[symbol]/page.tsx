@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { Header } from "@/components/header";
 import { TradingViewChart } from "@/components/ticker/tradingview-chart";
 import { NewsSidePanel } from "@/components/ticker/news-side-panel";
+import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import { WatchlistToggle } from "@/components/ticker/watchlist-toggle";
 import { getProfile, getQuote } from "@/lib/providers/finnhub";
@@ -176,8 +177,13 @@ export default async function TickerPage({
         <main className="relative flex h-[50vh] min-h-[320px] flex-col overflow-hidden border-b border-border/60 lg:h-auto lg:border-b-0 lg:border-r">
           <TradingViewChart symbol={symbol} />
         </main>
-        <aside className="min-h-0 flex-1 lg:overflow-hidden">
-          <NewsSidePanel symbol={symbol} items={news} />
+        <aside className="flex min-h-0 flex-1 flex-col lg:overflow-hidden">
+          {/* Cuadro AI del día: se rellena async (la 1ª generación puede
+              tardar; el caché BD hace instantáneas las siguientes). */}
+          <TickerBrief symbol={symbol} />
+          <div className="min-h-0 flex-1">
+            <NewsSidePanel symbol={symbol} items={news} />
+          </div>
         </aside>
       </div>
     </div>
