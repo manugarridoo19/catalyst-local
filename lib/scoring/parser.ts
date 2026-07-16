@@ -23,6 +23,11 @@ export type ParsedScore = {
   rationale?: string;
 };
 
+export type ParsedBatchScore = ParsedScore & {
+  /** Tickers de la lista del item que el LLM marcó como mislink. */
+  wrongTickers: string[];
+};
+
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, Math.round(n)));
 }
@@ -89,4 +94,61 @@ export function parseScore(raw: string): ParsedScore | null {
   }
 
   return null;
+}
+
+// Parsea la respuesta de un batch (prompt v4). Devuelve un Map indexado por
+// número de item (1-based). Items ausentes o malformados simplemente no
+// aparecen en el Map — el caller los deja sin score y el siguiente tick
+// los reintenta. Tolerante a fences y a prosa alrededor del JSON.
+export function parseBatchScores(
+  raw: string,
+  expectedCount: number,
+): Map<number, ParsedBatchScore> {
+  const out = new Map<number, ParsedBatchScore>();
+  if (!raw) return out;
+
+  const fenced = raw.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+  const candidates = [
+    fenced?.[1],
+    raw.trim(),
+    raw.match(/\{[\s\S]*\}/)?.[0],
+  ].filter((s): s is string => Boolean(s));
+
+  for (const c of candidates) {
+    let scores: unknown;
+    try {
+      const obj = JSON.parse(c) as { scores?: unknown };
+      scores = Array.isArray(obj.scores) ? obj.scores : undefined;
+      // Algunos modelos devuelven el array pelado sin wrapper.
+      if (!scores && Array.isArray(obj)) scores = obj;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(scores)) continue;
+
+    for (const entry of scores) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      const n = typeof e.n === "number" ? Math.round(e.n) : NaN;
+      if (!Number.isFinite(n) || n < 1 || n > expectedCount) continue;
+      if (typeof e.impact !== "number" || typeof e.sentiment !== "number")
+        continue;
+      if (out.has(n)) continue; // primera entrada gana
+      out.set(n, {
+        impact: clamp(e.impact, 1, 5),
+        sentiment: clamp(e.sentiment, -5, 5),
+        category: normCategory(e.category),
+        rationale:
+          typeof e.rationale === "string" ? e.rationale.slice(0, 200) : undefined,
+        wrongTickers: Array.isArray(e.wrong_tickers)
+          ? e.wrong_tickers
+              .filter((t): t is string => typeof t === "string")
+              .map((t) => t.toUpperCase().trim())
+              .filter(Boolean)
+          : [],
+      });
+    }
+    if (out.size) return out; // primer candidato que produce algo, gana
+  }
+  return out;
 }

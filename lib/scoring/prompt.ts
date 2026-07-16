@@ -1,7 +1,13 @@
 // Versión del prompt — bumpea cuando la calibración cambie. Permite
 // auditar qué noticias se scorearon con qué versión.
-export const PROMPT_VERSION = "v3.3";
+export const PROMPT_VERSION = "v4.0";
 
+// v4.0 (2026-07): scoring por LOTES — hasta 10 noticias por llamada LLM
+// (misma rúbrica v3.3). Multiplica ×10 la capacidad bajo los rate limits
+// free-tier y añade "wrong_tickers": el modelo marca tickers de la lista
+// que la noticia NO concierne (mislinks del extractor) y el caller los
+// borra de news_tickers. Validación semántica gratis en la misma llamada.
+//
 // v3.3 (2026-05): v3.2 dejaba ~41% de news en (impact=1, sent=0). Reescritura
 // agresiva contra el "neutro perezoso": castigamos sent=0 en headlines
 // direccionales y forzamos al modelo a comprometerse cuando hay verbos de
@@ -77,4 +83,51 @@ export function buildUserPrompt(input: {
     `Headline: ${input.headline}`,
     `Body: ${body}`,
   ].join("\n");
+}
+
+// ============================================================================
+// Batch scoring (v4) — hasta 10 noticias por llamada.
+// ============================================================================
+
+// Mismo criterio de scoring que SYSTEM_PROMPT (la rúbrica se comparte vía
+// template), pero el output es un array con una entrada por item + el campo
+// wrong_tickers para desvincular mislinks del extractor.
+export const BATCH_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
+
+BATCH MODE — you will receive N numbered news items. Score EVERY item.
+Output STRICT JSON only (no fences, no prose):
+{"scores":[{"n":<item number>,"impact":<1-5>,"sentiment":<-5..5>,"category":"<CATEGORY>","rationale":"<≤90 chars>","wrong_tickers":["SYM",...]},...]}
+
+Rules for batch output:
+- Exactly one entry per item, "n" matching the item number.
+- "wrong_tickers": the subset of THAT item's listed tickers that the news does
+  NOT materially concern — wrong company (generic word matched a company name),
+  analyst firm as grammatical subject only, ticker mentioned only in a list of
+  "other stocks". Empty array [] when all listed tickers fit. NEVER include a
+  ticker that is not in that item's Tickers line. When unsure, keep the ticker.
+- Score impact/sentiment for the tickers that remain after removing wrong ones.`;
+
+export type BatchPromptItem = {
+  headline: string;
+  body?: string;
+  tickers: string[];
+  source?: string;
+};
+
+export function buildBatchUserPrompt(items: BatchPromptItem[]): string {
+  const blocks = items.map((it, i) => {
+    // Body cap 400 en batch (vs 800 single) — con 10 items el contexto
+    // crece rápido y el lead informativo vive en el primer párrafo.
+    const body = it.body
+      ? it.body.slice(0, 400).replace(/\s+/g, " ").trim()
+      : "(no body — judge from headline only)";
+    return [
+      `Item ${i + 1}:`,
+      `Tickers: ${it.tickers.length ? it.tickers.join(", ") : "(none)"}`,
+      `Source: ${it.source ?? "unknown"}`,
+      `Headline: ${it.headline}`,
+      `Body: ${body}`,
+    ].join("\n");
+  });
+  return `Score all ${items.length} items.\n\n${blocks.join("\n\n")}`;
 }

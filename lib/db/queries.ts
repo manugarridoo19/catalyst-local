@@ -172,6 +172,24 @@ export async function insertScore(
   }
 }
 
+// Desvincula tickers concretos de una noticia. Lo usa el scorer batch v4
+// cuando el LLM marca wrong_tickers — mislinks del extractor que
+// sobrevivieron a las reglas estáticas.
+export async function removeTickersFromNews(
+  newsId: number,
+  symbols: string[],
+): Promise<void> {
+  if (!symbols.length) return;
+  await db
+    .delete(newsTickers)
+    .where(
+      and(
+        eq(newsTickers.newsId, newsId),
+        inArray(newsTickers.ticker, symbols.map((s) => s.toUpperCase())),
+      ),
+    );
+}
+
 export async function loadAliases() {
   return db.select().from(tickerAliases);
 }

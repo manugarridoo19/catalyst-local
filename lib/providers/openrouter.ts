@@ -40,18 +40,39 @@ function readKeysFromLocalFile(): string {
   }
 }
 
-// Modelo primario: nvidia/nemotron-3-ultra-550b-a55b:free — elegido por el
-// usuario 2026-07-15. Sustituye a openrouter/owl-alpha:free, retirado del
-// catálogo en 2026-07 (404 "No endpoints found"). Nemotron puede emitir
-// bloques de thinking según el system prompt — cleanThinking() los filtra.
-// Fallbacks: llama-3.3-70b (Meta) y nemotron-3-super-120b (NVIDIA, mismo
-// proveedor que el primario — si NVIDIA rate-limita a nivel proveedor,
-// caeremos dos veces seguidas antes de llegar a Meta).
-const DEFAULT_MODEL_FALLBACKS = [
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
-];
+// Cadenas de modelos POR TAREA (2026-07-15, catálogo verificado en vivo).
+// Cada tarea tiene requisitos distintos y no hay razón para que compartan
+// chain — así cada key del pool se aprovecha con el modelo que mejor rinde
+// para el trabajo concreto:
+//
+//   scoring — JSON estructurado en lotes. Primario nemotron-3-ultra
+//     (elección del usuario 2026-07-15; el más capaz del catálogo free).
+//     Diversidad de proveedor en fallbacks: Meta → Google → NVIDIA-nano.
+//     nano-omni es un reasoning model: válido aquí SOLO porque enviamos
+//     reasoning:{enabled:false} en el body (sin eso quema el max_tokens
+//     en prosa y el JSON nunca llega).
+//   brief — prosa user-facing (AI Brief del dashboard). PROHIBIDOS los
+//     reasoning models (sueltan scratchpad al usuario — post-mortem
+//     sueño-de-elvira 2026-05-21). Instruction-tuned only, diversidad
+//     Google → Meta → Qwen.
+export type LlmTask = "scoring" | "brief";
+
+const TASK_MODEL_CHAINS: Record<LlmTask, string[]> = {
+  scoring: [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+  ],
+  brief: [
+    "google/gemma-4-31b-it:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+  ],
+};
+
+// Back-compat: chain por defecto cuando el caller no indica tarea.
+const DEFAULT_MODEL_FALLBACKS = TASK_MODEL_CHAINS.scoring;
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -261,7 +282,12 @@ async function tryOnceWithKey(
   state: KeyState,
   model: string,
   messages: ChatMessage[],
-  opts: { temperature?: number; maxTokens?: number; jsonMode?: boolean },
+  opts: {
+    temperature?: number;
+    maxTokens?: number;
+    jsonMode?: boolean;
+    timeoutMs?: number;
+  },
 ): Promise<ChatCompletionResult> {
   // Per-key fingerprint variance: UA + Referer + Title triple changes per
   // pooled key so two accounts don't present as the same app. The temp
@@ -288,8 +314,9 @@ async function tryOnceWithKey(
     setTimeout(r, 40 + Math.floor(Math.random() * 140)),
   );
 
+  const timeoutMs = opts.timeoutMs ?? PER_REQUEST_TIMEOUT_MS;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), PER_REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
   let res: Response;
   try {
@@ -307,10 +334,7 @@ async function tryOnceWithKey(
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new RetriableError(
-        `timeout ${PER_REQUEST_TIMEOUT_MS}ms on ${model}`,
-        408,
-      );
+      throw new RetriableError(`timeout ${timeoutMs}ms on ${model}`, 408);
     }
     throw err;
   } finally {
@@ -358,9 +382,13 @@ async function tryOnceWithKey(
 export async function chatCompletion(opts: {
   messages: ChatMessage[];
   model?: string;
+  /** Selecciona la cadena de modelos por tipo de trabajo. Sin task ni
+   *  model explícito se usa la cadena de scoring (back-compat). */
+  task?: LlmTask;
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
+  timeoutMs?: number;
 }): Promise<ChatCompletionResult> {
   if (KEY_POOL.length === 0) {
     throw new Error(
@@ -368,10 +396,17 @@ export async function chatCompletion(opts: {
     );
   }
 
-  const preferred = opts.model || process.env.OPENROUTER_MODEL;
+  // OPENROUTER_MODEL solo pisa la cadena de scoring — un override de env
+  // pensado para el scorer no debe arrastrar al brief a un modelo JSON.
+  const chain = TASK_MODEL_CHAINS[opts.task ?? "scoring"];
+  const preferred =
+    opts.model ||
+    ((opts.task ?? "scoring") === "scoring"
+      ? process.env.OPENROUTER_MODEL
+      : undefined);
   const modelOrder = [
     ...(preferred ? [preferred] : []),
-    ...DEFAULT_MODEL_FALLBACKS.filter((m) => m !== preferred),
+    ...chain.filter((m) => m !== preferred),
   ];
 
   let lastErr: unknown = null;

@@ -15,7 +15,9 @@ config({ path: ".env.local" });
 config({ path: ".env" });
 
 const TARGET = Math.max(1, parseInt(process.argv[2] ?? "200", 10));
-const BATCH = 10;
+// v4: cada tick de runScoreOrphansCron coge 30 noticias en 3 lotes de 10
+// (3 llamadas LLM). El pacing se calcula proporcional al picked del tick.
+const BATCH = 30;
 
 // Adaptive pacing: empezamos en 4s (mismo que antes). Si un tick scored
 // <3, doblamos hasta 30s (Groq rolling window típicamente libera en 30-60s).
@@ -47,16 +49,17 @@ async function main() {
     totalFailed += res.failed;
 
     // Tune pause antes de loggear así el log refleja el próximo pause.
+    // Umbrales proporcionales al picked (v4: 30/tick, antes 10).
     const prevPause = pauseMs;
-    if (res.scored < 3) {
+    if (res.picked > 0 && res.scored < res.picked * 0.25) {
       pauseMs = Math.min(PAUSE_MAX_MS, Math.round(pauseMs * 2));
-    } else if (res.scored >= 8) {
+    } else if (res.picked > 0 && res.scored >= res.picked * 0.8) {
       pauseMs = Math.max(PAUSE_MIN_MS, Math.round(pauseMs / 2));
     }
     const pauseTag = pauseMs !== prevPause ? `pause=${pauseMs}ms*` : `pause=${pauseMs}ms`;
 
     console.log(
-      `[drain] tick ${iteration.toString().padStart(3)}  picked=${res.picked.toString().padStart(3)}  scored=${res.scored.toString().padStart(3)}  failed=${res.failed.toString().padStart(3)}  cum=${totalScored}/${TARGET}  ${pauseTag}  +${(res.durationMs / 1000).toFixed(1)}s`,
+      `[drain] tick ${iteration.toString().padStart(3)}  picked=${res.picked.toString().padStart(3)}  scored=${res.scored.toString().padStart(3)}  failed=${res.failed.toString().padStart(3)}  unlinked=${res.unlinked.toString().padStart(3)}  cum=${totalScored}/${TARGET}  ${pauseTag}  +${(res.durationMs / 1000).toFixed(1)}s`,
     );
 
     if (res.picked === 0) {

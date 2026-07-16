@@ -84,6 +84,7 @@ async function groqOnce(
     temperature?: number;
     maxTokens?: number;
     jsonMode?: boolean;
+    timeoutMs?: number;
   },
 ): Promise<ChatCompletionResult> {
   const body: Record<string, unknown> = {
@@ -94,8 +95,9 @@ async function groqOnce(
   };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
 
+  const timeoutMs = opts.timeoutMs ?? PER_REQUEST_TIMEOUT_MS;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), PER_REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
@@ -109,7 +111,7 @@ async function groqOnce(
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`Groq timeout ${PER_REQUEST_TIMEOUT_MS}ms`);
+      throw new Error(`Groq timeout ${timeoutMs}ms`);
     }
     throw err;
   } finally {
@@ -145,6 +147,7 @@ export async function groqChatCompletion(opts: {
   maxTokens?: number;
   jsonMode?: boolean;
   retries?: number;
+  timeoutMs?: number;
 }): Promise<ChatCompletionResult> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("GROQ_API_KEY is not set");

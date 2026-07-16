@@ -1,24 +1,26 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { scoreNewsItem } from "@/lib/scoring";
-import { getTickerMetaMap, insertScore } from "@/lib/db/queries";
+import { scoreNewsBatch, BATCH_SIZE } from "@/lib/scoring";
+import {
+  getTickerMetaMap,
+  insertScore,
+  removeTickersFromNews,
+} from "@/lib/db/queries";
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 
-// Batch + concurrencia calibradas para 60s Vercel Hobby. 50 × ~2s / 5 = 20s
-// margen para enriquecimiento y broadcast.
-// Groq 8b free: 30 RPM + 30K TPM + burst limits no documentados que
-// disparan 429 cuando metes ≥15 calls en <10s. BATCH=10 con calls
-// rápidas (~300ms cada una) corre en ~15s y se mantiene bajo todos los
-// caps. Drainage = 10/tick × 12 ticks/hora = 120 news/hora — pero la
-// prioridad publishedAt DESC asegura que las MÁS RECIENTES nunca esperan
-// más de 5min.
-const ORPHAN_BATCH = 10;
-const ORPHAN_CONCURRENCY = 1;
+// v4 (2026-07): scoring por LOTES. Antes: 1 noticia = 1 llamada LLM, o sea
+// 10 llamadas/tick y un techo de ~3.000 news/día con el pool entero — por
+// debajo del inflow (~2.000/día) + backlog. Ahora: ORPHAN_BATCH noticias por
+// tick en lotes de BATCH_SIZE (10) → 3 llamadas/tick, mismo rate-limit
+// budget, ×10 throughput. La prioridad publishedAt DESC se mantiene: las
+// noticias más recientes SIEMPRE entran en el primer lote.
+const ORPHAN_BATCH = 30;
 
 export type OrphanResult = {
   picked: number;
   scored: number;
   failed: number;
+  unlinked: number;
   durationMs: number;
 };
 
@@ -55,24 +57,46 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
 
   let scored = 0;
   let failed = 0;
+  let unlinked = 0;
   const broadcast: FeedNewsPayload[] = [];
 
-  let cursor = 0;
-  async function worker() {
-    while (true) {
-      const i = cursor++;
-      if (i >= rows.length) return;
-      const r = rows[i];
+  // Lotes secuenciales — cada lote es UNA llamada LLM; la concurrencia ya
+  // no aporta (el rate limit es por llamada, no por item).
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const chunk = rows.slice(i, i + BATCH_SIZE);
+    const results = await scoreNewsBatch(
+      chunk.map((r) => ({
+        headline: r.headline,
+        body: r.body ?? undefined,
+        tickers: r.tickers ?? [],
+        source: r.source,
+      })),
+    );
+
+    for (let j = 0; j < chunk.length; j++) {
+      const r = chunk[j];
+      const score = results[j];
+      if (!score) {
+        failed++;
+        continue;
+      }
       try {
-        const score = await scoreNewsItem({
-          headline: r.headline,
-          body: r.body ?? undefined,
-          tickers: r.tickers ?? [],
-          source: r.source,
-        });
-        if (score) {
-          await insertScore(r.id, score);
-          scored++;
+        // 1) Desvincular mislinks detectados por el LLM ANTES de decidir el
+        // broadcast — si la noticia se queda sin tickers, sale del live feed
+        // (requireTicker) y no la anunciamos.
+        const wrong = new Set(score.wrongTickers);
+        if (wrong.size) {
+          await removeTickersFromNews(r.id, [...wrong]);
+          unlinked += wrong.size;
+        }
+        const remaining = (r.tickers ?? []).filter(
+          (t) => !wrong.has(t.toUpperCase()),
+        );
+
+        await insertScore(r.id, score);
+        scored++;
+
+        if (remaining.length) {
           broadcast.push({
             id: r.id,
             headline: r.headline,
@@ -80,14 +104,12 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
             source: r.source,
             publishedAt: new Date(r.published_at).toISOString(),
             url: r.url,
-            tickers: r.tickers ?? [],
-            primarySymbol: r.tickers?.[0] ?? null,
+            tickers: remaining,
+            primarySymbol: remaining[0] ?? null,
             impact: score.impact,
             sentiment: score.sentiment,
             rationale: score.rationale,
           });
-        } else {
-          failed++;
         }
       } catch (err) {
         failed++;
@@ -98,9 +120,6 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
       }
     }
   }
-  await Promise.all(
-    Array.from({ length: ORPHAN_CONCURRENCY }, () => worker()),
-  );
 
   // Enriquecer y empujar a Pusher para que el cliente vea los nuevos scores
   // sin recargar. Mismo patrón que refresh-news.
@@ -123,6 +142,7 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
     picked: rows.length,
     scored,
     failed,
+    unlinked,
     durationMs: Date.now() - t0,
   };
 }

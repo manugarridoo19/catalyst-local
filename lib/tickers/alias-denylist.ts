@@ -34,6 +34,9 @@ export const COMMON_WORD_DENYLIST: ReadonlySet<string> = new Set([
   "next", "power", "outlook", "under", "better", "news", "focus", "state",
   "driven", "stanley", "globe", "dollar", "gates", "slide", "trump",
   "nasdaq", "strategy", "sterling", "block", "target", "sea",
+  // "Jones"→JLL matcheaba "Jones Act"; "Dow"→DOW matchea el índice Dow
+  // Jones (DOW Inc legítimo solo via "Dow Inc"/"Dow Chemical").
+  "jones", "dow",
   // -- Cualificativos / genéricos ------------------------------------------
   "good", "great", "best", "big", "major", "premier", "prime", "pure",
   "first", "federal", "general", "new", "smart", "super", "one", "two",
