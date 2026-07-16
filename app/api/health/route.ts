@@ -63,6 +63,8 @@ export async function GET() {
         gemini: {
           total: geminiPool.total,
           available: geminiPool.available,
+          primary: geminiPool.primary,
+          reserve: geminiPool.reserve,
           pool: geminiPool.pool,
         },
         groq: {

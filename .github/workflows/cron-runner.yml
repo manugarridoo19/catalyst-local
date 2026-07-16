@@ -46,8 +46,10 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # Pool de Google AI Studio (gemini flash-lite) — colchón cuando el
           # pool de OpenRouter agota su free-models-per-day. Round-robin en
-          # lib/providers/gemini.ts.
+          # lib/providers/gemini.ts. RESERVE = cuenta principal blindada,
+          # solo se usa si las primarias están agotadas.
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_RESERVE_API_KEYS: ${{ secrets.GEMINI_RESERVE_API_KEYS }}
           OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
           PUSHER_APP_ID: ${{ secrets.PUSHER_APP_ID }}
           PUSHER_KEY: ${{ secrets.PUSHER_KEY }}

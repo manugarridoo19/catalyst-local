@@ -28,19 +28,21 @@ const BASE = "https://generativelanguage.googleapis.com/v1beta";
 const GEMINI_MODELS = ["gemini-3.1-flash-lite", "gemini-2.0-flash-lite"];
 
 // Off-repo secrets file, mismo patrón que ~/.catalyst-openrouter-keys
-// (los settings del usuario deniegan tocar ./.env*). Formato: una línea
-// GEMINI_API_KEYS=k1,k2,k3. En GH Actions y en el Worker la env var llega
-// por secrets, así que el archivo solo hace falta en el Mac.
+// (los settings del usuario deniegan tocar ./.env*). Formato:
+//   GEMINI_API_KEYS=k1,k2,k3          → pool primario (round-robin normal)
+//   GEMINI_RESERVE_API_KEYS=kMain     → reserva (solo si el primario agotó)
+// En GH Actions y el Worker las env vars llegan por secrets, así que el
+// archivo solo hace falta en el Mac.
 const LOCAL_KEYS_FILE = join(homedir(), ".catalyst-gemini-keys");
 
-function readKeysFromLocalFile(): string {
+function readLocalVar(name: string): string {
   if (!existsSync(LOCAL_KEYS_FILE)) return "";
   try {
     const raw = readFileSync(LOCAL_KEYS_FILE, "utf8");
     for (const line of raw.split(/\r?\n/)) {
       const t = line.trim();
       if (!t || t.startsWith("#")) continue;
-      const m = t.match(/^GEMINI_API_KEYS\s*=\s*(.+)$/);
+      const m = t.match(new RegExp(`^${name}\\s*=\\s*(.+)$`));
       if (m) return m[1].trim();
     }
     return "";
@@ -54,29 +56,51 @@ type KeyState = {
   /** ms epoch; 0 = disponible. */
   cooldownUntil: number;
   label: string;
+  /** Reserva: cuenta principal del usuario, blindada. Solo se usa cuando
+   *  NINGUNA key primaria está disponible. Uso mínimo = perfil casi humano
+   *  = mínima superficie de detección multi-cuenta para la cuenta que menos
+   *  queremos perder. */
+  reserve: boolean;
 };
 
-function loadKeyPool(): KeyState[] {
-  const fromMulti = (process.env.GEMINI_API_KEYS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const fromFile = readKeysFromLocalFile()
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const fromSingle = [(process.env.GEMINI_API_KEY ?? "").trim()].filter(
-    Boolean,
-  );
-  const seen = new Set<string>();
-  const raw: string[] = [];
-  for (const k of [...fromMulti, ...fromFile, ...fromSingle]) {
-    if (!seen.has(k)) {
-      seen.add(k);
-      raw.push(k);
+function splitKeys(...sources: string[]): string[] {
+  const out: string[] = [];
+  for (const src of sources) {
+    for (const k of src.split(",").map((s) => s.trim()).filter(Boolean)) {
+      out.push(k);
     }
   }
-  return raw.map((key, i) => ({ key, cooldownUntil: 0, label: `g${i + 1}` }));
+  return out;
+}
+
+function loadKeyPool(): KeyState[] {
+  const primary = splitKeys(
+    process.env.GEMINI_API_KEYS ?? "",
+    readLocalVar("GEMINI_API_KEYS"),
+    (process.env.GEMINI_API_KEY ?? "").trim(), // legacy single-key
+  );
+  const reserve = splitKeys(
+    process.env.GEMINI_RESERVE_API_KEYS ?? "",
+    readLocalVar("GEMINI_RESERVE_API_KEYS"),
+  );
+
+  const seen = new Set<string>();
+  const pool: KeyState[] = [];
+  let i = 0;
+  // Primarias primero. Una key que aparezca en ambas listas queda como
+  // primaria (dedupe por key exacta) — pero el usuario debe mantener la
+  // main SOLO en la lista de reserva para que quede blindada.
+  for (const key of primary) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pool.push({ key, cooldownUntil: 0, label: `g${++i}`, reserve: false });
+  }
+  for (const key of reserve) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pool.push({ key, cooldownUntil: 0, label: `gR${++i}`, reserve: true });
+  }
+  return pool;
 }
 
 const KEY_POOL: KeyState[] = loadKeyPool();
@@ -253,24 +277,51 @@ export async function geminiChatCompletion(opts: {
     ? [opts.model, ...GEMINI_MODELS.filter((m) => m !== opts.model)]
     : GEMINI_MODELS;
 
+  // Blindaje de la cuenta principal: intentamos PRIMERO todas las keys
+  // primarias; la(s) de reserva solo entran si ninguna primaria respondió.
+  // Así la main hace el mínimo de llamadas posibles (perfil casi humano).
+  const primary = KEY_POOL.filter((k) => !k.reserve);
+  const reserve = KEY_POOL.filter((k) => k.reserve);
+
   let lastErr: unknown = null;
-  for (const model of models) {
-    // Una vuelta completa al pool por modelo, arrancando en el cursor
-    // round-robin (peticiones consecutivas salen por keys distintas).
-    for (let i = 0; i < KEY_POOL.length; i++) {
-      const state = KEY_POOL[(rrCursor + i) % KEY_POOL.length];
-      if (state.cooldownUntil > Date.now()) continue;
-      try {
-        const result = await tryOnceWithKey(state, model, payload, timeoutMs);
-        rrCursor = (rrCursor + i + 1) % KEY_POOL.length;
-        return result;
-      } catch (err) {
-        lastErr = err;
-        if (err instanceof GeminiRetriable) continue; // siguiente key
-        throw err;
+
+  // El round-robin (rrCursor) solo rota sobre las primarias; la reserva se
+  // recorre en orden fijo y sin avanzar el cursor (queremos que su uso sea
+  // esporádico, no parte de la rotación).
+  async function tryTier(
+    keys: KeyState[],
+    rotate: boolean,
+  ): Promise<ChatCompletionResult | null> {
+    for (const model of models) {
+      for (let i = 0; i < keys.length; i++) {
+        const idx = rotate ? (rrCursor + i) % keys.length : i;
+        const state = keys[idx];
+        if (state.cooldownUntil > Date.now()) continue;
+        try {
+          const result = await tryOnceWithKey(state, model, payload, timeoutMs);
+          if (rotate) rrCursor = (rrCursor + i + 1) % keys.length;
+          return result;
+        } catch (err) {
+          lastErr = err;
+          if (err instanceof GeminiRetriable) continue;
+          throw err;
+        }
       }
     }
+    return null;
   }
+
+  const viaPrimary = primary.length ? await tryTier(primary, true) : null;
+  if (viaPrimary) return viaPrimary;
+
+  if (reserve.length) {
+    console.warn(
+      "[gemini] primary pool exhausted — using RESERVE (main account) key",
+    );
+    const viaReserve = await tryTier(reserve, false);
+    if (viaReserve) return viaReserve;
+  }
+
   throw lastErr instanceof Error
     ? lastErr
     : new Error(
@@ -281,14 +332,24 @@ export async function geminiChatCompletion(opts: {
 export function getGeminiPoolStatus(): {
   total: number;
   available: number;
-  pool: Array<{ label: string; available: boolean; cooldownUntil: string | null }>;
+  primary: number;
+  reserve: number;
+  pool: Array<{
+    label: string;
+    reserve: boolean;
+    available: boolean;
+    cooldownUntil: string | null;
+  }>;
 } {
   const now = Date.now();
   return {
     total: KEY_POOL.length,
     available: KEY_POOL.filter((k) => k.cooldownUntil <= now).length,
+    primary: KEY_POOL.filter((k) => !k.reserve).length,
+    reserve: KEY_POOL.filter((k) => k.reserve).length,
     pool: KEY_POOL.map((k) => ({
       label: k.label,
+      reserve: k.reserve,
       available: k.cooldownUntil <= now,
       cooldownUntil:
         k.cooldownUntil > now ? new Date(k.cooldownUntil).toISOString() : null,
