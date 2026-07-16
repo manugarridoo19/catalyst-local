@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Catalyst Local — refresher LaunchAgent.
+
+  Runs `refresh-once.ts` every 10 minutes: fetch news from all providers,
+  extract tickers, insert into Neon, broadcast to Pusher. Complements the
+  GH Actions cron, which GitHub throttles to 1-4h real cadence on public
+  repos — without this agent the live feed only advanced in bursts.
+
+  Marketaux is skipped here (SKIP_MARKETAUX=1): its free tier is 100
+  req/day and a 10-min cadence would burn it; it still flows in via the
+  GH Actions cron. Hash dedupe makes remote/local overlap free.
+
+  Install / control via scripts/local-daemon.sh (refresher-* commands).
+
+  Same TCC workaround as the other agents: pnpm - -dir so launchd never
+  chdirs into a protected folder; `pnpm exec tsx` because tsx is not a
+  package.json script.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.catalyst.refresher</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/pnpm</string>
+    <string>--dir</string>
+    <string>/Users/manuelgarrido/dev/catalyst-local</string>
+    <string>exec</string>
+    <string>tsx</string>
+    <string>scripts/refresh-once.ts</string>
+  </array>
+
+  <!-- Fire immediately on load, then every 600s = 10 min. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>600</integer>
+
+  <!-- One-shot script: StartInterval handles cadence, never KeepAlive. -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>SKIP_MARKETAUX</key>
+    <string>1</string>
+    <key>NODE_OPTIONS</key>
+    <string>--max-old-space-size=384</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/manuelgarrido</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/manuelgarrido/dev/catalyst-local/.next/daemon-logs/refresher-stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/manuelgarrido/dev/catalyst-local/.next/daemon-logs/refresher-stderr.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>2048</integer>
+  </dict>
+</dict>
+</plist>

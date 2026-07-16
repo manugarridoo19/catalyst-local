@@ -5,9 +5,11 @@
 # with auto-restart, bounded resources, and TCC workarounds so we don't
 # reproduce the dev-mode RAM-leak incident.
 #
-# Two agents managed here:
-#   com.catalyst.local    Production `next start` on port 3030, always on
-#   com.catalyst.scorer   `drain-scoring.ts 30` every 15 min (auto-grader)
+# Three agents managed here:
+#   com.catalyst.local     Production `next start` on port 3030, always on
+#   com.catalyst.scorer    `drain-scoring.ts 30` every 15 min (auto-grader)
+#   com.catalyst.refresher `refresh-once.ts` every 10 min (news fetch —
+#                          GH Actions cron is throttled to 1-4h real cadence)
 #
 # Usage (main daemon):
 #   scripts/local-daemon.sh install   First-time setup: build + load
@@ -27,6 +29,14 @@
 #   scripts/local-daemon.sh scorer-logs      Tail scorer stdout + stderr
 #   scripts/local-daemon.sh scorer-run       Run one drain tick now (foreground)
 #   scripts/local-daemon.sh scorer-uninstall Remove plist + unload
+#
+# Usage (refresher):
+#   scripts/local-daemon.sh refresher-install   Install the refresher plist
+#   scripts/local-daemon.sh refresher-start     Load (runs every 10 min)
+#   scripts/local-daemon.sh refresher-stop      Unload
+#   scripts/local-daemon.sh refresher-logs      Tail refresher stdout + stderr
+#   scripts/local-daemon.sh refresher-run       Run one refresh tick now (foreground)
+#   scripts/local-daemon.sh refresher-uninstall Remove plist + unload
 
 set -euo pipefail
 
@@ -45,11 +55,18 @@ SCORER_LABEL="com.catalyst.scorer"
 SCORER_TARGET="$HOME/Library/LaunchAgents/${SCORER_LABEL}.plist"
 SCORER_SOURCE="$REPO_DIR/scripts/${SCORER_LABEL}.plist"
 
+# Refresher (news fetch on a 10-min interval)
+REFRESHER_LABEL="com.catalyst.refresher"
+REFRESHER_TARGET="$HOME/Library/LaunchAgents/${REFRESHER_LABEL}.plist"
+REFRESHER_SOURCE="$REPO_DIR/scripts/${REFRESHER_LABEL}.plist"
+
 LOG_DIR="$REPO_DIR/.next/daemon-logs"
 LOG_OUT="$LOG_DIR/stdout.log"
 LOG_ERR="$LOG_DIR/stderr.log"
 SCORER_LOG_OUT="$LOG_DIR/scorer-stdout.log"
 SCORER_LOG_ERR="$LOG_DIR/scorer-stderr.log"
+REFRESHER_LOG_OUT="$LOG_DIR/refresher-stdout.log"
+REFRESHER_LOG_ERR="$LOG_DIR/refresher-stderr.log"
 BUILD_MARKER="$REPO_DIR/.next/BUILD_ID"
 
 # --- Helpers -----------------------------------------------------------------
@@ -70,6 +87,10 @@ is_loaded() {
 
 scorer_loaded() {
   launchctl list 2>/dev/null | grep -q "$SCORER_LABEL"
+}
+
+refresher_loaded() {
+  launchctl list 2>/dev/null | grep -q "$REFRESHER_LABEL"
 }
 
 is_port_busy() {
@@ -200,8 +221,24 @@ cmd_status() {
     c_warn "agent:     not loaded"
   fi
   printf "\n"
-  c_dim "logs:      $LOG_OUT, $SCORER_LOG_OUT"
-  c_dim "errors:    $LOG_ERR, $SCORER_LOG_ERR"
+  c_dim "─── catalyst refresher (news fetch every 10 min) ───"
+  if [ -f "$REFRESHER_TARGET" ]; then
+    c_ok "plist:     installed at $REFRESHER_TARGET"
+  else
+    c_warn "plist:     NOT installed (run: scripts/local-daemon.sh refresher-install)"
+  fi
+  if refresher_loaded; then
+    c_ok "agent:     loaded"
+    if [ -f "$REFRESHER_LOG_OUT" ]; then
+      LASTR="$(tail -n 1 "$REFRESHER_LOG_OUT" 2>/dev/null)"
+      [ -n "$LASTR" ] && c_dim "last log:  $LASTR"
+    fi
+  else
+    c_warn "agent:     not loaded"
+  fi
+  printf "\n"
+  c_dim "logs:      $LOG_OUT, $SCORER_LOG_OUT, $REFRESHER_LOG_OUT"
+  c_dim "errors:    $LOG_ERR, $SCORER_LOG_ERR, $REFRESHER_LOG_ERR"
   printf "\n"
 }
 
@@ -293,6 +330,71 @@ cmd_scorer_run() {
   (cd "$REPO_DIR" && pnpm tsx scripts/drain-scoring.ts "${2:-30}")
 }
 
+# --- Refresher agent commands --------------------------------------------------
+
+cmd_refresher_install() {
+  ensure_dirs
+  if [ ! -f "$REFRESHER_SOURCE" ]; then
+    c_err "Source plist not found at $REFRESHER_SOURCE"
+    exit 1
+  fi
+  cp "$REFRESHER_SOURCE" "$REFRESHER_TARGET"
+  c_ok "Installed $REFRESHER_TARGET"
+  cmd_refresher_start
+}
+
+cmd_refresher_start() {
+  ensure_dirs
+  if [ ! -f "$REFRESHER_TARGET" ]; then
+    c_warn "No refresher plist installed yet — running refresher-install first."
+    cmd_refresher_install
+    return
+  fi
+  if refresher_loaded; then
+    c_dim "Refresher already loaded."
+  else
+    launchctl load -w "$REFRESHER_TARGET"
+    c_ok "Refresher loaded. Will run refresh-once.ts every 10 minutes."
+  fi
+  sleep 1
+  cmd_status
+}
+
+cmd_refresher_stop() {
+  if [ -f "$REFRESHER_TARGET" ] && refresher_loaded; then
+    launchctl unload -w "$REFRESHER_TARGET"
+    c_ok "Refresher unloaded."
+  else
+    c_dim "Refresher was not loaded."
+  fi
+  for p in $(pgrep -f "scripts/refresh-once.ts" 2>/dev/null); do
+    c_dim "Killing in-flight refresh PID $p"
+    kill "$p" 2>/dev/null || true
+  done
+}
+
+cmd_refresher_uninstall() {
+  cmd_refresher_stop
+  if [ -f "$REFRESHER_TARGET" ]; then
+    rm "$REFRESHER_TARGET"
+    c_ok "Removed $REFRESHER_TARGET"
+  fi
+}
+
+cmd_refresher_logs() {
+  ensure_dirs
+  if [ ! -f "$REFRESHER_LOG_OUT" ] && [ ! -f "$REFRESHER_LOG_ERR" ]; then
+    c_warn "No refresher logs yet. Start the refresher first."
+    exit 1
+  fi
+  tail -F "$REFRESHER_LOG_OUT" "$REFRESHER_LOG_ERR"
+}
+
+cmd_refresher_run() {
+  # One-shot foreground tick (respeta SKIP_MARKETAUX solo si viene del env).
+  (cd "$REPO_DIR" && SKIP_MARKETAUX=1 pnpm exec tsx scripts/refresh-once.ts)
+}
+
 # --- Dispatch ----------------------------------------------------------------
 
 case "${1:-}" in
@@ -311,6 +413,12 @@ case "${1:-}" in
   scorer-uninstall)  cmd_scorer_uninstall ;;
   scorer-logs)       cmd_scorer_logs ;;
   scorer-run)        cmd_scorer_run "$@" ;;
+  refresher-install)   cmd_refresher_install ;;
+  refresher-start)     cmd_refresher_start ;;
+  refresher-stop)      cmd_refresher_stop ;;
+  refresher-uninstall) cmd_refresher_uninstall ;;
+  refresher-logs)      cmd_refresher_logs ;;
+  refresher-run)       cmd_refresher_run ;;
   ""|help|-h|--help)
     sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
     ;;

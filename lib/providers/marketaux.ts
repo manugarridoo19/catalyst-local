@@ -28,6 +28,9 @@ type MarketauxNews = {
 // sólo con Finnhub + RSS y el operador vea que falta una key.
 let warnedMissingKey = false;
 export async function fetchMarketauxNews(): Promise<NormalizedNewsItem[]> {
+  // El refresher local (cada 10min) saltaría la cuota free de 100 req/día;
+  // su plist exporta SKIP_MARKETAUX=1 y Marketaux entra solo vía GH Actions.
+  if (process.env.SKIP_MARKETAUX === "1") return [];
   const apiKey = process.env.MARKETAUX_API_KEY;
   if (!apiKey) {
     if (!warnedMissingKey) {

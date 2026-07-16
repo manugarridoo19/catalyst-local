@@ -29,7 +29,12 @@
     "scorer:status": "bash scripts/local-daemon.sh status",
     "scorer:stop": "bash scripts/local-daemon.sh scorer-stop",
     "scorer:logs": "bash scripts/local-daemon.sh scorer-logs",
-    "scorer:run": "bash scripts/local-daemon.sh scorer-run"
+    "scorer:run": "bash scripts/local-daemon.sh scorer-run",
+    "refresher:install": "bash scripts/local-daemon.sh refresher-install",
+    "refresher:status": "bash scripts/local-daemon.sh status",
+    "refresher:stop": "bash scripts/local-daemon.sh refresher-stop",
+    "refresher:logs": "bash scripts/local-daemon.sh refresher-logs",
+    "refresher:run": "bash scripts/local-daemon.sh refresher-run"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
