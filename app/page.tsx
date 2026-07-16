@@ -11,6 +11,16 @@ import {
   type UpcomingEarning,
 } from "@/lib/cron/refresh-earnings";
 import { EarningsPanel } from "@/components/watchlist/earnings-panel";
+import { AuthorPanel } from "@/components/feed/author-panel";
+import {
+  getLatestAuthorBrief,
+  type AuthorBriefRow,
+} from "@/lib/ai/author-brief";
+
+// Autor seguido en el Author Watch. Configurable por env; default el que
+// pidió el usuario. El brief lo genera el LaunchAgent local (scraping vive
+// en el Mac); el Worker/daemon solo LEE author_briefs.
+const AUTHOR_HANDLE = process.env.AUTHOR_HANDLE ?? "Couch_Investor";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
 import { getSessionId } from "@/lib/session";
 import { startOfTodayUtc } from "@/lib/time-windows";
@@ -32,11 +42,13 @@ async function loadInitial(): Promise<{
   brief: BriefRow | null;
   picks: PicksRow | null;
   earnings: UpcomingEarning[];
+  authorBrief: AuthorBriefRow | null;
   error?: string;
 }> {
   try {
     const session = await getSessionId();
-    const [feedRows, watchRows, brief, picks, earnings] = await Promise.all([
+    const [feedRows, watchRows, brief, picks, earnings, authorBrief] =
+      await Promise.all([
       // Live feed: solo noticias del día (UTC) con ticker asociado y
       // categoría de signal (ANALYST/EARNINGS/MA/GUIDANCE/INSIDER/REG/
       // LEGAL/PRODUCT). MACRO y OTHER viven en /news. Orden estricto por
@@ -54,6 +66,7 @@ async function loadInitial(): Promise<{
       getLatestBrief().catch(() => null),
       getLatestPicks().catch(() => null),
       getUpcomingEarnings().catch(() => []),
+      getLatestAuthorBrief(AUTHOR_HANDLE).catch(() => null),
     ]);
 
     // Recolectar symbols primarios + watchlist para una sola query de meta.
@@ -97,12 +110,13 @@ async function loadInitial(): Promise<{
     const quoteSymbols = [
       ...watchlist.map((w) => w.symbol),
       ...(picks?.picks.map((p) => p.symbol) ?? []),
+      ...(authorBrief?.content.stocks.map((s) => s.symbol) ?? []),
     ];
     const quotes = quoteSymbols.length
       ? await getQuotesMap(quoteSymbols).catch(() => ({}))
       : {};
 
-    return { feed, watchlist, quotes, brief, picks, earnings };
+    return { feed, watchlist, quotes, brief, picks, earnings, authorBrief };
   } catch (err) {
     return {
       feed: [],
@@ -111,19 +125,21 @@ async function loadInitial(): Promise<{
       brief: null,
       picks: null,
       earnings: [],
+      authorBrief: null,
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function HomePage() {
-  const { feed, watchlist, quotes, brief, picks, earnings, error } =
+  const { feed, watchlist, quotes, brief, picks, earnings, authorBrief, error } =
     await loadInitial();
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <Header />
       {error ? <SetupBanner message={error} /> : null}
+      <AuthorPanel brief={authorBrief} handle={AUTHOR_HANDLE} quotes={quotes} />
       <BriefPanel brief={brief} />
       <PicksPanel picks={picks} quotes={quotes} />
       <div className="flex flex-1 overflow-hidden">

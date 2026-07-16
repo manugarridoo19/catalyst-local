@@ -64,6 +64,13 @@
       "when": 1784230771284,
       "tag": "0008_third_lady_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784231975952,
+      "tag": "0009_opposite_mojo",
+      "breakpoints": true
     }
   ]
 }

@@ -245,6 +245,43 @@ export const earningsEvents = pgTable(
   ],
 );
 
+// Author Watch — tweets crudos del autor seguido (@Couch_Investor) scrapeados
+// 1×/día desde el Mac con la sesión del usuario. `tickers` = cashtags $XYZ
+// que el autor mencionó (extraídos en ingesta). El brief diario los cruza
+// con nuestro tape. `author` deja la puerta abierta a multi-autor sin
+// migración.
+export const authorTweets = pgTable(
+  "author_tweets",
+  {
+    tweetId: text("tweet_id").primaryKey(),
+    author: text("author").notNull(),
+    text: text("text").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    url: text("url"),
+    isRetweet: smallint("is_retweet").notNull().default(0),
+    tickers: text("tickers").array().notNull().default([]),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("author_tweets_author_created_idx").on(t.author, t.createdAt)],
+);
+
+// Author brief diario — la "super sección": fusión de lo que el autor dijo
+// el día anterior con nuestro tape de noticias de esos tickers. content =
+// JSON {intro, stocks:[{symbol, authorTake, tapeContext, divergence?}]}.
+export const authorBriefs = pgTable("author_briefs", {
+  id: serial("id").primaryKey(),
+  author: text("author").notNull(),
+  content: text("content").notNull(), // JSON AuthorBriefContent
+  model: text("model").notNull(),
+  tweetCount: integer("tweet_count").notNull(),
+  coveredDate: text("covered_date").notNull(), // yyyy-mm-dd cubierto
+  generatedAt: timestamp("generated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type Ticker = typeof tickers.$inferSelect;
 export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;

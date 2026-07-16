@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Catalyst Local — Author Watch LaunchAgent.
+
+  Runs scripts/author-run.sh once a day at 12:00: scrapes the followed
+  author's X timeline using the user's Brave session (cookies via
+  browser_cookie3) and generates the fused daily brief (author's takes +
+  our news tape for the tickers they mentioned).
+
+  ONCE A DAY on purpose (anti-ban): the user reads yesterday's full day
+  in one pass when they wake up. Do NOT shorten StartCalendarInterval or
+  add polling — a single human-like read per day is the whole point.
+
+  LaunchAgent (not Daemon) so it runs in the user's GUI login session and
+  can reach the Brave Safe Storage key in the login Keychain. First run
+  may prompt for Keychain access — grant 'Always Allow' once.
+
+  The wrapper forces exit 0 (LaunchAgent shows no error popup and a failed
+  scrape just keeps the previous brief). Same TCC/PATH conventions as the
+  other agents.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.catalyst.author</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/manuelgarrido/dev/catalyst-local/scripts/author-run.sh</string>
+  </array>
+
+  <!-- Daily at 12:00 local. NOT RunAtLoad — we don't want a scrape every
+       time the agent is (re)loaded; the calendar trigger is the contract. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>12</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>AUTHOR_HANDLE</key>
+    <string>Couch_Investor</string>
+    <key>NODE_OPTIONS</key>
+    <string>--max-old-space-size=384</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/manuelgarrido</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/manuelgarrido/dev/catalyst-local/.next/daemon-logs/author-stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/manuelgarrido/dev/catalyst-local/.next/daemon-logs/author-stderr.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+</dict>
+</plist>

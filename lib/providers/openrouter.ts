@@ -58,7 +58,13 @@ function readKeysFromLocalFile(): string {
 //     tiene guard anti-scratchpad que descarta fugas y conserva el brief
 //     anterior (post-mortem sueño-de-elvira 2026-05-21). Los fallbacks son
 //     instruction-tuned puros, diversidad Google → Meta → Qwen.
-export type LlmTask = "scoring" | "brief";
+//   author — síntesis diaria del Author Watch (1 call/día). El usuario pidió
+//     explícitamente "un buen modelo con reasoning". A diferencia de scoring/
+//     brief, esta cadena usa reasoning models CON reasoning activado (el
+//     caller pasa reasoning:true) — el coste (1/día) lo permite y la fusión
+//     tweets↔tape se beneficia del razonamiento. Guard anti-scratchpad en el
+//     generador protege de fugas.
+export type LlmTask = "scoring" | "brief" | "author";
 
 const TASK_MODEL_CHAINS: Record<LlmTask, string[]> = {
   scoring: [
@@ -71,6 +77,12 @@ const TASK_MODEL_CHAINS: Record<LlmTask, string[]> = {
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "google/gemma-4-31b-it:free",
     "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+  ],
+  author: [
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "deepseek/deepseek-r1:free",
     "qwen/qwen3-next-80b-a3b-instruct:free",
   ],
 };
@@ -289,6 +301,7 @@ async function tryOnceWithKey(
     maxTokens?: number;
     jsonMode?: boolean;
     timeoutMs?: number;
+    reasoning?: boolean;
   },
 ): Promise<ChatCompletionResult> {
   // Per-key fingerprint variance: UA + Referer + Title triple changes per
@@ -304,7 +317,8 @@ async function tryOnceWithKey(
     // Nemotron-3 (y otros híbridos) razonan por defecto y queman todo el
     // max_tokens en prosa antes de emitir el JSON → "unparseable". El param
     // unificado de OpenRouter lo apaga; los modelos sin reasoning lo ignoran.
-    reasoning: { enabled: false },
+    // Excepción: task="author" (1 call/día) pide reasoning ON a propósito.
+    reasoning: { enabled: opts.reasoning ?? false },
   };
   if (opts.jsonMode) body.response_format = { type: "json_object" };
 
@@ -391,6 +405,7 @@ export async function chatCompletion(opts: {
   maxTokens?: number;
   jsonMode?: boolean;
   timeoutMs?: number;
+  reasoning?: boolean;
 }): Promise<ChatCompletionResult> {
   if (KEY_POOL.length === 0) {
     throw new Error(
