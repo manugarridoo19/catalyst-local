@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { db, unwrapRows } from "./index";
+import { db, unwrapRows, createTxDb } from "./index";
 import {
   news,
   newsScores,
@@ -75,10 +75,15 @@ export async function insertNewsBatch(
   const out: InsertedNewsRow[] = [];
   let failures = 0;
 
-  for (let i = 0; i < items.length; i += INSERT_CHUNK) {
-    const chunk = items.slice(i, i + INSERT_CHUNK);
-    try {
-      const chunkOut = await db.transaction(async (tx) => {
+  // Transacciones interactivas → Pool WebSocket efímero (el `db` global es
+  // el HTTP driver, sin transacciones interactivas). Solo se llega aquí en
+  // Node (cron/daemon/scripts), nunca en el Worker. close() en finally.
+  const { db: txClient, close } = createTxDb();
+  try {
+    for (let i = 0; i < items.length; i += INSERT_CHUNK) {
+      const chunk = items.slice(i, i + INSERT_CHUNK);
+      try {
+        const chunkOut = await txClient.transaction(async (tx) => {
         const newsRows = chunk.map(({ item }) => ({
           url: item.url,
           hash: item.hash,
@@ -136,14 +141,17 @@ export async function insertNewsBatch(
         }
         return result;
       });
-      out.push(...chunkOut);
-    } catch (err) {
-      failures += chunk.length;
-      console.warn(
-        `[insertNewsBatch] chunk of ${chunk.length} failed:`,
-        err instanceof Error ? err.message.slice(0, 200) : err,
-      );
+        out.push(...chunkOut);
+      } catch (err) {
+        failures += chunk.length;
+        console.warn(
+          `[insertNewsBatch] chunk of ${chunk.length} failed:`,
+          err instanceof Error ? err.message.slice(0, 200) : err,
+        );
+      }
     }
+  } finally {
+    await close();
   }
   return { inserted: out, failures };
 }
