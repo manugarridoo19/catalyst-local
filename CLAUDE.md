@@ -9,7 +9,11 @@ Realtime market news dashboard inspired by Catalist.Live. Free-tier-only stack.
 - **Hosting: Cloudflare Workers** via `@opennextjs/cloudflare` (migrated off Vercel 2026-07-15 — see "Hosting" below). Live at `https://catalyst-local.manubisbal19.workers.dev`.
 - **Next.js 16** (App Router, Turbopack) + **React 19** + **Tailwind 4** + **shadcn/ui** (base-nova preset)
 - **Drizzle ORM** + **Neon Postgres** via `@neondatabase/serverless` (WebSocket/443 — required on Workers; also sidesteps the university-network TCP-5432 block). NOT `postgres-js`.
-- **Groq** (primary scorer, Llama 3.1 8b instant) + **OpenRouter** free models (primary `nvidia/nemotron-3-ultra-550b-a55b:free` → `meta-llama/llama-3.3-70b-instruct:free` → `nvidia/nemotron-3-super-120b-a12b:free`). OpenRouter requests send `reasoning:{enabled:false}` — Nemotron otherwise burns the token budget on prose and never emits JSON.
+- **LLM stack (2026-07-16)**: OpenRouter is the primary provider, Groq the fallback (`SCORER_PRIMARY` env overrides). Model chains are **per task** in `lib/providers/openrouter.ts` (`chatCompletion({task})`):
+  - `scoring`: `nvidia/nemotron-3-ultra-550b-a55b:free` → `meta-llama/llama-3.3-70b-instruct:free` → `google/gemma-4-31b-it:free` → `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`
+  - `brief` (user-facing prose): `nemotron-3-ultra` → `gemma-4-31b` → `llama-3.3-70b` → `qwen/qwen3-next-80b-a3b-instruct:free`
+  - Every request sends `reasoning:{enabled:false}` — Nemotron otherwise burns the token budget on reasoning prose and never emits the JSON. The brief generator additionally has an anti-scratchpad guard (discards leaky outputs, keeps the previous brief).
+- **Scoring is batched (v4)**: `scoreNewsBatch()` sends up to 10 news per LLM call (`BATCH_SYSTEM_PROMPT`), returning per-item scores + `wrong_tickers` — extractor mislinks the model flags get deleted from `news_tickers` by score-orphans. Don't revert to 1-call-per-news: 3 keys × 1000 calls/day only covers ~3k news/day unbatched vs ~30k batched.
 - **Pusher Channels** for realtime broadcast to clients
 - **Finnhub** REST + WebSocket for quotes/news/search; **Marketaux** + RSS feeds for additional news; **Yahoo Finance** for historical bars
 
@@ -83,7 +87,9 @@ site is a Cloudflare Worker: `https://catalyst-local.manubisbal19.workers.dev`.
 
 - **Universe is dynamic.** Tickers enter the `tickers` table only when a provider mentions them. Don't hardcode an SP500 list.
 - **Providers must be resilient.** All cron fetches go through `Promise.allSettled` — a failing source must not tumble the cycle.
-- **Scoring has a cap.** `SCORING_BATCH=8` per cron run respects the free-tier LLM rate limits (and keeps runs short). The Worker never scores — scoring lives in the GH Actions cron + the local scorer daemon.
+- **Scoring caps.** score-orphans picks `ORPHAN_BATCH=30` per tick, scored in 3 batched LLM calls of 10. The Worker never scores — scoring lives in the GH Actions cron + the local scorer daemon.
+- **Ticker extraction quality.** Single-word aliases live or die by `lib/tickers/alias-denylist.ts` (SHARED by extractor match-time + enricher creation-time — never fork it back into two lists). gnews search hints are only accepted when `mentionsTicker()` confirms the text actually mentions the company. One-time cleanups: `scripts/cleanup-mislinks.ts --dry-run`.
+- **publishedAt is clamped at ingestion** (refresh-news): anything >2min in the future becomes `now` — investing.com emits pubDates ~3h ahead and future dates pin to the top of every `publishedAt DESC` feed.
 - **Score 1-5 + sentiment -5..+5.** Don't change the range without bumping `PROMPT_VERSION` in `lib/scoring/prompt.ts`.
 - **`NEXT_PUBLIC_PUSHER_*`** are the only client-side Pusher creds; `PUSHER_SECRET` is server-only and never exposed.
 
@@ -139,9 +145,28 @@ dodges the issue.
 A companion `com.catalyst.scorer` agent runs
 `drain-scoring.ts 30` every 15 minutes from your Mac. It complements
 the GH Actions cron (which GitHub throttles to 1-4h intervals on public
-repos) by firing smaller, faster bursts. Math: 30 items × 4 ticks/h ×
-~12 awake-hours/day = ~1,440 items/day, enough to maintain coverage
-against the typical ~2,000 news/day inflow.
+repos) by firing smaller, faster bursts. With batch scoring v4 each
+tick costs ~3 LLM calls for 30 items, so quota is no longer the
+bottleneck.
+
+### Refresher (third LaunchAgent, 2026-07-16)
+
+`com.catalyst.refresher` runs `refresh-once.ts` every 10 minutes:
+full news fetch + insert + Pusher broadcast from the Mac, covering the
+gaps GitHub's throttling leaves (without it the feed advanced in
+1-2h bursts). Its plist sets `SKIP_MARKETAUX=1` — Marketaux free tier
+is 100 req/day and only flows in via the GH Actions cron. Control:
+`pnpm refresher:{install,status,logs,stop,run}`.
+
+### AI Brief
+
+`lib/ai/brief.ts` turns the top-30 scored news of the last 24h
+(impact≥3) + the watchlist into a 5-8 bullet desk-style digest
+(watchlist bullets starred). Regenerates when the latest is >4h old —
+wired into both cron-runner and refresh-once, so real cadence is
+~4-6/day. Stored in `ai_briefs` (last 20 kept), rendered by
+`components/feed/brief-panel.tsx` (server-side `<details>` strip above
+the live feed). Manual run: `pnpm exec tsx scripts/generate-brief.ts`.
 
 ```bash
 pnpm scorer:install   # First-time: copy plist + load + run immediately
