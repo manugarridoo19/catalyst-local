@@ -57,6 +57,13 @@
       "when": 1784230545684,
       "tag": "0007_fair_overlord",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784230771284,
+      "tag": "0008_third_lady_bullseye",
+      "breakpoints": true
     }
   ]
 }

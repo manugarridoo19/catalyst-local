@@ -186,6 +186,53 @@ export async function getQuote(symbol: string): Promise<FinnhubQuote | null> {
   }
 }
 
+export type FinnhubEarningsEvent = {
+  symbol: string;
+  date: string; // yyyy-mm-dd
+  hour: string; // bmo | amc | dmh | ""
+  quarter: number | null;
+  year: number | null;
+  epsEstimate: number | null;
+  revenueEstimate: number | null;
+};
+
+// Próximos earnings de un símbolo (horizonte `days`). Free tier incluye
+// /calendar/earnings; devolvemos [] en cualquier fallo — el calendario es
+// una feature best-effort.
+export async function getEarningsCalendar(
+  symbol: string,
+  days = 90,
+): Promise<FinnhubEarningsEvent[]> {
+  try {
+    const from = new Date().toISOString().slice(0, 10);
+    const to = new Date(Date.now() + days * 86400_000)
+      .toISOString()
+      .slice(0, 10);
+    const data = await fh<{
+      earningsCalendar?: Array<{
+        symbol: string;
+        date: string;
+        hour?: string;
+        quarter?: number;
+        year?: number;
+        epsEstimate?: number | null;
+        revenueEstimate?: number | null;
+      }>;
+    }>("/calendar/earnings", { from, to, symbol });
+    return (data.earningsCalendar ?? []).map((e) => ({
+      symbol: e.symbol,
+      date: e.date,
+      hour: e.hour ?? "",
+      quarter: e.quarter ?? null,
+      year: e.year ?? null,
+      epsEstimate: e.epsEstimate ?? null,
+      revenueEstimate: e.revenueEstimate ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export type CompactQuote = {
   price: number;
   change: number;

@@ -7,7 +7,11 @@ import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import { WatchlistToggle } from "@/components/ticker/watchlist-toggle";
-import { getProfile, getQuote } from "@/lib/providers/finnhub";
+import {
+  getProfile,
+  getQuote,
+  getEarningsCalendar,
+} from "@/lib/providers/finnhub";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import { fifteenDaysAgo } from "@/lib/time-windows";
@@ -34,7 +38,8 @@ export default async function TickerPage({
   if (!/^[A-Z0-9.\-]{1,10}$/.test(symbol)) notFound();
 
   const session = await getSessionId();
-  const [profile, quote, newsRows, watchlist, metaMap] = await Promise.all([
+  const [profile, quote, newsRows, watchlist, metaMap, earnings] =
+    await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
     // Orden estricto por publishedAt DESC — el tiempo manda, igual que en
@@ -47,6 +52,9 @@ export default async function TickerPage({
     }).catch(() => []),
     getWatchlist(session).catch(() => []),
     getTickerMetaMap([symbol]),
+    // Próximo earnings — fetch live (1 call/vista, cap 60/min sobra para
+    // uso personal); getEarningsCalendar ya degrada a [] en fallo.
+    getEarningsCalendar(symbol),
   ]);
 
   const news: FeedItem[] = newsRows.map((r) => ({
@@ -72,6 +80,19 @@ export default async function TickerPage({
 
   const price = quote?.c ?? null;
   const change = quote?.dp ?? null;
+  const nextEarnings = earnings[0] ?? null;
+  const nextEarningsLabel = nextEarnings
+    ? new Date(`${nextEarnings.date}T00:00:00Z`).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
+      }) +
+      (nextEarnings.hour === "amc"
+        ? " · after close"
+        : nextEarnings.hour === "bmo"
+          ? " · pre-mkt"
+          : "")
+    : null;
 
   return (
     // h-screen + overflow-hidden encierra el layout en el viewport. Sin esto,
@@ -126,6 +147,11 @@ export default async function TickerPage({
                   {news.length > 0 && (
                     <span className="rounded-sm border border-primary/40 bg-primary/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-primary">
                       {news.length} news
+                    </span>
+                  )}
+                  {nextEarningsLabel && (
+                    <span className="rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
+                      earnings {nextEarningsLabel}
                     </span>
                   )}
                 </div>

@@ -24,12 +24,14 @@ type QuotesMap = Record<string, Quote | null>;
 type Props = {
   items: WatchlistItem[];
   initialQuotes?: QuotesMap;
+  /** Pie del rail (server-rendered), p.ej. el calendario de earnings. */
+  footer?: React.ReactNode;
 };
 
 // Refresh cadence. 60s — UX original.
 const REFRESH_MS = 60_000;
 
-export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
+export function WatchlistPanel({ items, initialQuotes = {}, footer }: Props) {
   const [quotes, setQuotes] = useState<QuotesMap>(initialQuotes);
   // null hasta el primer fetch del cliente — Date.now() en el initializer
   // sería una llamada impura durante render (regla del compilador de React).
@@ -122,6 +124,7 @@ export function WatchlistPanel({ items, initialQuotes = {} }: Props) {
           </ul>
         )}
       </div>
+      {footer}
     </aside>
   );
 }

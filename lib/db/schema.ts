@@ -217,6 +217,34 @@ export const aiPicks = pgTable("ai_picks", {
     .defaultNow(),
 });
 
+// Próximos earnings de los símbolos en watchlist (Finnhub earnings
+// calendar, horizonte 90d). Cache-tabla refrescada ~1/día por símbolo
+// desde cron-runner + refresh-once — la UI SIEMPRE lee de aquí, nunca de
+// Finnhub directo (0 llamadas por pageview). Fechas como text ISO
+// yyyy-mm-dd (sortable); estimaciones como text para no perder precisión
+// (mismo criterio que quotes_cache).
+export const earningsEvents = pgTable(
+  "earnings_events",
+  {
+    symbol: text("symbol")
+      .notNull()
+      .references(() => tickers.symbol, { onDelete: "cascade" }),
+    date: text("date").notNull(), // yyyy-mm-dd
+    hour: text("hour"), // bmo | amc | dmh | ""
+    quarter: integer("quarter"),
+    year: integer("year"),
+    epsEstimate: text("eps_estimate"),
+    revenueEstimate: text("revenue_estimate"),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.symbol, t.date] }),
+    index("earnings_events_date_idx").on(t.date),
+  ],
+);
+
 export type Ticker = typeof tickers.$inferSelect;
 export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;
