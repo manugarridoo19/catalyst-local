@@ -1,4 +1,5 @@
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
+import { COMMON_WORD_DENYLIST } from "./alias-denylist";
 
 // Palabras inglesas comunes en mayúsculas que pueden confundir al regex
 // `\$XYZ` o aparecer en headlines en CAPS. Filtramos para reducir ruido.
@@ -23,27 +24,12 @@ const BLOCKLIST = new Set([
 // Caso real: "Sea" → SE (Sea Limited) machó 783 noticias falsas porque la
 // palabra "sea" aparece constantemente ("stable sea", "deep sea search",
 // "Caspian Sea"). Igual "Target" → TGT en "price target", "target audience".
-const ALIAS_DENYLIST = new Set([
-  "sea", "target", "group", "capital", "bank", "energy", "industries",
-  "networks", "real", "trust", "media", "health", "tech", "data",
-  "holdings", "international", "global", "company", "co", "corp",
-  "inc", "ltd", "limited", "plc", "ag", "nv", "spa", "oyj", "ab", "sa",
-  // 2026-05: añadidos tras audit de mislinkages.
-  // "Performance" → PFGC matcheaba "performance review", "stellar performance"
-  // "Canadian" → CNI matcheaba "Canadian Natural Resources" (CNQ correcto),
-  //   "Canadian Pacific" (CP correcto), "Canadian Stocks To Watch" (generic)
-  "performance", "canadian", "bullish", "bearish",
-  // Otros candidatos comunes en headlines genéricos
-  "growth", "earnings", "revenue", "stock", "shares", "price", "value",
-  "report", "rating", "quarter", "annual", "fiscal", "guidance",
-  // 2026-05-12 — audit visual detectó:
-  //   "Sterling" → STRL machó GBP currency: "sterling slumps", "sterling rises",
-  //     "sterling rate". STRL legítimo solo via "Sterling Infrastructure"
-  //     (alias 2-word existente).
-  //   "Block" → XYZ machó "block deal" (jerga india de bolsa, op. en bloque).
-  //     XYZ legítimo solo via "Block Inc" (alias 2-word).
-  "sterling", "block",
-]);
+// 2026-07-15: unificada con la denylist del enricher en
+// lib/tickers/alias-denylist.ts (audit encontró "Research"→RSSS con 670
+// mislinks/7d, "Trump"→DJT 311, "Under"→UAA 169, etc. — la lista local se
+// había quedado corta y divergía de la del enricher). Se aplica en tiempo
+// de match, así que también desactiva aliases basura ya presentes en DB.
+const ALIAS_DENYLIST = COMMON_WORD_DENYLIST;
 
 // Tickers que SOLO deben extraerse si la fuente API los anotó explícitamente.
 // Símbolos de 1-2 letras que coinciden con palabras comunes (C=Citigroup,

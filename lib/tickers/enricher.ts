@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { tickers, tickerAliases } from "@/lib/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { getProfile } from "@/lib/providers/finnhub";
+import { COMMON_WORD_DENYLIST } from "./alias-denylist";
 
 // Tickers nuevos llegan sin metadata. En cada cron procesamos hasta N de
 // los más antiguos sin enriquecer (FIFO). Bajado a 12 desde 40 — cada
@@ -82,36 +83,10 @@ export async function enrichPendingTickers(limit = ENRICH_BATCH) {
 // Si la primera palabra del nombre cae aquí, no la añadimos sola (riesgo de
 // matchear noticias irrelevantes — ej. "American" matchearía todo). El alias
 // largo sigue funcionando para detectar el ticker.
-const SHORT_ALIAS_DENYLIST = new Set([
-  // Geográficos / cualificadores
-  "american", "united", "national", "general", "first", "federal",
-  "international", "global", "world", "new", "northern", "southern",
-  "eastern", "western", "central", "atlantic", "pacific", "continental",
-  // Sectoriales / corporativos
-  "bank", "banc", "banco", "financial", "trust", "capital", "credit",
-  "energy", "industries", "industrial", "networks", "media", "health",
-  "tech", "technologies", "technology", "data", "systems", "services",
-  "holdings", "holding", "group", "company", "corporation",
-  "real", "estate", "advanced", "applied", "alpha", "beta", "core",
-  // Calificativos
-  "good", "great", "best", "big", "major", "premier", "prime", "pure",
-  // Nombres propios comunes
-  "charles", "robert", "james", "william", "thomas", "henry", "george",
-  "walt", "morgan", "wells",
-  // Verbos / sustantivos genéricos que aparecen masivamente en headlines
-  "home", "trade", "block", "delta", "twist", "rise", "fall", "fly",
-  "build", "hold", "buy", "sell", "make", "take", "give", "work",
-  "live", "save", "lead", "join", "move", "stop", "start", "open",
-  "close", "ride", "share", "store", "store", "stock", "stocks",
-  "market", "future", "ramp", "boost", "spark", "watch", "winner",
-  // 2026-05: tras audit. Aliases que el enricher generaba "primera palabra"
-  // pero matcheaban palabras comunes en headlines genéricos.
-  "performance", "canadian", "growth", "earnings", "revenue",
-  "shares", "price", "value", "report", "rating", "quarter",
-  "fiscal", "annual", "guidance",
-  // Sufijos corporativos
-  "target", "sea", "co", "corp", "inc", "ltd", "plc",
-]);
+// 2026-07-15: unificada con la del extractor en lib/tickers/alias-denylist.ts
+// — mantener dos listas divergentes fue lo que dejó pasar "Research"→RSSS,
+// "Under"→UAA, "Trump"→DJT y compañía.
+const SHORT_ALIAS_DENYLIST = COMMON_WORD_DENYLIST;
 
 function uniqueAliases(name: string): string[] {
   const aliases = new Set<string>();

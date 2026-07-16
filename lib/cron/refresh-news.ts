@@ -98,6 +98,22 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   }
   const deduped = Array.from(byHash.values());
 
+  // 2b) Clamp de fechas futuras. investing.com emite pubDate con timezone
+  // roto (~3h adelantado); con orden publishedAt DESC una fecha futura se
+  // clava arriba del feed durante horas y entierra lo realmente nuevo.
+  // Margen de 2min por clock-skew legítimo entre fuentes.
+  const maxPublishedMs = Date.now() + 2 * 60 * 1000;
+  let clamped = 0;
+  for (const item of deduped) {
+    if (item.publishedAt.getTime() > maxPublishedMs) {
+      item.publishedAt = new Date();
+      clamped++;
+    }
+  }
+  if (clamped) {
+    console.warn(`[cron] clamped ${clamped} future-dated publishedAt to now`);
+  }
+
   // 3) Cargar aliases + known symbols + extraer tickers.
   const [aliases, knownSymbols] = await Promise.all([
     loadAliases(),
