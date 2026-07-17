@@ -30,6 +30,9 @@ async function fh<T>(
   url.searchParams.set("token", key());
   const res = await fetch(url.toString(), {
     headers: { "User-Agent": "catalyst-local/0.1" },
+    // Sin timeout, una conexión colgada retiene el tick del cron entero
+    // hasta el wall-clock del runner.
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     throw new Error(`Finnhub ${path} failed: ${res.status} ${res.statusText}`);

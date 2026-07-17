@@ -38,6 +38,7 @@ async function getCikMap(): Promise<Map<string, string>> {
   if (cikMap && Date.now() - cikMapAt < CIK_MAP_TTL) return cikMap;
   const res = await fetch(TICKERS_MAP_URL, {
     headers: { "User-Agent": SEC_UA },
+    signal: AbortSignal.timeout(12_000),
   });
   if (!res.ok) throw new Error(`company_tickers ${res.status}`);
   const raw = (await res.json()) as Record<

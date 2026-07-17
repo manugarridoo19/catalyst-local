@@ -48,6 +48,7 @@ export async function fetchMarketauxNews(): Promise<NormalizedNewsItem[]> {
 
   const res = await fetch(url.toString(), {
     headers: { "User-Agent": "catalyst-local/0.1" },
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     throw new Error(`Marketaux failed: ${res.status} ${res.statusText}`);

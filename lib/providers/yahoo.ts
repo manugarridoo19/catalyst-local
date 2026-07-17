@@ -61,6 +61,7 @@ async function fetchYahooChartFromHost(
 
   const res = await fetch(url.toString(), {
     headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
   });
   // Yahoo a veces responde 200 con texto plano "Too Many Requests" — chequea
   // content-type además del status.
