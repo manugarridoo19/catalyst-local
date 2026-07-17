@@ -7,7 +7,7 @@
 //   pnpm tsx scripts/drain-scoring.ts 500        # explicit count
 //
 // Respects rate limits via batch size + a pause between batches.
-// Aborts cleanly if 3 batches in a row produce 0 scores (= quota
+// Aborts cleanly if 5 batches in a row produce 0 scores (= quota
 // exhausted) so it doesn't burn the day's free-tier budget.
 
 import { config } from "dotenv";

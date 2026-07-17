@@ -7,9 +7,9 @@
   throttled by GitHub on public repos to 1-4h between scheduled
   invocations) by using the user's Mac to fire faster, smaller bursts.
 
-  30 items × 4 ticks/h × 12 h/day = ~1440 scoring calls/day, well under
-  the combined daily budget of 3 OpenRouter free-tier keys + Groq. The
-  drain script aborts after 3 zero-score ticks so a quota-exhausted
+  60 items × 4 ticks/h × 12 h/day = ~2880 scored/day (batch v4: 6 LLM
+  calls/tick), well under the OpenRouter+Gemini+Groq daily budget. The
+  drain script aborts after 5 zero-score ticks so a quota-exhausted
   day costs near-zero CPU.
 
   Install / control via scripts/local-daemon.sh.

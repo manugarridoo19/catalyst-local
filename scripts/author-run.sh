@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Author Watch — pasada diaria. Scrapea el timeline de X del autor con la
 # sesión de Brave del usuario y genera el brief fusionado. Lo dispara el
-# LaunchAgent com.catalyst.author a las 12:00 (recoge el día anterior de
+# LaunchAgent com.catalyst.author a las 00:00 (recoge el día anterior de
 # golpe). Diseñado para no reventar nunca (exit 0): un fallo conserva el
 # brief anterior.
 #
