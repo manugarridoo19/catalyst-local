@@ -181,6 +181,47 @@ export async function insertScore(
   }
 }
 
+// Re-puntúa una noticia YA scoreada, sobrescribiendo el score anterior.
+// Lo usa el re-scoring on-click: cuando al abrir una card extraemos el
+// artículo completo, recalculamos impact/sentiment con ese texto (mucho
+// más contexto que el titular+snippet original). onConflictDoUpdate en vez
+// del onConflictDoNothing de insertScore.
+export async function upsertScore(
+  newsId: number,
+  score: SentimentScore,
+): Promise<void> {
+  const values = {
+    newsId,
+    impact: score.impact,
+    sentiment: score.sentiment,
+    rationale: score.rationale,
+    summary: score.summary,
+    model: score.model,
+    promptVersion: score.promptVersion,
+  };
+  // El scoring single NO produce `summary` (es campo solo-batch, impact>=3).
+  // Si re-puntuamos sin summary, NO pisamos el que dejó el batch — se
+  // preserva el existente vía COALESCE.
+  const set: Record<string, unknown> = {
+    impact: values.impact,
+    sentiment: values.sentiment,
+    rationale: values.rationale,
+    model: values.model,
+    promptVersion: values.promptVersion,
+  };
+  if (score.summary != null) set.summary = score.summary;
+  await db
+    .insert(newsScores)
+    .values(values)
+    .onConflictDoUpdate({ target: newsScores.newsId, set });
+  if (score.category) {
+    await db
+      .update(news)
+      .set({ category: score.category })
+      .where(eq(news.id, newsId));
+  }
+}
+
 // Desvincula tickers concretos de una noticia. Lo usa el scorer batch v4
 // cuando el LLM marca wrong_tickers — mislinks del extractor que
 // sobrevivieron a las reglas estáticas.

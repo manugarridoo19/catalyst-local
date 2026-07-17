@@ -21,6 +21,9 @@ import { eq } from "drizzle-orm";
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
 import { extractArticle } from "./extract";
+import { scoreNewsItem } from "@/lib/scoring";
+import { upsertScore, getTickerMetaMap } from "@/lib/db/queries";
+import { broadcastNews } from "@/lib/pusher/server";
 
 export type ArticleDetail = {
   status: "ok" | "failed";
@@ -115,6 +118,8 @@ async function loadNewsContext(newsId: number) {
       headline: news.headline,
       body: news.body,
       source: news.source,
+      publishedAt: news.publishedAt,
+      category: news.category,
     })
     .from(news)
     .where(eq(news.id, newsId))
@@ -194,6 +199,7 @@ async function computeDetail(newsId: number): Promise<ArticleDetail | null> {
 
   // Texto: cache previo sin IA > extracción fresca > body con sustancia.
   let text = cached?.status === "ok" ? cached.text : null;
+  let fromExtractor = false;
   if (!text) {
     const extracted = await extractArticle({
       url: ctx.url,
@@ -201,6 +207,7 @@ async function computeDetail(newsId: number): Promise<ArticleDetail | null> {
       headline: ctx.headline,
     });
     text = extracted?.text ?? null;
+    fromExtractor = Boolean(text);
   }
   if (!text && ctx.body && ctx.body.trim().length >= MIN_BODY_FALLBACK_CHARS) {
     text = ctx.body.trim();
@@ -228,6 +235,15 @@ async function computeDetail(newsId: number): Promise<ArticleDetail | null> {
     aiModel: ai?.model ?? null,
   });
 
+  // Re-scoring on-click: si extrajimos el artículo COMPLETO (no el snippet
+  // que ya se scoreó), recalculamos impact/sentiment con ese texto. Es la
+  // respuesta a "¿cómo sabe si es buena/mala?" para los titulares crípticos
+  // (8-K, Form 4). Best-effort, daemon-only, no bloquea la respuesta al
+  // usuario si falla.
+  if (fromExtractor) {
+    await maybeRescore(ctx, text);
+  }
+
   return {
     status: "ok",
     text,
@@ -235,6 +251,84 @@ async function computeDetail(newsId: number): Promise<ArticleDetail | null> {
     aiTake: ai?.take || null,
     aiModel: ai?.model ?? null,
   };
+}
+
+// 200: el texto parseado de un Form 4 ronda ~220 chars y ES justo la señal
+// (compra/venta + tamaño), el caso de más valor para re-puntuar un titular
+// críptico. El gate bodyLen*1.4 evita re-scorear cuando ya teníamos casi lo
+// mismo.
+const RESCORE_MIN_TEXT = 200;
+
+// El re-scoring cuesta 1 llamada LLM por click. Para no drenar el free-tier
+// en lectura activa, solo re-puntuamos cuando el score del titular es
+// probablemente flojo y el artículo puede cambiarlo: sentiment neutro
+// (el "neutro perezoso" que el texto suele desambiguar), item sin puntuar,
+// o un filing críptico (SEC 8-K/Form 4, donde el titular no dice nada). Para
+// titulares decisivos ("Goldman upgrades NVDA, PT $180") el score ya es
+// bueno y no gastamos la llamada.
+function rescoreWorthwhile(ctx: NewsContext): boolean {
+  return (
+    ctx.impact == null ||
+    ctx.sentiment === 0 ||
+    ctx.source.startsWith("sec-edgar")
+  );
+}
+
+type NewsContext = NonNullable<Awaited<ReturnType<typeof loadNewsContext>>>;
+
+// Re-puntúa un item con el texto completo del artículo. Solo daemon (el
+// Worker no debe gastar LLM por click); solo cuando el artículo aporta
+// bastante más contexto que el snippet original; emite el nuevo score por
+// Pusher para que los badges de la feed abierta se actualicen al vuelo.
+async function maybeRescore(ctx: NewsContext, text: string): Promise<void> {
+  if (isWorkers) return;
+  if (process.env.RESCORE_ON_EXTRACT === "0") return;
+  if (!ctx.tickers.length) return;
+  if (text.length < RESCORE_MIN_TEXT) return;
+  if (!rescoreWorthwhile(ctx)) return;
+  const bodyLen = ctx.body?.trim().length ?? 0;
+  // Si ya teníamos un body sustancioso y el artículo no es notablemente
+  // más largo, el score original ya vio casi lo mismo — no re-puntuamos.
+  if (bodyLen > 300 && text.length < bodyLen * 1.4) return;
+  try {
+    const score = await scoreNewsItem({
+      headline: ctx.headline,
+      body: text,
+      tickers: ctx.tickers,
+      source: ctx.source,
+    });
+    if (!score) return;
+    await upsertScore(ctx.id, score);
+    const primary = ctx.tickers[0] ?? null;
+    const meta = primary ? await getTickerMetaMap([primary]) : null;
+    const m = primary ? meta?.get(primary) : null;
+    await broadcastNews([
+      {
+        id: ctx.id,
+        headline: ctx.headline,
+        body: ctx.body,
+        source: ctx.source,
+        publishedAt: ctx.publishedAt.toISOString(),
+        url: ctx.url,
+        tickers: ctx.tickers,
+        primarySymbol: primary,
+        primaryName: m?.name ?? null,
+        primaryLogo: m?.logoUrl ?? null,
+        impact: score.impact,
+        sentiment: score.sentiment,
+        rationale: score.rationale ?? null,
+        summary: score.summary ?? null,
+      },
+    ]);
+    console.log(
+      `[article] re-scored news ${ctx.id} from full text → impact ${score.impact} sent ${score.sentiment}`,
+    );
+  } catch (err) {
+    console.warn(
+      "[article] re-score failed:",
+      err instanceof Error ? err.message.slice(0, 120) : err,
+    );
+  }
 }
 
 // Dedupe in-flight por newsId — SOLO Node. En Workers cada request computa
