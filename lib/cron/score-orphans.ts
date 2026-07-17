@@ -21,8 +21,17 @@ import { UNSCORED_RETENTION_DAYS } from "@/lib/time-windows";
 // nuevo (el feed sigue viendo scores frescos al momento) + 1/3 del FONDO
 // del backlog (oldest-first, garantiza convergencia a cero). Subida 30→60
 // (6 llamadas/tick): el pool de Gemini (2026-07-16) absorbe el extra.
-const ORPHAN_BATCH = 60;
-const BACKLOG_SHARE = ORPHAN_BATCH / 3; // 20 del fondo del backlog
+// Overridable por env: el cron de GH Actions (única capacidad con el Mac
+// dormido, cadencia real 1-4h por throttling) necesita ticks más grandes
+// que el scorer local de cada 15min. Cap 300 = 30 llamadas/tick.
+const ORPHAN_BATCH = Math.min(
+  Math.max(parseInt(process.env.ORPHAN_BATCH ?? "", 10) || 60, 10),
+  300,
+);
+const BACKLOG_SHARE = Math.floor(ORPHAN_BATCH / 3);
+// Claim TTL: un item elegido por otro picker hace <10min no se re-elige
+// (evita doble gasto LLM); si aquel proceso murió, el claim expira solo.
+const CLAIM_TTL_MIN = 10;
 // Items que un batch respondido omite/malforma >= MAX_ATTEMPTS veces se
 // abandonan (badge "—" permanente) en vez de reintentar eternamente.
 const MAX_ATTEMPTS = 5;
@@ -56,42 +65,55 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
   // Pick híbrido: primero lo más reciente (freshness del feed), después el
   // fondo del backlog (anti-starvation). Ambas mitades excluyen items ya
   // abandonados por el cap de intentos.
-  const fresh = unwrap(
+  // v4.2 (2026-07-17): pick + claim en UNA sentencia atómica. GH cron,
+  // scorer local y drains manuales corren contra la misma BD; sin claim,
+  // dos pickers simultáneos elegían los mismos items y duplicaban gasto de
+  // cuota LLM. El re-check de claimed_at en el WHERE del UPDATE hace que,
+  // bajo carrera, el segundo picker simplemente reciba menos filas (READ
+  // COMMITTED re-evalúa la condición sobre la fila bloqueada).
+  //
+  // Mitad backlog: antes oldest-first (ASC) — gastaba 1/3 de capacidad en
+  // items a horas de la purga de 5 días y la banda media (1-4d) no la
+  // cubría nadie. Ahora banda >24h por recencia DESC (recency-first
+  // también en scoring); la cola que no dé tiempo a puntuar la libera la
+  // purga, no el picker.
+  const claimable = sql`
+    NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
+    AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id)
+    AND n.scoring_attempts < ${MAX_ATTEMPTS}
+    AND n.published_at >= now() - make_interval(days => ${UNSCORED_RETENTION_DAYS})
+    AND (n.claimed_at IS NULL OR n.claimed_at < now() - make_interval(mins => ${CLAIM_TTL_MIN}))
+  `;
+  const rows = unwrap(
     await db.execute(sql`
-      SELECT n.id, n.headline, n.body, n.source, n.published_at, n.url,
-        ARRAY(SELECT ticker FROM news_tickers WHERE news_id = n.id) AS tickers
-      FROM news n
-      WHERE NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
-        AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id)
-        AND n.scoring_attempts < ${MAX_ATTEMPTS}
-        AND n.published_at >= now() - make_interval(days => ${UNSCORED_RETENTION_DAYS})
-      ORDER BY n.published_at DESC
-      LIMIT ${ORPHAN_BATCH - BACKLOG_SHARE}
-    `),
-  );
-  // OJO driver Neon: `= ANY(${jsArray})` llega como escalar y peta con
-  // 42809 — hay que interpolar la lista con sql.join.
-  const freshIdList = fresh.length
-    ? sql.join(
-        fresh.map((r) => sql`${r.id}`),
-        sql`, `,
+      WITH fresh AS (
+        SELECT n.id FROM news n
+        WHERE ${claimable}
+        ORDER BY n.published_at DESC
+        LIMIT ${ORPHAN_BATCH - BACKLOG_SHARE}
+      ),
+      mid AS (
+        SELECT n.id FROM news n
+        WHERE ${claimable}
+          AND n.published_at < now() - make_interval(hours => 24)
+          AND n.id NOT IN (SELECT id FROM fresh)
+        ORDER BY n.published_at DESC
+        LIMIT ${BACKLOG_SHARE}
       )
-    : sql`-1`;
-  const backlog = unwrap(
-    await db.execute(sql`
-      SELECT n.id, n.headline, n.body, n.source, n.published_at, n.url,
-        ARRAY(SELECT ticker FROM news_tickers WHERE news_id = n.id) AS tickers
-      FROM news n
-      WHERE NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
-        AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id)
-        AND n.scoring_attempts < ${MAX_ATTEMPTS}
-        AND n.published_at >= now() - make_interval(days => ${UNSCORED_RETENTION_DAYS})
-        AND n.id NOT IN (${freshIdList})
-      ORDER BY n.published_at ASC
-      LIMIT ${BACKLOG_SHARE}
+      UPDATE news SET claimed_at = now()
+      WHERE news.id IN (SELECT id FROM fresh UNION ALL SELECT id FROM mid)
+        AND (news.claimed_at IS NULL OR news.claimed_at < now() - make_interval(mins => ${CLAIM_TTL_MIN}))
+      RETURNING news.id, news.headline, news.body, news.source,
+        news.published_at, news.url,
+        ARRAY(SELECT ticker FROM news_tickers WHERE news_id = news.id) AS tickers
     `),
   );
-  const rows = [...fresh, ...backlog];
+  // RETURNING no conserva orden — los lotes se procesan newest-first para
+  // que los scores frescos lleguen al feed cuanto antes.
+  rows.sort(
+    (a, b) =>
+      new Date(b.published_at).getTime() - new Date(a.published_at).getTime(),
+  );
 
   let scored = 0;
   let failed = 0;

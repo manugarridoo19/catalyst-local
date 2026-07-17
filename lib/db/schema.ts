@@ -74,6 +74,11 @@ export const news = pgTable(
     // siempre) en vez de reintentar eternamente. Solo se incrementa cuando
     // el batch produjo al menos un score (fallo de provider ≠ item malo).
     scoringAttempts: smallint("scoring_attempts").notNull().default(0),
+    // Claim del picker de scoring: GH cron, scorer local y drains manuales
+    // corren contra la misma BD; sin claim, dos pickers simultáneos eligen
+    // los mismos items y duplican gasto de cuota LLM. TTL 10min en el
+    // picker — un claim de un proceso muerto expira solo.
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
