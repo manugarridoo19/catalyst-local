@@ -31,7 +31,9 @@ export type ArticleDetail = {
 };
 
 const FAILED_RETRY_MS = 6 * 3600 * 1000;
-const MIN_BODY_FALLBACK_CHARS = 250;
+// 180: los snippets de finnhub rondan ~190 chars y son la única vía para
+// sus artículos (finnhub.io/api/news?id= devuelve 404 — redirector roto).
+const MIN_BODY_FALLBACK_CHARS = 180;
 const LLM_TEXT_CAP = 6_000;
 
 const SUMMARY_SYSTEM_PROMPT = `You are a buy-side equity analyst writing for a realtime trading dashboard. You receive the text of a news article (or SEC filing) plus the tickers it concerns and, when available, machine scores.

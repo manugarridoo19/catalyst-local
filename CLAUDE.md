@@ -16,6 +16,18 @@ Realtime market news dashboard inspired by Catalist.Live. Free-tier-only stack.
   - `brief` (prose): `nemotron-3-ultra` → `gemma-4-31b` → `llama-3.3-70b` → `qwen3-next-80b`
   - `author` (Author Watch daily fusion): reasoning models WITH `reasoning:true` — the ONLY chain that reasons on purpose (1 call/day makes it affordable; anti-scratchpad guard protects). Everything else sends `reasoning:{enabled:false}`.
 - **Scoring is batched (v4.1)**: `scoreNewsBatch()` sends up to 10 news/call, returning per-item scores + `wrong_tickers` + a plain-English **`summary`** for impact>=4 items only (the per-item AI summary — same call, ~0 marginal cost; `news_scores.summary`, shown in the expanded card). Don't revert to 1-call-per-news. The picker (`lib/cron/score-orphans.ts`, **v4.2**) is **hybrid**: 2/3 newest DESC + 1/3 mid-band (>24h old, also DESC — recency-first; the 5-day purge, not the picker, releases the tail). Pick+claim is ONE atomic `UPDATE…RETURNING` on `news.claimed_at` (10-min TTL) so GH cron + local scorer + manual drains never double-score the same items. Skips `scoring_attempts>=5` (abandoned) and `published_at` older than 5 days. Unscored news >5 days is purged (`deleteUnscoredOlderThan`, UNSCORED_RETENTION_DAYS); scored news lives to 20 days. **An LLM 200-response with empty content is a retriable error** (openrouter + gemini) — treating it as success short-circuits the fallback chain (2026-07-17 incident).
+- **Article extraction + per-item AI summary (2026-07-17)**: expanding a card
+  fetches `GET /api/article/[id]` → `lib/articles/enrich.ts` extracts the real
+  article (`lib/articles/extract.ts`, dependency-free readability-lite,
+  Workers-safe) and generates `{summary, take}` via prose-chain (jsonMode),
+  cached in `article_extracts` (failures cached 6h). Google News URLs
+  (rss:marketbeat + all gnews:*) resolve via the batchexecute signature
+  technique; SEC Form 4 parses the raw ownership XML into readable
+  insider-transaction text — never feed the xsl-rendered .htm to the parser.
+  Hard-blocked sources (seekingalpha, investing.com, tipranks — 403 to any
+  non-browser; finnhub's `api/news?id=` redirector 404s) degrade to the
+  provider body (≥180 chars) or an honest paywall message in the UI.
+  score-orphans pre-enriches fresh impact>=4 items (`ENRICH_BATCH`, default 4).
 - **Pusher Channels** for realtime broadcast to clients
 - **News sources (6)**: Finnhub (general + per-company), Marketaux, RSS aggregator, Google News per-ticker, and **SEC EDGAR** (`lib/providers/sec-edgar.ts` — 8-K + Form 4, CIK→ticker via official `company_tickers.json`, filtered to `knownSymbols`, Node-only). Quotes/search via Finnhub; historical bars via Yahoo.
 - **FMP (Financial Modeling Prep)** — `lib/providers/fmp.ts`, `/stable/` endpoints (v3/v4 are legacy, rejected for post-Aug-2025 keys). Gives P/E, beta, 52w range, peers (what Finnhub free doesn't). **Free tier 250 calls/day** → strict discipline: NEVER per-pageview, cached 7d in `ticker_fundamentals` via `getOrFetchFundamentals` (lib/fundamentals.ts). 3 calls/symbol. Key in `~/.catalyst-fmp-key` (mode 600) + GH/Worker secret.
