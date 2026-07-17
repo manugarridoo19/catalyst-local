@@ -32,6 +32,15 @@ export const LIVE_FEED_CATEGORIES: NewsCategory[] = [
   "PRODUCT",
 ];
 
+// Vista "All" del live feed: todo el signal MENOS insider. Los Form 4 de
+// SEC EDGAR llegan en ráfagas por emisor (6+ directivos el mismo día, ~50%
+// del volumen del día tras el cierre) y con un solo fetch limit=100 se
+// comían todos los slots — el filtro debe vivir en el WHERE, no en el
+// cliente. INSIDER se pide como slice aparte para su chip y para
+// Watchlist/High impact.
+export const LIVE_FEED_MAIN_CATEGORIES: NewsCategory[] =
+  LIVE_FEED_CATEGORIES.filter((c) => c !== "INSIDER");
+
 export const NEWS_TAB_CATEGORIES: NewsCategory[] = ["OTHER", "MACRO"];
 
 const SOURCE_OVERRIDES: Record<string, NewsCategory> = {

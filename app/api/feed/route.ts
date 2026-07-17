@@ -3,7 +3,9 @@ import { getFeed, getTickerMetaMap } from "@/lib/db/queries";
 import { fifteenDaysAgo, startOfTodayUtc } from "@/lib/time-windows";
 import {
   LIVE_FEED_CATEGORIES,
+  LIVE_FEED_MAIN_CATEGORIES,
   NEWS_TAB_CATEGORIES,
+  type NewsCategory,
 } from "@/lib/categorizer";
 import type { FeedItem } from "@/lib/feed-types";
 
@@ -18,6 +20,9 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const symbol = url.searchParams.get("symbol")?.toUpperCase().trim();
   const tab = url.searchParams.get("tab"); // "live" | "news" — solo aplica sin symbol
+  // Slice de una categoría concreta (p.ej. INSIDER, que el live "All"
+  // excluye por defecto — las ráfagas de Form 4 inundaban el limit).
+  const categoryParam = url.searchParams.get("category")?.toUpperCase().trim();
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 100);
   const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
 
@@ -38,7 +43,11 @@ export async function GET(req: Request) {
         : {
             since: startOfTodayUtc(),
             requireTicker: true,
-            categories: LIVE_FEED_CATEGORIES,
+            categories:
+              categoryParam &&
+              (LIVE_FEED_CATEGORIES as string[]).includes(categoryParam)
+                ? [categoryParam as NewsCategory]
+                : LIVE_FEED_MAIN_CATEGORIES,
           };
 
     const rows = await getFeed({

@@ -24,7 +24,7 @@ const AUTHOR_HANDLE = process.env.AUTHOR_HANDLE ?? "Couch_Investor";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
 import { getSessionId } from "@/lib/session";
 import { startOfTodayUtc } from "@/lib/time-windows";
-import { LIVE_FEED_CATEGORIES } from "@/lib/categorizer";
+import { LIVE_FEED_MAIN_CATEGORIES } from "@/lib/categorizer";
 import type { FeedItem } from "@/lib/feed-types";
 
 export const dynamic = "force-dynamic";
@@ -47,19 +47,26 @@ async function loadInitial(): Promise<{
 }> {
   try {
     const session = await getSessionId();
-    const [feedRows, watchRows, brief, picks, earnings, authorBrief] =
+    const [feedRows, insiderRows, watchRows, brief, picks, earnings, authorBrief] =
       await Promise.all([
       // Live feed: solo noticias del día (UTC) con ticker asociado y
-      // categoría de signal (ANALYST/EARNINGS/MA/GUIDANCE/INSIDER/REG/
-      // LEGAL/PRODUCT). MACRO y OTHER viven en /news. Orden estricto por
-      // publishedAt DESC — el tiempo manda. Items aún sin grading entran
-      // y aparecen con placeholder; Pusher rebroadcast pinta el score
-      // cuando llega.
+      // categoría de signal. MACRO y OTHER viven en /news. Orden estricto
+      // por publishedAt DESC — el tiempo manda. Items aún sin grading
+      // entran y aparecen con placeholder; Pusher rebroadcast pinta el
+      // score cuando llega. INSIDER va en una query aparte: las ráfagas
+      // de Form 4 (~50% del volumen tras el cierre) desplazaban al resto
+      // del signal fuera del limit cuando compartían fetch.
       getFeed({
         limit: 100,
         requireTicker: true,
         since: startOfTodayUtc(),
-        categories: LIVE_FEED_CATEGORIES,
+        categories: LIVE_FEED_MAIN_CATEGORIES,
+      }),
+      getFeed({
+        limit: 40,
+        requireTicker: true,
+        since: startOfTodayUtc(),
+        categories: ["INSIDER"],
       }),
       getWatchlist(session),
       // Brief más reciente — puede no existir aún (tabla vacía → null).
@@ -71,11 +78,17 @@ async function loadInitial(): Promise<{
 
     // Recolectar symbols primarios + watchlist para una sola query de meta.
     const symbols = new Set<string>();
-    for (const r of feedRows) if (r.tickers[0]) symbols.add(r.tickers[0]);
+    // Unión de ambos slices en un solo array cronológico — los chips del
+    // cliente ya particionan (All excluye INSIDER, Insider/Watchlist/High
+    // impact lo incluyen).
+    const allRows = [...feedRows, ...insiderRows].sort(
+      (a, b) => b.publishedAt.getTime() - a.publishedAt.getTime(),
+    );
+    for (const r of allRows) if (r.tickers[0]) symbols.add(r.tickers[0]);
     for (const w of watchRows) symbols.add(w.symbol);
     const meta = await getTickerMetaMap([...symbols]);
 
-    const feed: FeedItem[] = feedRows.map((r) => {
+    const feed: FeedItem[] = allRows.map((r) => {
       const primary = r.tickers[0] ?? null;
       const m = primary ? meta.get(primary) : null;
       return {
