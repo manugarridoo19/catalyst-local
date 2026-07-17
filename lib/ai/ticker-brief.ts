@@ -185,12 +185,19 @@ async function generateFromTape(
 
 // Dedupe de llamadas concurrentes en el mismo proceso (dos pestañas abren
 // el mismo ticker a la vez → una sola llamada LLM). Map módulo-level, se
-// limpia al resolver.
+// limpia al resolver. En Cloudflare Workers NO se dedupe: compartir una
+// Promise con I/O en vuelo entre requests del mismo isolate es la clase de
+// bug "Cannot perform I/O on behalf of a different request" del Pool
+// module-level. El caché por-símbolo en BD ya acota el coste extra.
 const inflight = new Map<string, Promise<TickerBriefResult>>();
+const IS_WORKERS =
+  typeof (globalThis as { WebSocketPair?: unknown }).WebSocketPair !==
+  "undefined";
 
 export async function maybeGenerateTickerBrief(
   symbol: string,
 ): Promise<TickerBriefResult> {
+  if (IS_WORKERS) return maybeGenerateTickerBriefInner(symbol);
   const existing = inflight.get(symbol);
   if (existing) return existing;
   const p = maybeGenerateTickerBriefInner(symbol).finally(() =>

@@ -48,11 +48,20 @@ function rowToFundamentals(r: Row): Fundamentals {
 }
 
 const inflight = new Map<string, Promise<Fundamentals | null>>();
+// En Cloudflare Workers NO se dedupe: compartir una Promise (que envuelve
+// fetches de BD/FMP) entre requests del mismo isolate es la clase de bug
+// "Cannot perform I/O on behalf of a different request" que ya nos mordió
+// con el Pool module-level. El dedupe existe para ahorrar llamadas en el
+// daemon/SSR local (Node), donde sí es seguro.
+const IS_WORKERS =
+  typeof (globalThis as { WebSocketPair?: unknown }).WebSocketPair !==
+  "undefined";
 
 export async function getOrFetchFundamentals(
   symbol: string,
 ): Promise<Fundamentals | null> {
   const sym = symbol.toUpperCase();
+  if (IS_WORKERS) return resolve(sym);
   const existing = inflight.get(sym);
   if (existing) return existing;
   const p = resolve(sym).finally(() => inflight.delete(sym));
