@@ -1,6 +1,9 @@
 import { cookies } from "next/headers";
 
-const COOKIE = "catalyst_session";
+// Exportado para /api/session/claim (fija la cookie en el Worker público
+// desde el launcher del escritorio — misma BD, misma watchlist).
+export const SESSION_COOKIE = "catalyst_session";
+const COOKIE = SESSION_COOKIE;
 
 // Local-daemon fallback. When the LaunchAgent serves Catalyst from
 // localhost (Vercel-down windows), the user's prod cookie isn't present
