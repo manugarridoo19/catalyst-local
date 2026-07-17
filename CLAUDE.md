@@ -35,6 +35,11 @@ suspension post-mortem: duplicated cron + 5-min cadence + polling burned
 `feedback_catalyst_vercel_budget` in user memory for the full incident.
 
 - Workflow: `.github/workflows/cron-runner.yml` runs `*/5 * * * *`
+- **Real cadence**: GitHub throttles `schedule` on public repos to 1-4h, so the
+  Worker `catalyst-pinger` (`scripts/pinger/`, CF Cron Trigger, free) fires a
+  `workflow_dispatch` every 10 min — dispatch runs start instantly. The GH
+  schedule stays as backup. Secret `GH_DISPATCH_TOKEN` = fine-grained PAT
+  (Actions RW, this repo only), off-repo copy in `~/.catalyst-gh-dispatch-token`.
 - Script: `scripts/cron-runner.ts` (`pnpm cron:remote`)
 - The script connects directly to Neon, Pusher, Groq/OpenRouter
 - `vercel.json` is intentionally empty (no Vercel crons)
