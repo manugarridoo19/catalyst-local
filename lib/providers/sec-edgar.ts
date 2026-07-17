@@ -111,6 +111,14 @@ export async function fetchSecFilings(
         const title = item.title ?? "";
         const link = item.link;
         if (!link) continue;
+        // getcurrent&type=4 hace PREFIX match: devuelve también 424B2,
+        // 425, etc. (Citigroup emite decenas de folletos 424B2/día que
+        // salían como "files Form 4 (insider)"). Exigimos el tipo EXACTO
+        // (con /A de amendment) al inicio del título del entry.
+        const formType = title.split(" - ")[0]?.trim().toUpperCase();
+        if (formType !== type.toUpperCase() && formType !== `${type.toUpperCase()}/A`) {
+          continue;
+        }
         const cik = cikFromTitle(title);
         if (!cik) continue;
         const ticker = map.get(cik);
