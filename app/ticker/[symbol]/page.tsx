@@ -5,6 +5,7 @@ import { Header } from "@/components/header";
 import { TradingViewChart } from "@/components/ticker/tradingview-chart";
 import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
+import { TickerFundamentals } from "@/components/ticker/ticker-fundamentals";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import { WatchlistToggle } from "@/components/ticker/watchlist-toggle";
 import {
@@ -193,6 +194,10 @@ export default async function TickerPage({
           </div>
         </div>
       </section>
+
+      {/* Fundamentales + peers (FMP, cache 7d) — se rellena async, no ocupa
+          espacio hasta tener datos. */}
+      <TickerFundamentals symbol={symbol} />
 
       {/* Chart left, news right.
           Móvil: una columna, chart altura fija razonable y news debajo

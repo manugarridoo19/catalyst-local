@@ -286,6 +286,29 @@ export const authorBriefs = pgTable("author_briefs", {
     .defaultNow(),
 });
 
+// Fundamentales de FMP cacheados (tabla de cache con TTL 7d). FMP free =
+// 250 calls/día, así que la UI SIEMPRE lee de aquí; solo se re-pega a FMP
+// cuando la fila falta o tiene >7d (getOrFetchFundamentals). Números como
+// text (evita pérdida de precisión, patrón de quotes_cache); peers como
+// array de "SYM" (el nombre se resuelve aparte si hace falta).
+export const tickerFundamentals = pgTable("ticker_fundamentals", {
+  symbol: text("symbol")
+    .primaryKey()
+    .references(() => tickers.symbol, { onDelete: "cascade" }),
+  marketCap: bigint("market_cap", { mode: "number" }),
+  pe: text("pe"),
+  beta: text("beta"),
+  sector: text("sector"),
+  industry: text("industry"),
+  yearHigh: text("year_high"),
+  yearLow: text("year_low"),
+  ceo: text("ceo"),
+  peers: text("peers").array().notNull().default([]),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type Ticker = typeof tickers.$inferSelect;
 export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;
