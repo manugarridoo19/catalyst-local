@@ -23,7 +23,9 @@ export async function GET() {
         (SELECT COUNT(*) FROM news n
            WHERE NOT EXISTS (SELECT 1 FROM news_scores s WHERE s.news_id = n.id)
              AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id))::int AS unscored_with_tickers,
-        (SELECT COUNT(*) FROM news_scores)::int AS scored_total
+        (SELECT COUNT(*) FROM news_scores)::int AS scored_total,
+        (SELECT MAX(scored_at) FROM news_scores)::timestamptz AS last_scored_at,
+        (SELECT COUNT(*) FROM news_scores WHERE scored_at > NOW() - INTERVAL '1 hour')::int AS scored_last_hour
     `);
     const row = ((r as { rows?: Record<string, unknown>[] }).rows ?? (r as unknown as Record<string, unknown>[]))[0];
 
@@ -35,6 +37,13 @@ export async function GET() {
       : null;
     const insertedAgeMin = lastInserted
       ? Math.round((now - lastInserted.getTime()) / 60000)
+      : null;
+    // Edad del último score — la señal que faltaba el 2026-07-17, cuando
+    // el cron llevaba horas cancelado y nada lo detectó. La vigila el
+    // workflow catalyst-health-monitor.
+    const lastScored = row.last_scored_at ? new Date(row.last_scored_at as string) : null;
+    const scoredAgeMin = lastScored
+      ? Math.round((now - lastScored.getTime()) / 60000)
       : null;
 
     // Pool + cooldown diagnostic. Sin exponer keys: solo labels + flags.
@@ -54,6 +63,9 @@ export async function GET() {
       insertedLastHour: row.inserted_last_hour,
       unscoredWithTickers: row.unscored_with_tickers,
       scoredTotal: row.scored_total,
+      lastScoredAt: lastScored?.toISOString() ?? null,
+      scoredAgeMin,
+      scoredLastHour: row.scored_last_hour,
       scoring: {
         openrouter: {
           total: openrouterPool.total,

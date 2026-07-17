@@ -1,0 +1,81 @@
+name: catalyst-health-monitor
+
+# Dead-man's-switch de Catalyst (sustituye al monitor de Vercel, plataforma
+# abandonada 2026-07-15). Cada 2h sondea /api/health del Worker y vigila las
+# DOS señales vitales: edad de la última inserción (ingesta viva) y edad del
+# último score (scoring vivo). Si algo lleva >5h parado — p.ej. el cron
+# cancelado en silencio como el 2026-07-17, secrets rotos, Neon caída —
+# abre/actualiza un issue con label catalyst-health (GitHub manda email al
+# owner). Se auto-cierra al recuperarse.
+#
+# Umbral 5h: la cadencia real del cron-runner en repo público es 1-4h por
+# throttling de GitHub, así que 5h = un tick entero de margen sin falsos
+# positivos nocturnos (el cron corre aunque el Mac duerma).
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  REPO: manugarridoo19/catalyst-local
+  HEALTH_URL: https://catalyst-local.manubisbal19.workers.dev/api/health
+  MAX_AGE_MIN: 300
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Probe /api/health
+        id: probe
+        run: |
+          body=$(curl -fsS --max-time 15 --retry 1 "$HEALTH_URL" || echo "")
+          if [ -z "$body" ] || [ "$(echo "$body" | jq -r '.ok // false')" != "true" ]; then
+            status="down"
+            detail="El endpoint /api/health no responde o devuelve ok=false."
+          else
+            inserted=$(echo "$body" | jq -r '.insertedAgeMin // 99999')
+            scored=$(echo "$body" | jq -r '.scoredAgeMin // 99999')
+            unscored=$(echo "$body" | jq -r '.unscoredWithTickers // "?"')
+            detail="insertedAgeMin=${inserted} scoredAgeMin=${scored} unscoredWithTickers=${unscored}"
+            if [ "$inserted" -gt "$MAX_AGE_MIN" ]; then
+              status="stalled"
+              detail="INGESTA parada: última noticia insertada hace ${inserted} min. ${detail}"
+            elif [ "$scored" -gt "$MAX_AGE_MIN" ]; then
+              status="stalled"
+              detail="SCORING parado: último score hace ${scored} min (¿cron-runner cancelado/fallando? ¿pools LLM agotados sin fallback?). ${detail}"
+            else
+              status="healthy"
+            fi
+          fi
+          {
+            echo "status=$status"
+            echo "detail=$detail"
+          } >> "$GITHUB_OUTPUT"
+          echo "$status — $detail"
+      - name: Open or close alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.probe.outputs.status }}
+          DETAIL: ${{ steps.probe.outputs.detail }}
+        run: |
+          existing=$(gh issue list --repo "$REPO" --label catalyst-health --state open --json number --jq '.[0].number // empty')
+          stamp=$(date -u +%FT%TZ)
+          if [ "$STATUS" = "healthy" ]; then
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" --body "Recuperado a las ${stamp}. ${DETAIL}"
+              gh issue close "$existing" --repo "$REPO" --reason completed
+            fi
+          else
+            body=$(printf "Estado: %s\n%s\n\nRuns recientes del cron: https://github.com/%s/actions/workflows/cron-runner.yml\nDetectado: %s" "$STATUS" "$DETAIL" "$REPO" "$stamp")
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" --body "$body"
+            else
+              gh issue create --repo "$REPO" --title "[catalyst] pipeline parado (${STATUS})" --label catalyst-health --body "$body"
+            fi
+          fi

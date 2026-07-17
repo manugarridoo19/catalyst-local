@@ -20,10 +20,11 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    # 8min: el tick creció (6 fuentes + brief/picks + reintentos de keys en
-    # daily cap). Con 3min GitHub cancelaba el job en plena fase de scoring
-    # (2026-07-17: 4 runs seguidos cancelled → mañana entera sin puntuar).
-    timeout-minutes: 8
+    # 10min: el tick creció (6 fuentes + brief/picks + reintentos de keys en
+    # daily cap) y ORPHAN_BATCH=120 añade ~6 llamadas LLM más. Con 3min
+    # GitHub cancelaba el job en plena fase de scoring (2026-07-17: 4 runs
+    # seguidos cancelled → mañana entera sin puntuar, y en silencio).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -37,6 +38,11 @@ jobs:
         run: pnpm install --frozen-lockfile --prefer-offline
       - name: Run cron tick
         env:
+          # GitHub throttlea el schedule de repos públicos a cadencia real
+          # 1-4h: este cron es TODA la capacidad de scoring cuando el Mac
+          # duerme. 120/tick (12 llamadas batch) compensa la cadencia; el
+          # scorer local de cada 15min mantiene su default de 60.
+          ORPHAN_BATCH: "120"
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           MARKETAUX_API_KEY: ${{ secrets.MARKETAUX_API_KEY }}
