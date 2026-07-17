@@ -164,41 +164,65 @@ def main():
     except Exception as e:
         die_ok(f"unexpected timeline shape: {e}")
 
+    def tweet_results_of(entry):
+        # Entrada simple (TimelineTimelineItem): el tweet cuelga de
+        # content.itemContent…
+        content = entry.get("content", {}) or {}
+        item = content.get("itemContent") or {}
+        res = (item.get("tweet_results") or {}).get("result")
+        if res:
+            yield res
+        # …pero los HILOS del autor llegan como TimelineTimelineModule
+        # (entryId "profile-conversation-…") con cada tweet anidado en
+        # content.items[].item.itemContent. Sin esta rama, un hilo entero
+        # desaparecía del scrape — ni siquiera entraba el primer tweet.
+        for it in content.get("items", []) or []:
+            ic = ((it.get("item") or {}).get("itemContent")) or {}
+            res = (ic.get("tweet_results") or {}).get("result")
+            if res:
+                yield res
+
+    seen_ids = set()
     for ins in instrs:
         for entry in ins.get("entries", []):
-            item = (entry.get("content", {}) or {}).get("itemContent") or {}
-            res = (item.get("tweet_results") or {}).get("result")
-            if not res:
-                continue
-            # tweets con visibility wrapper
-            if res.get("__typename") == "TweetWithVisibilityResults":
-                res = res.get("tweet", res)
-            legacy = res.get("legacy")
-            if not legacy:
-                continue
-            created = legacy.get("created_at")  # "Thu Jul 16 19:58:39 +0000 2026"
-            try:
-                ts = time.mktime(time.strptime(created, "%a %b %d %H:%M:%S +0000 %Y"))
-                ts -= time.timezone  # strptime asume local; corrige a UTC
-            except Exception:
-                ts = time.time()
-            if ts < cutoff:
-                continue
-            is_rt = 1 if legacy.get("retweeted_status_result") or \
-                legacy.get("full_text", "").startswith("RT @") else 0
-            # texto: notetweet (long) si existe, si no full_text
-            note = (res.get("note_tweet") or {}).get("note_tweet_results", {}) \
-                .get("result", {}).get("text")
-            text = note or legacy.get("full_text", "")
-            out.append({
-                "tweet_id": legacy.get("id_str"),
-                "author": HANDLE,
-                "text": text,
-                "created_at": time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)),
-                "url": f"https://x.com/{HANDLE}/status/{legacy.get('id_str')}",
-                "is_retweet": is_rt,
-            })
+            for res in tweet_results_of(entry):
+                # tweets con visibility wrapper
+                if res.get("__typename") == "TweetWithVisibilityResults":
+                    res = res.get("tweet", res)
+                legacy = res.get("legacy")
+                if not legacy:
+                    continue
+                # En un módulo de conversación pueden venir tweets de OTROS
+                # usuarios (replies del hilo): solo nos quedamos los del autor.
+                if legacy.get("user_id_str") and legacy["user_id_str"] != uid:
+                    continue
+                tid = legacy.get("id_str")
+                if not tid or tid in seen_ids:
+                    continue
+                created = legacy.get("created_at")  # "Thu Jul 16 19:58:39 +0000 2026"
+                try:
+                    ts = time.mktime(time.strptime(created, "%a %b %d %H:%M:%S +0000 %Y"))
+                    ts -= time.timezone  # strptime asume local; corrige a UTC
+                except Exception:
+                    ts = time.time()
+                if ts < cutoff:
+                    continue
+                is_rt = 1 if legacy.get("retweeted_status_result") or \
+                    legacy.get("full_text", "").startswith("RT @") else 0
+                # texto: notetweet (long) si existe, si no full_text
+                note = (res.get("note_tweet") or {}).get("note_tweet_results", {}) \
+                    .get("result", {}).get("text")
+                text = note or legacy.get("full_text", "")
+                seen_ids.add(tid)
+                out.append({
+                    "tweet_id": tid,
+                    "author": HANDLE,
+                    "text": text,
+                    "created_at": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)),
+                    "url": f"https://x.com/{HANDLE}/status/{tid}",
+                    "is_retweet": is_rt,
+                })
 
     with open(OUT, "w") as f:
         json.dump({"handle": HANDLE, "tweets": out}, f)
