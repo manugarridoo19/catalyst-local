@@ -2,8 +2,8 @@
 // Ver wrangler.toml para el porqué. Idempotente y sin estado: si el
 // dispatch coincide con un run en curso, el concurrency group del
 // workflow colapsa los pendientes — no hay estampida posible.
-export default {
-  async scheduled(_event, env, _ctx) {
+const pinger = {
+  async scheduled(_event, env) {
     const res = await fetch(
       "https://api.github.com/repos/manugarridoo19/catalyst-local/actions/workflows/cron-runner.yml/dispatches",
       {
@@ -23,3 +23,5 @@ export default {
     }
   },
 };
+
+export default pinger;

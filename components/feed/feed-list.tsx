@@ -33,6 +33,7 @@ const LIVE_FILTERS = [
   { id: "ma" as const, label: "M&A" },
   { id: "analyst" as const, label: "Analyst" },
   { id: "guidance" as const, label: "Guidance" },
+  { id: "insider" as const, label: "Insider" },
 ];
 
 const NEWS_FILTERS = [
@@ -159,11 +160,17 @@ export function FeedList({ initial, watchlist = [], mode = "live" }: Props) {
     if (filter === "ma") return items.filter((it) => it.category === "MA");
     if (filter === "analyst") return items.filter((it) => it.category === "ANALYST");
     if (filter === "guidance") return items.filter((it) => it.category === "GUIDANCE");
+    if (filter === "insider") return items.filter((it) => it.category === "INSIDER");
     if (filter === "macro") return items.filter((it) => it.category === "MACRO");
     if (filter === "other")
       return items.filter((it) => it.category === "OTHER" || it.category == null);
+    // "All" del live feed EXCLUYE insider: los Form 4 de SEC EDGAR llegan en
+    // ráfagas por emisor (6+ directivos de la misma empresa el mismo día) e
+    // inundan la vista. Viven en su chip Insider; Watchlist y High impact
+    // sí los incluyen (un Form 4 de un valor tuyo es señal).
+    if (mode === "live") return items.filter((it) => it.category !== "INSIDER");
     return items;
-  }, [items, filter, watchlist]);
+  }, [items, filter, watchlist, mode]);
 
   const filters = mode === "news" ? NEWS_FILTERS : LIVE_FILTERS;
   const toolbarLabel = mode === "news" ? "News" : "Live feed";
