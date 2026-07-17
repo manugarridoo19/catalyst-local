@@ -26,6 +26,8 @@ export type ParsedScore = {
 export type ParsedBatchScore = ParsedScore & {
   /** Tickers de la lista del item que el LLM marcó como mislink. */
   wrongTickers: string[];
+  /** Resumen claro (solo lo emite el modelo para impact>=4). */
+  summary?: string;
 };
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -146,6 +148,12 @@ export function parseBatchScores(
               .map((t) => t.toUpperCase().trim())
               .filter(Boolean)
           : [],
+        // Solo aceptamos summary con sustancia (el modelo pone null/"" para
+        // impact<=4). Cap defensivo de longitud.
+        summary:
+          typeof e.summary === "string" && e.summary.trim().length >= 15
+            ? e.summary.trim().slice(0, 240)
+            : undefined,
       });
     }
     if (out.size) return out; // primer candidato que produce algo, gana

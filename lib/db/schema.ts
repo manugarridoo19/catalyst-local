@@ -115,6 +115,10 @@ export const newsScores = pgTable("news_scores", {
   impact: smallint("impact").notNull(),
   sentiment: smallint("sentiment").notNull(),
   rationale: text("rationale"),
+  // Resumen IA en lenguaje claro (1 frase). Solo se genera para noticias de
+  // alto impacto (impact>=4) dentro del mismo batch de scoring — coste LLM
+  // marginal ≈0. NULL para el resto. Se muestra en la card expandida.
+  summary: text("summary"),
   model: text("model").notNull(),
   promptVersion: text("prompt_version").notNull(),
   scoredAt: timestamp("scored_at", { withTimezone: true })

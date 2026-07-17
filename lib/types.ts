@@ -25,6 +25,7 @@ export type SentimentScore = {
   sentiment: number; // -5..+5
   category?: NewsCategory; // override del heurístico, opcional
   rationale?: string;
+  summary?: string; // resumen IA claro, solo para impact>=4
   model: string;
   promptVersion: string;
 };

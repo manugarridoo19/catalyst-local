@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FeedItem } from "@/lib/feed-types";
 
@@ -39,6 +39,35 @@ export function NewsExpanded({
 }) {
   return (
     <>
+      {/* AI summary — reescritura clara del titular para high-impact (impact>=4).
+          Va arriba del todo: es lo primero que quieres leer para "entender" la
+          noticia sin descifrar jerga. Solo aparece cuando existe. */}
+      {item.summary && (
+        <div
+          className={cn(
+            "rounded-sm border border-primary/30 bg-primary/[0.06]",
+            compact ? "mb-2 px-2.5 py-2" : "mb-3 px-3 py-2.5",
+          )}
+        >
+          <div
+            className={cn(
+              "flex items-center gap-1 font-mono uppercase tracking-[0.22em] text-primary",
+              compact ? "text-[8px]" : "text-[9px]",
+            )}
+          >
+            <Sparkles className={compact ? "h-2.5 w-2.5" : "h-3 w-3"} aria-hidden />
+            AI summary
+          </div>
+          <p
+            className={cn(
+              "font-editorial leading-relaxed text-foreground",
+              compact ? "mt-1 text-[12.5px]" : "mt-1.5 text-[13.5px]",
+            )}
+          >
+            {item.summary}
+          </p>
+        </div>
+      )}
       {item.body ? (
         <p
           className={cn(

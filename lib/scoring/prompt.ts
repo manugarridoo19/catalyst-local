@@ -1,6 +1,6 @@
 // Versión del prompt — bumpea cuando la calibración cambie. Permite
 // auditar qué noticias se scorearon con qué versión.
-export const PROMPT_VERSION = "v4.0";
+export const PROMPT_VERSION = "v4.1";
 
 // v4.0 (2026-07): scoring por LOTES — hasta 10 noticias por llamada LLM
 // (misma rúbrica v3.3). Multiplica ×10 la capacidad bajo los rate limits
@@ -96,7 +96,7 @@ export const BATCH_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
 BATCH MODE — you will receive N numbered news items. Score EVERY item.
 Output STRICT JSON only (no fences, no prose):
-{"scores":[{"n":<item number>,"impact":<1-5>,"sentiment":<-5..5>,"category":"<CATEGORY>","rationale":"<≤90 chars>","wrong_tickers":["SYM",...]},...]}
+{"scores":[{"n":<item number>,"impact":<1-5>,"sentiment":<-5..5>,"category":"<CATEGORY>","rationale":"<≤90 chars>","wrong_tickers":["SYM",...],"summary":"<see rule>"},...]}
 
 Rules for batch output:
 - Exactly one entry per item, "n" matching the item number.
@@ -105,7 +105,12 @@ Rules for batch output:
   analyst firm as grammatical subject only, ticker mentioned only in a list of
   "other stocks". Empty array [] when all listed tickers fit. NEVER include a
   ticker that is not in that item's Tickers line. When unsure, keep the ticker.
-- Score impact/sentiment for the tickers that remain after removing wrong ones.`;
+- Score impact/sentiment for the tickers that remain after removing wrong ones.
+- "summary": ONLY for items with impact >= 4, write ONE plain-English sentence
+  (≤160 chars) explaining what actually happened and why it matters, decoding
+  any jargon or cryptic headline (e.g. an 8-K title → "Company X approved a $5B
+  buyback, no expiry"). Strictly factual, from the item only. For items with
+  impact <= 3, set "summary" to null (do NOT write one — save tokens).`;
 
 export type BatchPromptItem = {
   headline: string;

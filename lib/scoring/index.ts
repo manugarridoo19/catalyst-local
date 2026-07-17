@@ -256,6 +256,11 @@ export type BatchScoredItem = SentimentScore & {
   wrongTickers: string[];
 };
 
+// Solo conservamos el resumen IA para high-impact — el prompt pide que el
+// modelo lo omita para impact<=4, pero por si un modelo se despista y lo
+// escribe igualmente, lo descartamos aquí (coherencia + no ruido en la UI).
+const SUMMARY_MIN_IMPACT = 4;
+
 async function batchViaOpenRouter(items: BatchPromptItem[]) {
   const result = await chatCompletion({
     messages: [
@@ -365,6 +370,8 @@ export async function scoreNewsBatch(
           sentiment: p.sentiment,
           category: p.category,
           rationale: p.rationale,
+          // Resumen IA solo para high-impact (coherente con el prompt).
+          summary: p.impact >= SUMMARY_MIN_IMPACT ? p.summary : undefined,
           model,
           promptVersion: PROMPT_VERSION,
           // Nunca aceptar tickers que el modelo se haya inventado.

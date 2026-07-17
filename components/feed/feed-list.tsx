@@ -299,6 +299,7 @@ function mergeFeed(incoming: FeedItem[], existing: FeedItem[]): FeedItem[] {
         impact: it.impact ?? prev.impact,
         sentiment: it.sentiment ?? prev.sentiment,
         rationale: it.rationale ?? prev.rationale,
+        summary: it.summary ?? prev.summary,
         category: it.category ?? prev.category,
       });
     } else {

@@ -71,6 +71,7 @@ export async function GET(req: Request) {
         impact: r.impact,
         sentiment: r.sentiment,
         rationale: r.rationale,
+        summary: r.summary,
       };
     });
 

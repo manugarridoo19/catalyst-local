@@ -21,4 +21,5 @@ export type FeedItem = {
   impact: number | null;
   sentiment: number | null;
   rationale?: string | null;
+  summary?: string | null;
 };

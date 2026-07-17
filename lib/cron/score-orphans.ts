@@ -166,6 +166,7 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
             impact: score.impact,
             sentiment: score.sentiment,
             rationale: score.rationale,
+            summary: score.summary,
           });
         }
       } catch (err) {

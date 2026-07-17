@@ -94,6 +94,7 @@ async function loadInitial(): Promise<{
         impact: r.impact,
         sentiment: r.sentiment,
         rationale: r.rationale,
+        summary: r.summary,
       };
     });
 

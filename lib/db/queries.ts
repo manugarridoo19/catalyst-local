@@ -167,6 +167,7 @@ export async function insertScore(
       impact: score.impact,
       sentiment: score.sentiment,
       rationale: score.rationale,
+      summary: score.summary,
       model: score.model,
       promptVersion: score.promptVersion,
     })
@@ -222,6 +223,7 @@ export type FeedRow = {
   impact: number | null;
   sentiment: number | null;
   rationale: string | null;
+  summary: string | null;
 };
 
 // Devuelve el feed paginado con tickers agregados y scores. Se usa en SSR
@@ -302,6 +304,7 @@ export async function getFeed(opts: {
         impact: newsScores.impact,
         sentiment: newsScores.sentiment,
         rationale: newsScores.rationale,
+        summary: newsScores.summary,
       })
       .from(news)
       .innerJoin(newsTickers, eq(newsTickers.newsId, news.id))
@@ -327,6 +330,7 @@ export async function getFeed(opts: {
         impact: newsScores.impact,
         sentiment: newsScores.sentiment,
         rationale: newsScores.rationale,
+        summary: newsScores.summary,
       })
       .from(news)
       .leftJoin(newsScores, eq(newsScores.newsId, news.id))

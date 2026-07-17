@@ -1,0 +1,1 @@
+ALTER TABLE "news_scores" ADD COLUMN "summary" text;

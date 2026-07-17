@@ -40,6 +40,7 @@ export type FeedNewsPayload = {
   impact: number | null;
   sentiment: number | null;
   rationale?: string | null;
+  summary?: string | null;
 };
 
 export async function broadcastNews(items: FeedNewsPayload[]): Promise<void> {

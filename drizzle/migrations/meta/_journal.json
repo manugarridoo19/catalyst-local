@@ -71,6 +71,13 @@
       "when": 1784231975952,
       "tag": "0009_opposite_mojo",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784258886162,
+      "tag": "0010_open_jackal",
+      "breakpoints": true
     }
   ]
 }
