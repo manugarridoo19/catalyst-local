@@ -20,7 +20,10 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    # 8min: el tick creció (6 fuentes + brief/picks + reintentos de keys en
+    # daily cap). Con 3min GitHub cancelaba el job en plena fase de scoring
+    # (2026-07-17: 4 runs seguidos cancelled → mañana entera sin puntuar).
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
