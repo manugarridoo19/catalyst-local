@@ -42,13 +42,21 @@ jobs:
             inserted=$(echo "$body" | jq -r '.insertedAgeMin // 99999')
             scored=$(echo "$body" | jq -r '.scoredAgeMin // 99999')
             unscored=$(echo "$body" | jq -r '.unscoredWithTickers // "?"')
-            detail="insertedAgeMin=${inserted} scoredAgeMin=${scored} unscoredWithTickers=${unscored}"
+            inserted_lh=$(echo "$body" | jq -r '.insertedLastHour // 0')
+            scored_lh=$(echo "$body" | jq -r '.scoredLastHour // 0')
+            detail="insertedAgeMin=${inserted} scoredAgeMin=${scored} insertedLastHour=${inserted_lh} scoredLastHour=${scored_lh} unscoredWithTickers=${unscored}"
             if [ "$inserted" -gt "$MAX_AGE_MIN" ]; then
               status="stalled"
               detail="INGESTA parada: última noticia insertada hace ${inserted} min. ${detail}"
             elif [ "$scored" -gt "$MAX_AGE_MIN" ]; then
               status="stalled"
               detail="SCORING parado: último score hace ${scored} min (¿cron-runner cancelado/fallando? ¿pools LLM agotados sin fallback?). ${detail}"
+            elif [ "$scored_lh" -eq 0 ] && [ "$inserted_lh" -gt 0 ]; then
+              # Señal temprana de pools LLM agotados: entran noticias pero en
+              # una hora entera no se ha puntuado NI UNA (OpenRouter + Gemini
+              # + Groq caídos a la vez). Avisa ~2h antes que el umbral de 5h.
+              status="stalled"
+              detail="FLUJO LLM seco: ${inserted_lh} noticias nuevas en la última hora y 0 puntuadas — posible agotamiento simultáneo de todos los pools. ${detail}"
             else
               status="healthy"
             fi
