@@ -388,8 +388,15 @@ async function tryOnceWithKey(
     model: string;
     usage?: ChatCompletionResult["usage"];
   };
+  const content = json.choices?.[0]?.message?.content ?? "";
+  if (content.trim() === "") {
+    // 200 con contenido vacío (p.ej. un modelo reasoning que quema todo
+    // max_tokens pensando). Tratarlo como éxito cortocircuita la cadena
+    // entera de fallback; debe avanzar al siguiente modelo.
+    throw new RetriableError(`empty content from ${model}`, 502);
+  }
   return {
-    content: json.choices?.[0]?.message?.content ?? "",
+    content,
     model: json.model,
     usage: json.usage,
   };

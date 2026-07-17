@@ -243,6 +243,11 @@ async function tryOnceWithKey(
   const content = (json.candidates?.[0]?.content?.parts ?? [])
     .map((p) => p.text ?? "")
     .join("");
+  if (content.trim() === "") {
+    // 200 con contenido vacío (finishReason MAX_TOKENS/SAFETY sin texto).
+    // Devolverlo como éxito cortocircuita la cadena de fallback.
+    throw new GeminiRetriable(`empty content from ${model}`, 502);
+  }
   return {
     content,
     model,
@@ -292,14 +297,19 @@ export async function geminiChatCompletion(opts: {
     keys: KeyState[],
     rotate: boolean,
   ): Promise<ChatCompletionResult | null> {
+    // Cursor base estable durante el sweep; rrCursor se actualiza tras CADA
+    // intento (éxito o fallo) — antes solo avanzaba en éxito, y una key que
+    // fallara duro (400 revocada) se quedaba en cabeza y se reintentaba la
+    // primera en cada request.
+    const base = rrCursor;
     for (const model of models) {
       for (let i = 0; i < keys.length; i++) {
-        const idx = rotate ? (rrCursor + i) % keys.length : i;
+        const idx = rotate ? (base + i) % keys.length : i;
         const state = keys[idx];
         if (state.cooldownUntil > Date.now()) continue;
+        if (rotate) rrCursor = (base + i + 1) % keys.length;
         try {
           const result = await tryOnceWithKey(state, model, payload, timeoutMs);
-          if (rotate) rrCursor = (rrCursor + i + 1) % keys.length;
           return result;
         } catch (err) {
           // SKIP-and-continue en CUALQUIER fallo per-key, no solo los
