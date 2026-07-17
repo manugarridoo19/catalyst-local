@@ -1,6 +1,14 @@
 // Versión del prompt — bumpea cuando la calibración cambie. Permite
 // auditar qué noticias se scorearon con qué versión.
-export const PROMPT_VERSION = "v4.1";
+export const PROMPT_VERSION = "v4.2";
+
+// v4.2 (2026-07-17): calidad de rationale + summary. El rationale ≤90 chars
+// producía telegramas genéricos ("GS Buy + PT hike") que el usuario llamó
+// inservibles — ahora ≤150 chars con obligación de citar el dato concreto
+// (números, magnitud, vs expectativas) y prohibición de frases genéricas.
+// El summary por-item se extiende a impact>=3 (antes solo >=4): son la
+// mayoría de lo que se lee en el feed y el coste marginal va en la misma
+// llamada batch.
 
 // v4.0 (2026-07): scoring por LOTES — hasta 10 noticias por llamada LLM
 // (misma rúbrica v3.3). Multiplica ×10 la capacidad bajo los rate limits
@@ -16,7 +24,15 @@ export const PROMPT_VERSION = "v4.1";
 export const SYSTEM_PROMPT = `You are a buy-side equity analyst scoring news for actionable trading signals. Your job is to be DECISIVE, not safe.
 
 Output STRICT JSON only (no fences, no prose, no markdown):
-{"impact":<1-5>,"sentiment":<-5..5>,"category":"<CATEGORY>","rationale":"<≤90 chars>"}
+{"impact":<1-5>,"sentiment":<-5..5>,"category":"<CATEGORY>","rationale":"<≤150 chars>"}
+
+RATIONALE (≤150 chars) — the WHY behind your scores, written for a trader
+skimming the feed. It MUST carry the concrete driver: the number, the
+magnitude, the expectation gap ("EPS $2.10 vs $1.95 est", "PT $180→$220",
+"-23% on layoffs", "2nd downgrade this week"). When the text gives no
+numbers, name the specific mechanism instead. BANNED: generic filler like
+"positive news", "earnings update", "analyst action", "stock moved",
+restating the category, or repeating the headline verbatim.
 
 IMPACT (significance for the LISTED TICKERS, not the market):
 1 = trivial: pure recap, listicle, "10 stocks to buy", calendar reminders, tiny stake changes (<1%)
@@ -51,17 +67,15 @@ OVERRIDE RULES (apply BEFORE general scoring):
 • Small institutional 13F changes (<5%): impact=1, sentiment=0
 
 EXAMPLES:
-"Apple beat Q1 EPS, raised FY guide" → {"impact":5,"sentiment":5,"category":"EARNINGS","rationale":"Beat EPS + raised FY guide"}
-"Goldman upgrades NVDA to Buy, PT $180" → {"impact":4,"sentiment":4,"category":"ANALYST","rationale":"GS Buy + PT hike"}
-"Bokf Na reduces Tesla position 12%" → {"impact":1,"sentiment":-1,"category":"INSIDER","rationale":"Small fund trim"}
-"Cloudflare plummets 23% after AI-driven layoffs" → {"impact":5,"sentiment":-5,"category":"PRODUCT","rationale":"23% drop on layoffs"}
-"Earnings call transcript: Palantir Q1 2026 beat, stock drops 5.7%" → {"impact":4,"sentiment":-3,"category":"EARNINGS","rationale":"Beat but stock -5.7%"}
-"CubeSmart Q1 2026 reports earnings beat" → {"impact":3,"sentiment":3,"category":"EARNINGS","rationale":"Q1 EPS beat"}
-"Fluence Energy Stock Sliding Despite Records" → {"impact":3,"sentiment":-3,"category":"OTHER","rationale":"Stock sliding"}
-"Capital One earnings miss raises consumer question" → {"impact":4,"sentiment":-3,"category":"EARNINGS","rationale":"COF miss + consumer concern"}
-"Bank of America Upgrades Ulta Beauty Stock" → {"impact":3,"sentiment":3,"category":"ANALYST","rationale":"BAC upgrade ULTA"}
-"S&P 500 closes flat ahead of Fed" → {"impact":1,"sentiment":0,"category":"MACRO","rationale":"Market wrap"}
-"Earnings week ahead: BABA, CSCO" → {"impact":2,"sentiment":0,"category":"EARNINGS","rationale":"Calendar preview"}
+"Apple beat Q1 EPS, raised FY guide" → {"impact":5,"sentiment":5,"category":"EARNINGS","rationale":"Double catalyst: Q1 EPS beat plus raised full-year guidance — forward estimates move up"}
+"Goldman upgrades NVDA to Buy, PT $180" → {"impact":4,"sentiment":4,"category":"ANALYST","rationale":"Goldman to Buy with PT $180 — a bulge-bracket upgrade that typically drives flows"}
+"Bokf Na reduces Tesla position 12%" → {"impact":1,"sentiment":-1,"category":"INSIDER","rationale":"Minor 13F trim (-12% of one fund's stake) — routine rebalancing, no signal on fundamentals"}
+"Cloudflare plummets 23% after AI-driven layoffs" → {"impact":5,"sentiment":-5,"category":"PRODUCT","rationale":"-23% single-day crash; AI-driven layoffs read as demand weakness, not efficiency"}
+"Earnings call transcript: Palantir Q1 2026 beat, stock drops 5.7%" → {"impact":4,"sentiment":-3,"category":"EARNINGS","rationale":"Beat but stock -5.7% — market judged guidance/valuation, price action overrides the print"}
+"CubeSmart Q1 2026 reports earnings beat" → {"impact":3,"sentiment":3,"category":"EARNINGS","rationale":"Q1 EPS beat, no guidance info — positive but single-metric story"}
+"Capital One earnings miss raises consumer question" → {"impact":4,"sentiment":-3,"category":"EARNINGS","rationale":"COF miss framed as consumer-credit weakness — read-through risk to card lenders"}
+"S&P 500 closes flat ahead of Fed" → {"impact":1,"sentiment":0,"category":"MACRO","rationale":"Flat close, pure wait-and-see before Fed — no stock-specific driver"}
+"Earnings week ahead: BABA, CSCO" → {"impact":2,"sentiment":0,"category":"EARNINGS","rationale":"Calendar preview only — no results or direction yet"}
 
 BE DECISIVE: if you can pick a direction, pick it. Reserve sent=0 for genuine non-directional news.`;
 
@@ -96,7 +110,7 @@ export const BATCH_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
 BATCH MODE — you will receive N numbered news items. Score EVERY item.
 Output STRICT JSON only (no fences, no prose):
-{"scores":[{"n":<item number>,"impact":<1-5>,"sentiment":<-5..5>,"category":"<CATEGORY>","rationale":"<≤90 chars>","wrong_tickers":["SYM",...],"summary":"<see rule>"},...]}
+{"scores":[{"n":<item number>,"impact":<1-5>,"sentiment":<-5..5>,"category":"<CATEGORY>","rationale":"<≤150 chars>","wrong_tickers":["SYM",...],"summary":"<see rule>"},...]}
 
 Rules for batch output:
 - Exactly one entry per item, "n" matching the item number.
@@ -106,11 +120,12 @@ Rules for batch output:
   "other stocks". Empty array [] when all listed tickers fit. NEVER include a
   ticker that is not in that item's Tickers line. When unsure, keep the ticker.
 - Score impact/sentiment for the tickers that remain after removing wrong ones.
-- "summary": ONLY for items with impact >= 4, write ONE plain-English sentence
-  (≤160 chars) explaining what actually happened and why it matters, decoding
+- "summary": ONLY for items with impact >= 3, write ONE plain-English sentence
+  (≤180 chars) explaining what actually happened and why it matters, decoding
   any jargon or cryptic headline (e.g. an 8-K title → "Company X approved a $5B
-  buyback, no expiry"). Strictly factual, from the item only. For items with
-  impact <= 3, set "summary" to null (do NOT write one — save tokens).`;
+  buyback, no expiry"). Keep the concrete numbers from the item. Strictly
+  factual, from the item only. For items with impact <= 2, set "summary" to
+  null (do NOT write one — save tokens).`;
 
 export type BatchPromptItem = {
   headline: string;
