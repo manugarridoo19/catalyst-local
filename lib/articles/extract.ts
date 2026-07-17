@@ -28,7 +28,7 @@ const SEC_UA = "Catalyst News Dashboard manubisbal19@gmail.com";
 export type ExtractResult = {
   text: string;
   // Método usado — para logs/depuración de calidad.
-  method: "article-html" | "sec-form4" | "sec-doc";
+  method: "article-html" | "sec-form4" | "sec-doc" | "wayback";
 };
 
 async function fetchText(
@@ -366,6 +366,40 @@ async function extractSecFiling(url: string): Promise<ExtractResult | null> {
 // Entry point
 // ---------------------------------------------------------------------------
 
+// Fallback vía Wayback Machine (archive.org). Legítimo y con API pública:
+// si el artículo tiene un snapshot archivado, extraemos de ahí. Cubre las
+// fuentes que nos bloquean con 403 (seekingalpha, investing.com, tipranks
+// — marcadas "sin solución" incluso por la extensión Bypass Paywalls) y
+// cualquier página caída. Límite real: los snapshots tardan en existir, así
+// que rinde en items de horas, no en los recién publicados. `id_` sirve el
+// HTML original sin el chrome de la toolbar de archive.org.
+async function extractFromWayback(
+  url: string,
+  headline?: string,
+): Promise<ExtractResult | null> {
+  try {
+    const api = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
+    const res = await fetch(api, {
+      headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      archived_snapshots?: { closest?: { available?: boolean; url?: string } };
+    };
+    const snap = data.archived_snapshots?.closest;
+    if (!snap?.available || !snap.url) return null;
+    // /<ts>id_/ = versión raw del snapshot (sin banner de archive.org).
+    const rawUrl = snap.url.replace(/\/(\d{14})\//, "/$1id_/");
+    const html = await fetchHtml(rawUrl);
+    if (!html) return null;
+    const text = extractFromHtml(html, headline);
+    return text ? { text, method: "wayback" } : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function extractArticle(input: {
   url: string;
   source: string;
@@ -386,7 +420,11 @@ export async function extractArticle(input: {
   }
 
   const html = await fetchHtml(url);
-  if (!html) return null;
-  const text = extractFromHtml(html, input.headline);
-  return text ? { text, method: "article-html" } : null;
+  if (html) {
+    const text = extractFromHtml(html, input.headline);
+    if (text) return { text, method: "article-html" };
+  }
+
+  // Directo falló (403/paywall/página vacía) → probamos el archivo.
+  return extractFromWayback(url, input.headline);
 }

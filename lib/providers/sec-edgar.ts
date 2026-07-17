@@ -1,6 +1,9 @@
 import Parser from "rss-parser";
 import type { NormalizedNewsItem } from "@/lib/types";
 import { hashUrl } from "@/lib/hash";
+import { db, unwrapRows } from "@/lib/db";
+import { sql } from "drizzle-orm";
+import { startOfTodayUtc } from "@/lib/time-windows";
 
 // SEC EDGAR — filings directos de la fuente primaria (señal pura, sin
 // clickbait). Ingerimos los más recientes de dos tipos de alta señal:
@@ -61,6 +64,39 @@ const FILING_TYPES: Array<{ type: string; label: string }> = [
   { type: "4", label: "Form 4 (insider)" },
 ];
 
+// Tope de Form 4 por emisor y día. Los grandes bancos presentan decenas de
+// Form 4/día (Goldman 58×, JPMorgan 48×, Citi 44×… — concesiones rutinarias
+// de acciones al consejo, ruido puro) con TITULAR IDÉNTICO. Se ven como la
+// misma noticia repetida e inundan el chip Insider, y encima cada uno gasta
+// una llamada de scoring. Capamos a N por emisor/día en la ingesta: ves que
+// "hubo actividad insider en Goldman" sin 58 filas. Configurable por env.
+const FORM4_PER_ISSUER_CAP = Number(process.env.SEC_FORM4_PER_ISSUER_CAP ?? 3);
+
+// Cuántos Form 4 ya hay HOY por emisor (headline). El titular es 1:1 con el
+// emisor ("GOLDMAN SACHS GROUP INC files Form 4 (insider)"), así que agrupar
+// por headline = agrupar por empresa. Una query por tick.
+async function getTodayForm4Counts(): Promise<Map<string, number>> {
+  try {
+    const res = await db.execute(sql`
+      SELECT headline, count(*)::int AS n
+      FROM news
+      WHERE source = 'sec-edgar'
+        AND headline LIKE '% files Form 4 (insider)'
+        AND published_at >= ${startOfTodayUtc()}
+      GROUP BY headline`);
+    const rows = unwrapRows<{ headline: string; n: number }>(res);
+    return new Map(rows.map((r) => [r.headline, Number(r.n)]));
+  } catch (e) {
+    // Si la cuenta falla, seguimos sin cap (mejor algo de ruido que perder
+    // la fuente entera). El hash dedup evita reinsertar los ya vistos.
+    console.warn(
+      "[sec-edgar] form4 count failed, skipping cap:",
+      e instanceof Error ? e.message : e,
+    );
+    return new Map();
+  }
+}
+
 function feedUrl(type: string): string {
   const params = new URLSearchParams({
     action: "getcurrent",
@@ -103,6 +139,11 @@ export async function fetchSecFilings(
   }
   const filter = allowed && allowed.size > 0 ? allowed : null;
 
+  // Cuenta de Form 4 ya ingeridos hoy por emisor + los que emitimos en este
+  // tick — para no pasarnos del cap sumando ambos.
+  const form4Today = await getTodayForm4Counts();
+  let cappedForm4 = 0;
+
   const out: NormalizedNewsItem[] = [];
   for (const { type, label } of FILING_TYPES) {
     try {
@@ -129,6 +170,19 @@ export async function fetchSecFilings(
         // Headline legible con el nombre de empresa (el extractor y el
         // resumen IA trabajan mejor con el nombre que con el CIK).
         const headline = `${company} files ${label}`;
+
+        // Cap por emisor/día SOLO para Form 4 (los 8-K no llegan en ráfaga
+        // y cada uno es un evento material distinto). Cuenta existente en BD
+        // + emitidos en este tick.
+        if (type === "4" && FORM4_PER_ISSUER_CAP > 0) {
+          const seen = form4Today.get(headline) ?? 0;
+          if (seen >= FORM4_PER_ISSUER_CAP) {
+            cappedForm4++;
+            continue;
+          }
+          form4Today.set(headline, seen + 1);
+        }
+
         out.push({
           url: link,
           hash: hashUrl(link),
@@ -145,6 +199,11 @@ export async function fetchSecFilings(
         e instanceof Error ? e.message : e,
       );
     }
+  }
+  if (cappedForm4 > 0) {
+    console.log(
+      `[sec-edgar] capped ${cappedForm4} Form 4 (>${FORM4_PER_ISSUER_CAP}/issuer today)`,
+    );
   }
   return out;
 }
