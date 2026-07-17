@@ -8,6 +8,7 @@ import {
 } from "@/lib/db/queries";
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 import { UNSCORED_RETENTION_DAYS } from "@/lib/time-windows";
+import { enrichTopStories } from "@/lib/articles/enrich";
 
 // v4 (2026-07): scoring por LOTES. Antes: 1 noticia = 1 llamada LLM, o sea
 // 10 llamadas/tick y un techo de ~3.000 news/día con el pool entero — por
@@ -216,6 +217,26 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
       }
     }
     await broadcastNews(broadcast);
+  }
+
+  // Pre-enrich de los high-impact recién puntuados (extracción + resumen
+  // IA en article_extracts) para que el click del usuario sea instantáneo.
+  // Best-effort y con cap corto — el endpoint on-demand cubre el resto.
+  // Solo corre en Node (cron/daemon); el Worker nunca llega aquí.
+  const highImpact = broadcast
+    .filter((b) => (b.impact ?? 0) >= 4)
+    .map((b) => b.id);
+  if (highImpact.length) {
+    const cap = Number(process.env.ENRICH_BATCH ?? 4);
+    try {
+      const done = await enrichTopStories(highImpact, cap);
+      if (done) console.log(`[score-orphans] pre-enriched ${done} high-impact articles`);
+    } catch (err) {
+      console.warn(
+        "[score-orphans] pre-enrich failed:",
+        err instanceof Error ? err.message.slice(0, 140) : err,
+      );
+    }
   }
 
   return {

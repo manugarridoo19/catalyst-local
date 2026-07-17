@@ -92,6 +92,13 @@
       "when": 1784302123086,
       "tag": "0012_soft_kronos",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784326744964,
+      "tag": "0013_foamy_loki",
+      "breakpoints": true
     }
   ]
 }

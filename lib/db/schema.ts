@@ -314,6 +314,27 @@ export const tickerFundamentals = pgTable("ticker_fundamentals", {
     .defaultNow(),
 });
 
+// Contenido extraído del artículo + resumen IA on-demand (2026-07-17).
+// La mayoría de fuentes no traen body o traen boilerplate ("Titular +
+// SiteName"), así que al expandir una card extraemos el artículo real
+// (readability-lite, o parser Form 4 para sec-edgar) y generamos un
+// resumen con sustancia. Una fila por noticia; status='failed' cachea el
+// fallo (paywall/bloqueo) con cooldown para no re-golpear la fuente.
+export const articleExtracts = pgTable("article_extracts", {
+  newsId: integer("news_id")
+    .primaryKey()
+    .references(() => news.id, { onDelete: "cascade" }),
+  status: text("status").notNull(), // 'ok' | 'failed'
+  text: text("text"), // texto extraído (cap ~20k chars)
+  fetchedAt: timestamp("fetched_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  aiSummary: text("ai_summary"), // resumen del artículo (2-4 frases)
+  aiTake: text("ai_take"), // por qué importa para los tickers
+  aiModel: text("ai_model"),
+  aiGeneratedAt: timestamp("ai_generated_at", { withTimezone: true }),
+});
+
 export type Ticker = typeof tickers.$inferSelect;
 export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;
