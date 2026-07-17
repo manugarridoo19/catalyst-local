@@ -147,6 +147,22 @@ export function Header() {
         </nav>
       </div>
 
+      {/* Firma del creador — se centra en el hueco entre la navegación y el
+          bloque de acciones. Serif editorial en itálica (contraste con el
+          mono técnico del resto del header) y colores semánticos
+          (muted-foreground / primary / foreground) que se adaptan solos al
+          tema claro/oscuro. Absolute + centrado respecto al header sticky,
+          pointer-events-none para no interferir, y solo en pantallas anchas
+          (xl) donde el hueco existe de verdad. */}
+      <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 select-none xl:block">
+        <p className="whitespace-nowrap font-editorial text-[13.5px] italic tracking-wide text-muted-foreground/80">
+          <span className="mr-1 align-[0.05em] not-italic text-primary/55">«</span>
+          ¿Qué pensaría el{" "}
+          <span className="text-foreground/90">Manu de Cádiz</span>?
+          <span className="ml-1 align-[0.05em] not-italic text-primary/55">»</span>
+        </p>
+      </div>
+
       <div className="flex items-center gap-4">
         {/* Search */}
         <button
