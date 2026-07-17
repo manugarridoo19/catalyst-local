@@ -13,11 +13,45 @@ const COOKIE = SESSION_COOKIE;
 //   - LOCAL_MODE=1 prevents accidental session pinning in prod
 //   - The variable is opt-in (empty means: behave normally)
 // Never set this on Vercel.
+const UUID_RE =
+  /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
+// Fallback off-repo (patrón ~/.catalyst-openrouter-keys): los settings del
+// usuario impiden a los agentes tocar .env.local, y el plist instalado se
+// re-copia desde el repo (público — un UUID commiteado sería un bearer
+// token filtrado). El archivo `~/.catalyst-session-id` (mode 600, línea
+// `LOCAL_DEFAULT_SESSION_ID=<uuid>`) es la fuente canónica; el launcher
+// del escritorio lo lee también. Require guardado, nunca top-level: esto
+// solo corre en Node (LOCAL_MODE nunca está en el Worker).
+let cachedFileSid: string | null | undefined;
+function readSidFile(): string | null {
+  if (cachedFileSid !== undefined) return cachedFileSid;
+  cachedFileSid = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { readFileSync } = require("node:fs") as typeof import("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { homedir } = require("node:os") as typeof import("node:os");
+    const raw = readFileSync(`${homedir()}/.catalyst-session-id`, "utf8");
+    const m = raw.match(UUID_RE);
+    cachedFileSid = m ? m[1].toLowerCase() : null;
+  } catch {
+    cachedFileSid = null;
+  }
+  return cachedFileSid;
+}
+
+// UUID de la sesión fijada del usuario (env > archivo off-repo), o null.
+// Lo usa también /api/session/claim como allowlist en el daemon.
+export function getLocalPinnedSessionId(): string | null {
+  const env = process.env.LOCAL_DEFAULT_SESSION_ID?.trim();
+  if (env) return env;
+  return readSidFile();
+}
+
 function localFallbackSession(): string | null {
   if (process.env.LOCAL_MODE !== "1") return null;
-  const id = process.env.LOCAL_DEFAULT_SESSION_ID?.trim();
-  if (!id) return null;
-  return id;
+  return getLocalPinnedSessionId();
 }
 
 // Genera/lee un id de sesión local guardado como cookie. v1 es single-user
