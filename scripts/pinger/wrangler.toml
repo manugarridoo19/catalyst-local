@@ -1,0 +1,15 @@
+# catalyst-pinger — despertador del cron-runner de GitHub Actions.
+# El trigger `schedule` de GitHub en repos públicos se throttlea a cadencia
+# real 1-4h; los `workflow_dispatch` corren al instante. Los Cron Triggers
+# de Cloudflare (free) no tienen throttling → este mini-Worker despacha el
+# workflow cada 10 min, 24/7, sin depender de que el Mac esté despierto.
+# Secret requerido: GH_DISPATCH_TOKEN (fine-grained PAT, solo Actions RW
+# sobre catalyst-local; original en ~/.catalyst-gh-dispatch-token).
+# Deploy: set -a; source ~/.catalyst-cf-token; set +a
+#         pnpm exec wrangler deploy -c scripts/pinger/wrangler.toml
+name = "catalyst-pinger"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+
+[triggers]
+crons = ["*/10 * * * *"]
