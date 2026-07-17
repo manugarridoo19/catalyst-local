@@ -17,7 +17,7 @@ async function main() {
   const { runRefreshNewsCron } = await import("../lib/cron/refresh-news");
   const res = await runRefreshNewsCron();
   console.log(
-    `[refresh-once] fetched f=${res.fetched.finnhub} fc=${res.fetched.finnhubCompany} mx=${res.fetched.marketaux} rss=${res.fetched.rss} gn=${res.fetched.gnewsTickers} → inserted=${res.inserted} enriched=${res.enriched.succeeded}/${res.enriched.processed} in ${(res.durationMs / 1000).toFixed(1)}s`,
+    `[refresh-once] fetched f=${res.fetched.finnhub} fc=${res.fetched.finnhubCompany} mx=${res.fetched.marketaux} rss=${res.fetched.rss} gn=${res.fetched.gnewsTickers} sec=${res.fetched.sec} → inserted=${res.inserted} enriched=${res.enriched.succeeded}/${res.enriched.processed} in ${(res.durationMs / 1000).toFixed(1)}s`,
   );
 
   // AI Brief: regenera si el último tiene >4h. Con el age check, aunque

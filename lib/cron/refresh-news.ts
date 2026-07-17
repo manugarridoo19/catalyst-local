@@ -5,6 +5,7 @@ import {
 import { fetchMarketauxNews } from "@/lib/providers/marketaux";
 import { fetchAllRssNews } from "@/lib/providers/rss-aggregator";
 import { fetchGoogleNewsByTicker } from "@/lib/providers/google-news-tickers";
+import { fetchSecFilings } from "@/lib/providers/sec-edgar";
 import { extractTickers } from "@/lib/tickers/extractor";
 import { enrichPendingTickers } from "@/lib/tickers/enricher";
 import {
@@ -39,6 +40,7 @@ export type CronResult = {
     marketaux: number;
     rss: number;
     gnewsTickers: number;
+    sec: number;
   };
   inserted: number;
   scored: number;
@@ -50,16 +52,21 @@ export type CronResult = {
 export async function runRefreshNewsCron(): Promise<CronResult> {
   const t0 = Date.now();
 
-  // 1) Resolver los top tickers ANTES del fetch — para el barrido
-  // per-ticker en Finnhub y Google News.
-  const topTickers = await getTopTickersForFetch(50).catch(() => []);
+  // 1) Resolver top tickers + universo conocido ANTES del fetch. topTickers
+  // guía el barrido per-ticker (Finnhub/Google News); knownSymbols filtra
+  // SEC EDGAR a las empresas que ya seguimos (y se reutiliza en la
+  // extracción, fase 3 — no se recarga).
+  const [topTickers, knownSymbols] = await Promise.all([
+    getTopTickersForFetch(50).catch(() => []),
+    loadKnownSymbols().catch(() => new Set<string>()),
+  ]);
 
   // 2) Fetch en paralelo (un proveedor caído no tumba el cron).
   // Slicing restaurado a valores originales tras mover cron a GitHub
   // Actions runner. CPU del runner no afecta Vercel Fluid; los caps
   // reales son Finnhub free (60/min) y el wall-clock del workflow
   // (timeout 3min en cron-runner.yml). Quedamos cómodos en ambos.
-  const [finnhubR, finnhubCoR, marketauxR, rssR, gnewsR] =
+  const [finnhubR, finnhubCoR, marketauxR, rssR, gnewsR, secR] =
     await Promise.allSettled([
       fetchGeneralNews(),
       fetchCompanyNewsBatch(
@@ -69,6 +76,7 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
       fetchMarketauxNews(),
       fetchAllRssNews(),
       fetchGoogleNewsByTicker(topTickers.slice(0, 25)),
+      fetchSecFilings(knownSymbols),
     ]);
 
   const finnhubItems = finnhubR.status === "fulfilled" ? finnhubR.value : [];
@@ -78,11 +86,13 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
     marketauxR.status === "fulfilled" ? marketauxR.value : [];
   const rssItems = rssR.status === "fulfilled" ? rssR.value : [];
   const gnewsItems = gnewsR.status === "fulfilled" ? gnewsR.value : [];
+  const secItems = secR.status === "fulfilled" ? secR.value : [];
   if (finnhubR.status === "rejected") console.warn("[cron] finnhub failed:", finnhubR.reason);
   if (finnhubCoR.status === "rejected") console.warn("[cron] finnhub-company failed:", finnhubCoR.reason);
   if (marketauxR.status === "rejected") console.warn("[cron] marketaux failed:", marketauxR.reason);
   if (rssR.status === "rejected") console.warn("[cron] rss failed:", rssR.reason);
   if (gnewsR.status === "rejected") console.warn("[cron] gnews-tickers failed:", gnewsR.reason);
+  if (secR.status === "rejected") console.warn("[cron] sec-edgar failed:", secR.reason);
 
   const allItems = [
     ...finnhubItems,
@@ -90,6 +100,7 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
     ...marketauxItems,
     ...rssItems,
     ...gnewsItems,
+    ...secItems,
   ];
 
   // 2) Dedupe por hash dentro del lote.
@@ -115,11 +126,9 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
     console.warn(`[cron] clamped ${clamped} future-dated publishedAt to now`);
   }
 
-  // 3) Cargar aliases + known symbols + extraer tickers.
-  const [aliases, knownSymbols] = await Promise.all([
-    loadAliases(),
-    loadKnownSymbols(),
-  ]);
+  // 3) Cargar aliases + extraer tickers. knownSymbols ya se cargó arriba
+  // (para el filtro SEC) — lo reutilizamos aquí.
+  const aliases = await loadAliases();
   const itemsWithTickers: { item: NormalizedNewsItem; tickers: ExtractedTicker[] }[] =
     deduped.map((item) => ({
       item,
@@ -204,6 +213,7 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
       marketaux: marketauxItems.length,
       rss: rssItems.length,
       gnewsTickers: gnewsItems.length,
+      sec: secItems.length,
     },
     inserted: newlyInserted.length,
     scored,
