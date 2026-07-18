@@ -47,6 +47,11 @@ jobs:
           # rechaza con UND_ERR_HEADERS_OVERFLOW — sin esto la extracción de
           # artículos (pre-enrich impact>=4) falla para rss:yahoo-finance.
           NODE_OPTIONS: "--max-http-header-size=65536"
+          # Marketaux free = 100 req/día. El pinger dispara workflow_dispatch
+          # cada 10min (144 ticks/día) y reventó el cap el primer día
+          # (2026-07-18). Solo el schedule (throttled por GitHub a 1-4h,
+          # la cadencia original pre-pinger) trae Marketaux.
+          SKIP_MARKETAUX: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           MARKETAUX_API_KEY: ${{ secrets.MARKETAUX_API_KEY }}
