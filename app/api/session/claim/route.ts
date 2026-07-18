@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE, getLocalPinnedSessionId } from "@/lib/session";
+import { SESSION_COOKIE, claimableSessionIds } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,29 +13,18 @@ const UUID_RE =
 // (misma BD Neon) aparece también en el host público.
 //
 // ANTI session-fixation (flag de la security review): solo se pueden
-// reclamar sesiones de la ALLOWLIST (CLAIMABLE_SESSION_IDS, secret del
-// Worker; en el daemon vale LOCAL_DEFAULT_SESSION_ID). Sin allowlist el
-// endpoint es un no-op — así un link malicioso ?sid=<uuid-del-atacante>
-// no puede fijarle a nadie una sesión que el atacante controle. Reclamar
-// tu propio UUID vía CSRF es inocuo (te deja como ya estás).
-function claimableIds(): Set<string> {
-  const raw = [
-    process.env.CLAIMABLE_SESSION_IDS ?? "",
-    getLocalPinnedSessionId() ?? "",
-  ].join(",");
-  return new Set(
-    raw
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter((s) => UUID_RE.test(s)),
-  );
-}
+// reclamar sesiones de la ALLOWLIST (claimableSessionIds en lib/session —
+// CLAIMABLE_SESSION_IDS secret del Worker; en el daemon vale
+// LOCAL_DEFAULT_SESSION_ID). Sin allowlist el endpoint es un no-op — así
+// un link malicioso ?sid=<uuid-del-atacante> no puede fijarle a nadie una
+// sesión que el atacante controle. Reclamar tu propio UUID vía CSRF es
+// inocuo (te deja como ya estás).
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const sid = url.searchParams.get("sid")?.trim() ?? "";
   const res = NextResponse.redirect(new URL("/", url.origin));
-  if (UUID_RE.test(sid) && claimableIds().has(sid.toLowerCase())) {
+  if (UUID_RE.test(sid) && claimableSessionIds().has(sid.toLowerCase())) {
     res.cookies.set(SESSION_COOKIE, sid.toLowerCase(), {
       httpOnly: true,
       sameSite: "lax",

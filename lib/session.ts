@@ -49,6 +49,26 @@ export function getLocalPinnedSessionId(): string | null {
   return readSidFile();
 }
 
+const UUID_EXACT_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Sesiones "del dueño": la allowlist de claim (CLAIMABLE_SESSION_IDS,
+// secret del Worker) + la sesión fijada local. La usan /api/session/claim
+// (anti session-fixation) y /api/article (gate del LLM on-click en el
+// Worker público — un anónimo no debe poder drenar la cuota LLM).
+export function claimableSessionIds(): Set<string> {
+  const raw = [
+    process.env.CLAIMABLE_SESSION_IDS ?? "",
+    getLocalPinnedSessionId() ?? "",
+  ].join(",");
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => UUID_EXACT_RE.test(s)),
+  );
+}
+
 function localFallbackSession(): string | null {
   if (process.env.LOCAL_MODE !== "1") return null;
   return getLocalPinnedSessionId();

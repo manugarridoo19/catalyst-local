@@ -245,7 +245,11 @@ export const BATCH_SIZE = 10;
 
 // Un lote genera ~10×90 tokens de output; los modelos free tardan más que
 // los ~5s de una call single. Timeouts propios del modo batch.
-const BATCH_MAX_TOKENS = 1400;
+// 2000 (era 1400): v4.2 subió el rationale a 150 chars y los summaries de
+// impact>=4 van en el mismo JSON — un lote cargado rozaba el techo y salía
+// truncado ("batch unparseable" = 1 llamada perdida y 10 items a reintento).
+// Es un cap, no un gasto: solo paga lo que el modelo emite de verdad.
+const BATCH_MAX_TOKENS = 2000;
 const OPENROUTER_BATCH_TIMEOUT_MS = 45_000;
 const GEMINI_BATCH_TIMEOUT_MS = 30_000;
 const GROQ_BATCH_TIMEOUT_MS = 25_000;

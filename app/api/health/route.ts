@@ -25,7 +25,8 @@ export async function GET() {
              AND EXISTS (SELECT 1 FROM news_tickers t WHERE t.news_id = n.id))::int AS unscored_with_tickers,
         (SELECT COUNT(*) FROM news_scores)::int AS scored_total,
         (SELECT MAX(scored_at) FROM news_scores)::timestamptz AS last_scored_at,
-        (SELECT COUNT(*) FROM news_scores WHERE scored_at > NOW() - INTERVAL '1 hour')::int AS scored_last_hour
+        (SELECT COUNT(*) FROM news_scores WHERE scored_at > NOW() - INTERVAL '1 hour')::int AS scored_last_hour,
+        (SELECT MAX(generated_at) FROM author_briefs)::timestamptz AS last_author_brief_at
     `);
     const row = ((r as { rows?: Record<string, unknown>[] }).rows ?? (r as unknown as Record<string, unknown>[]))[0];
 
@@ -44,6 +45,16 @@ export async function GET() {
     const lastScored = row.last_scored_at ? new Date(row.last_scored_at as string) : null;
     const scoredAgeMin = lastScored
       ? Math.round((now - lastScored.getTime()) / 60000)
+      : null;
+    // Edad del último author brief. El agente sale con 0 SIEMPRE (por
+    // diseño anti-popup), así que sin esta señal unas cookies de Brave
+    // caducadas dejarían el Author Watch rancio en silencio — la misma
+    // clase de fallo mudo que el incidente de scoring del 2026-07-17.
+    const lastAuthorBrief = row.last_author_brief_at
+      ? new Date(row.last_author_brief_at as string)
+      : null;
+    const authorBriefAgeMin = lastAuthorBrief
+      ? Math.round((now - lastAuthorBrief.getTime()) / 60000)
       : null;
 
     // Pool + cooldown diagnostic. Sin exponer keys: solo labels + flags.
@@ -66,6 +77,8 @@ export async function GET() {
       lastScoredAt: lastScored?.toISOString() ?? null,
       scoredAgeMin,
       scoredLastHour: row.scored_last_hour,
+      lastAuthorBriefAt: lastAuthorBrief?.toISOString() ?? null,
+      authorBriefAgeMin,
       scoring: {
         openrouter: {
           total: openrouterPool.total,

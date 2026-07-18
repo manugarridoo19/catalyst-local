@@ -168,7 +168,10 @@ async function upsertExtract(row: {
     .onConflictDoUpdate({ target: articleExtracts.newsId, set: values });
 }
 
-async function computeDetail(newsId: number): Promise<ArticleDetail | null> {
+async function computeDetail(
+  newsId: number,
+  allowLlm: boolean,
+): Promise<ArticleDetail | null> {
   const ctx = await loadNewsContext(newsId);
   if (!ctx) return null;
 
@@ -187,6 +190,18 @@ async function computeDetail(newsId: number): Promise<ArticleDetail | null> {
         aiSummary: cached.aiSummary,
         aiTake: cached.aiTake,
         aiModel: cached.aiModel,
+      };
+    }
+    // Sin permiso de LLM, un extract ok cacheado se sirve tal cual (texto
+    // sin resumen IA) — ni re-extraemos ni escribimos nada. El siguiente
+    // click autorizado (sesión del dueño / daemon / cron) rellena la IA.
+    if (cached.status === "ok" && !allowLlm) {
+      return {
+        status: "ok",
+        text: cached.text,
+        aiSummary: null,
+        aiTake: null,
+        aiModel: null,
       };
     }
     if (
@@ -217,14 +232,20 @@ async function computeDetail(newsId: number): Promise<ArticleDetail | null> {
     return { status: "failed", text: null, aiSummary: null, aiTake: null, aiModel: null };
   }
 
-  const ai = await generateSummary({
-    headline: ctx.headline,
-    source: ctx.source,
-    tickers: ctx.tickers,
-    impact: ctx.impact,
-    sentiment: ctx.sentiment,
-    text,
-  });
+  // allowLlm=false (anónimo en el Worker público): extraemos y cacheamos el
+  // texto pero NO gastamos la llamada LLM — el resumen IA queda para el
+  // dueño/daemon/cron. Los impact>=4 llegan pre-enriquecidos por el cron,
+  // así que las cards importantes siguen mostrando IA para todos.
+  const ai = allowLlm
+    ? await generateSummary({
+        headline: ctx.headline,
+        source: ctx.source,
+        tickers: ctx.tickers,
+        impact: ctx.impact,
+        sentiment: ctx.sentiment,
+        text,
+      })
+    : null;
 
   await upsertExtract({
     newsId,
@@ -339,13 +360,20 @@ const isWorkers =
   typeof (globalThis as { WebSocketPair?: unknown }).WebSocketPair !==
   "undefined";
 
+// Para que las routes puedan decidir el gate del LLM sin duplicar el detect.
+export const isWorkersRuntime = isWorkers;
+
 export async function getArticleDetail(
   newsId: number,
+  opts?: { allowLlm?: boolean },
 ): Promise<ArticleDetail | null> {
-  if (isWorkers) return computeDetail(newsId);
+  const allowLlm = opts?.allowLlm ?? true;
+  if (isWorkers) return computeDetail(newsId, allowLlm);
   const existing = inflight.get(newsId);
   if (existing) return existing;
-  const p = computeDetail(newsId).finally(() => inflight.delete(newsId));
+  const p = computeDetail(newsId, allowLlm).finally(() =>
+    inflight.delete(newsId),
+  );
   inflight.set(newsId, p);
   return p;
 }

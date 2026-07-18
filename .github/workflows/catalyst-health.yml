@@ -2,15 +2,21 @@ name: catalyst-health-monitor
 
 # Dead-man's-switch de Catalyst (sustituye al monitor de Vercel, plataforma
 # abandonada 2026-07-15). Cada 2h sondea /api/health del Worker y vigila las
-# DOS señales vitales: edad de la última inserción (ingesta viva) y edad del
-# último score (scoring vivo). Si algo lleva >5h parado — p.ej. el cron
-# cancelado en silencio como el 2026-07-17, secrets rotos, Neon caída —
-# abre/actualiza un issue con label catalyst-health (GitHub manda email al
-# owner). Se auto-cierra al recuperarse.
+# señales vitales: edad de la última inserción (ingesta viva), edad del
+# último score (scoring vivo) y edad del último author brief (Author Watch
+# vivo). Si algo lleva parado más del umbral — p.ej. el cron cancelado en
+# silencio como el 2026-07-17, secrets rotos, Neon caída — abre/actualiza un
+# issue con label catalyst-health (GitHub manda email al owner). Se
+# auto-cierra al recuperarse.
 #
-# Umbral 5h: la cadencia real del cron-runner en repo público es 1-4h por
-# throttling de GitHub, así que 5h = un tick entero de margen sin falsos
-# positivos nocturnos (el cron corre aunque el Mac duerma).
+# Umbral 2h (era 5h): desde el pinger (2026-07-17) la cadencia real del
+# cron es ~10min, así que la edad normal es <=15-20min y 120min = ~12 ticks
+# de margen. Además detecta la MUERTE SILENCIOSA DEL PINGER: sin él la
+# cadencia degrada al schedule throttleado (1-4h → edades de hasta ~240min)
+# que con el umbral viejo de 300 jamás alarmaba.
+#
+# Umbral author 36h: el agente corre 1×/día (00:00 + catch-up RunAtLoad);
+# >36h sin brief = cookies de Brave caducadas o Mac sin encender ese día.
 
 on:
   schedule:
@@ -24,7 +30,8 @@ permissions:
 env:
   REPO: manugarridoo19/catalyst-local
   HEALTH_URL: https://catalyst-local.manubisbal19.workers.dev/api/health
-  MAX_AGE_MIN: 300
+  MAX_AGE_MIN: 120
+  AUTHOR_MAX_AGE_MIN: 2160
 
 jobs:
   check:
@@ -44,13 +51,19 @@ jobs:
             unscored=$(echo "$body" | jq -r '.unscoredWithTickers // "?"')
             inserted_lh=$(echo "$body" | jq -r '.insertedLastHour // 0')
             scored_lh=$(echo "$body" | jq -r '.scoredLastHour // 0')
-            detail="insertedAgeMin=${inserted} scoredAgeMin=${scored} insertedLastHour=${inserted_lh} scoredLastHour=${scored_lh} unscoredWithTickers=${unscored}"
+            # -1 = campo ausente/null (p.ej. tabla vacía): se salta el check
+            # en vez de alarmar en falso.
+            author=$(echo "$body" | jq -r '.authorBriefAgeMin // -1')
+            detail="insertedAgeMin=${inserted} scoredAgeMin=${scored} insertedLastHour=${inserted_lh} scoredLastHour=${scored_lh} unscoredWithTickers=${unscored} authorBriefAgeMin=${author}"
             if [ "$inserted" -gt "$MAX_AGE_MIN" ]; then
               status="stalled"
-              detail="INGESTA parada: última noticia insertada hace ${inserted} min. ${detail}"
+              detail="INGESTA parada: última noticia insertada hace ${inserted} min (¿pinger muerto? cadencia sana ~10min). ${detail}"
             elif [ "$scored" -gt "$MAX_AGE_MIN" ]; then
               status="stalled"
-              detail="SCORING parado: último score hace ${scored} min (¿cron-runner cancelado/fallando? ¿pools LLM agotados sin fallback?). ${detail}"
+              detail="SCORING parado: último score hace ${scored} min (¿cron-runner cancelado/fallando? ¿pinger muerto? ¿pools LLM agotados sin fallback?). ${detail}"
+            elif [ "$author" -ge 0 ] && [ "$author" -gt "$AUTHOR_MAX_AGE_MIN" ]; then
+              status="stalled"
+              detail="AUTHOR WATCH rancio: último author brief hace ${author} min (¿cookies de Brave caducadas? ¿scrape fallando en silencio?). ${detail}"
             elif [ "$scored_lh" -eq 0 ] && [ "$inserted_lh" -gt 0 ]; then
               # Señal temprana de pools LLM agotados: entran noticias pero en
               # una hora entera no se ha puntuado NI UNA (OpenRouter + Gemini
