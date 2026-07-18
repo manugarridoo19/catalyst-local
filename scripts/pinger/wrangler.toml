@@ -2,7 +2,7 @@
 # El trigger `schedule` de GitHub en repos públicos se throttlea a cadencia
 # real 1-4h; los `workflow_dispatch` corren al instante. Los Cron Triggers
 # de Cloudflare (free) no tienen throttling → este mini-Worker despacha el
-# workflow cada 10 min, 24/7, sin depender de que el Mac esté despierto.
+# workflow sin depender de que el Mac esté despierto.
 # Secret requerido: GH_DISPATCH_TOKEN (fine-grained PAT, solo Actions RW
 # sobre catalyst-local; original en ~/.catalyst-gh-dispatch-token).
 # Deploy: set -a; source ~/.catalyst-cf-token; set +a
@@ -12,4 +12,12 @@ main = "worker.js"
 compatibility_date = "2026-07-01"
 
 [triggers]
-crons = ["*/10 * * * *"]
+# Dos ventanas (UTC) para no tener a Neon despierta 24/7 (presupuesto free
+# 191.9 CU-h/mes; con tick cada 10min la BD nunca llega a auto-suspenderse):
+# - */10 en 09:00-01:59 UTC: premarket (desde ~5am ET), sesión, afterhours
+#   y la ráfaga de filings post-cierre (hasta ~21:59 ET).
+# - */30 en 02:00-08:59 UTC (22:00-04:59 ET): mercado muerto — el flujo de
+#   noticias es ~cero y la BD puede dormir entre ticks. El schedule de GH
+#   (1-4h) sigue de respaldo también de noche.
+# El umbral del health (120 min) sigue holgado: edad máxima nocturna ~35min.
+crons = ["*/10 0-1,9-23 * * *", "*/30 2-8 * * *"]
