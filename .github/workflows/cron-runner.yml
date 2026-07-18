@@ -43,6 +43,10 @@ jobs:
           # duerme. 120/tick (12 llamadas batch) compensa la cadencia; el
           # scorer local de cada 15min mantiene su default de 60.
           ORPHAN_BATCH: "120"
+          # Yahoo Finance responde headers >16KB (CSP+cookies) y undici los
+          # rechaza con UND_ERR_HEADERS_OVERFLOW — sin esto la extracción de
+          # artículos (pre-enrich impact>=4) falla para rss:yahoo-finance.
+          NODE_OPTIONS: "--max-http-header-size=65536"
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           MARKETAUX_API_KEY: ${{ secrets.MARKETAUX_API_KEY }}

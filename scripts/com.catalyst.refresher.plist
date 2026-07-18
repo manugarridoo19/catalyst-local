@@ -49,8 +49,11 @@
     <string>production</string>
     <key>SKIP_MARKETAUX</key>
     <string>1</string>
+    <!-- max-http-header-size: Yahoo Finance responde headers >16KB
+         (CSP+cookies) y undici los rechaza con UND_ERR_HEADERS_OVERFLOW,
+         rompiendo la extracción de artículos (2026-07-18). -->
     <key>NODE_OPTIONS</key>
-    <string>--max-old-space-size=384</string>
+    <string>--max-old-space-size=384 --max-http-header-size=65536</string>
     <key>PATH</key>
     <string>/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>

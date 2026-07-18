@@ -32,8 +32,12 @@
     <string>/Users/manuelgarrido/dev/catalyst-local/scripts/author-run.sh</string>
   </array>
 
-  <!-- Daily at 00:00 local. NOT RunAtLoad — we don't want a scrape every
-       time the agent is (re)loaded; the calendar trigger is the contract. -->
+  <!-- Daily at 00:00 local, PLUS RunAtLoad as catch-up: launchd does not
+       recover missed StartCalendarInterval jobs after a power-off (only
+       after sleep), so with the Mac shut down at midnight the daily pass
+       was silently lost (2026-07-18). RunAtLoad fires on boot/login and
+       author-run.sh's date-stamp guard (~/.catalyst-author-last-run)
+       keeps the anti-ban contract: at most ONE scrape per calendar day. -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
@@ -41,6 +45,8 @@
     <key>Minute</key>
     <integer>0</integer>
   </dict>
+  <key>RunAtLoad</key>
+  <true/>
 
   <key>KeepAlive</key>
   <false/>

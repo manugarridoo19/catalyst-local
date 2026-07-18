@@ -5,7 +5,7 @@ config({ path: ".env" });
 // Author Watch — orquestador diario. Lee el JSON que dejó scrape-author.py,
 // inserta los tweets en author_tweets (con cashtags extraídos), y genera el
 // author brief del día. Pensado para el LaunchAgent com.catalyst.author
-// (1×/día 12:00) y para runs manuales.
+// (1×/día: 00:00 + catch-up RunAtLoad con stamp diario) y para runs manuales.
 //
 //   pnpm exec tsx scripts/author-daily.ts <handle> <tweets.json>
 //

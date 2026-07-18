@@ -85,14 +85,18 @@
     <string>production</string>
     <key>LOCAL_MODE</key>
     <string>1</string>
-    <!-- NODE_OPTIONS removido 2026-05-23: con --max-old-space-size=N
-         (cualquier valor) el ESM loader sync-read crashea con EAGAIN
-         -11 al cargar chunks de la app desde launchd. Sin la flag, V8
-         usa el default ~1.7GB y el bootstrap pasa. Hipótesis: una
-         interacción de heap-sizing temprano con la lazy load del
-         loader que solo dispara cuando libuv arranca con un budget
-         restringido. Default heap es suficiente porque Next 16 ronda
-         ~250-400MB en idle. -->
+    <!-- --max-old-space-size removido 2026-05-23: con ese flag (cualquier
+         valor) el ESM loader sync-read crasheaba con EAGAIN -11 al cargar
+         chunks de la app desde launchd (la causa real resultó ser iCloud
+         File Provider en ~/Desktop; el repo vive ahora en ~/dev). NO
+         reintroducir el flag de heap: V8 default ~1.7GB y Next 16 ronda
+         ~250-400MB en idle.
+         max-http-header-size SÍ es necesario: Yahoo Finance responde
+         headers >16KB (CSP+cookies) y undici los rechaza con
+         UND_ERR_HEADERS_OVERFLOW, rompiendo /api/article on-click
+         (2026-07-18). Flag no relacionado con heap-sizing. -->
+    <key>NODE_OPTIONS</key>
+    <string>--max-http-header-size=65536</string>
     <!-- Explicit PATH so pnpm finds node + spawned binaries even though
          we don't go through a login shell.
          IMPORTANT: /opt/homebrew/opt/node@22/bin must precede the default
