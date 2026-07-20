@@ -62,6 +62,16 @@ async function getCikMap(): Promise<Map<string, string>> {
 const FILING_TYPES: Array<{ type: string; label: string }> = [
   { type: "8-K", label: "8-K filing" },
   { type: "4", label: "Form 4 (insider)" },
+  // Participaciones >5%: 13D = intención activa (activistas tomando
+  // posiciones), 13G = pasiva (fondos grandes cruzando el umbral). Ambos
+  // alimentan la sección Insider & Smart Money (fund_stakes) además del
+  // chip INSIDER del feed. Sin cap por emisor — no llegan en ráfaga.
+  // OJO: el form type moderno de EDGAR es "SCHEDULE 13D" (renombrado con la
+  // modernización 2024, cuando pasaron a XML) — "SC 13D" devuelve 0
+  // entradas. El label corto es nuestro y es lo que casan ingest.ts y el
+  // categorizador.
+  { type: "SCHEDULE 13D", label: "SC 13D (activist stake)" },
+  { type: "SCHEDULE 13G", label: "SC 13G (5%+ stake)" },
 ];
 
 // Tope de Form 4 por emisor y día. Los grandes bancos presentan decenas de
@@ -160,6 +170,11 @@ export async function fetchSecFilings(
         if (formType !== type.toUpperCase() && formType !== `${type.toUpperCase()}/A`) {
           continue;
         }
+        // Los 13D/G salen DOS veces en getcurrent: entrada del emisor
+        // "(Subject)" y entrada del fondo "(Filed by)". Solo queremos la del
+        // emisor — si el filer fuera a su vez cotizado (Berkshire, etc.) la
+        // stake se atribuiría a SU ticker, no al del valor participado.
+        if (/\(Filed by\)/i.test(title)) continue;
         const cik = cikFromTitle(title);
         if (!cik) continue;
         const ticker = map.get(cik);

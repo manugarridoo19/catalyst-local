@@ -78,6 +78,26 @@ async function main() {
       );
     }
   }
+
+  // Smart Money digest (sección /insider): age check 6h dentro.
+  if (!skipBriefs) {
+    try {
+      const { maybeGenerateInsiderDigest } = await import(
+        "../lib/ai/insider-digest"
+      );
+      const digest = await maybeGenerateInsiderDigest();
+      if (digest.generated) {
+        console.log(
+          `[refresh-once] insider digest regenerated (${digest.digest?.model})`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[refresh-once] insider digest failed (keeping previous):",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 }
 
 main()

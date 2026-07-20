@@ -19,6 +19,11 @@ import {
   upsertTickers,
 } from "@/lib/db/queries";
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
+import {
+  ingestInsiderData,
+  deleteOldInsiderData,
+  type InsiderIngestResult,
+} from "@/lib/insider/ingest";
 import { RETENTION_DAYS, UNSCORED_RETENTION_DAYS } from "@/lib/time-windows";
 import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 
@@ -46,6 +51,7 @@ export type CronResult = {
   scored: number;
   failedScores: number;
   enriched: { processed: number; succeeded: number };
+  insider: InsiderIngestResult;
   durationMs: number;
 };
 
@@ -199,12 +205,42 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   // 8) Enriquecer tickers pendientes (background-ish, mismo cron).
   const enriched = await enrichPendingTickers();
 
+  // 8b) Parseo estructurado insider (Form 4 → insider_trades, 13D/G →
+  // fund_stakes). Autocurativo: lee de BD los filings sin intentar de las
+  // últimas 72h, así que un tick corto se pone al día en el siguiente.
+  // Node-only por diseño (pega a SEC) — refresh-news nunca corre en Worker.
+  let insider: InsiderIngestResult = {
+    scanned: 0,
+    trades: 0,
+    stakes: 0,
+    failed: 0,
+  };
+  try {
+    insider = await ingestInsiderData();
+    if (insider.scanned > 0) {
+      console.log(
+        `[cron] insider parsed ${insider.scanned} filings → ${insider.trades} trades, ${insider.stakes} stakes` +
+          (insider.failed ? `, ${insider.failed} failed` : ""),
+      );
+    }
+  } catch (e) {
+    console.warn(
+      "[cron] insider ingest failed (cron continues):",
+      e instanceof Error ? e.message : e,
+    );
+  }
+
   // 9) Retention: borrar noticias antiguas. Los FK con onDelete: cascade
   // limpian news_tickers y news_scores automáticamente. Además purga las
   // noticias SIN score de >5 días (ya no vale la pena puntuarlas — recorta
   // el backlog de scoring a lo accionable).
   await deleteOldNews(RETENTION_DAYS);
   await deleteUnscoredOlderThan(UNSCORED_RETENTION_DAYS);
+  // Retención propia de datos insider (90d trades / 180d stakes) — las
+  // tablas no cascadean con news a propósito.
+  await deleteOldInsiderData().catch((e) =>
+    console.warn("[cron] insider retention failed:", e instanceof Error ? e.message : e),
+  );
 
   return {
     fetched: {
@@ -219,6 +255,7 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
     scored,
     failedScores,
     enriched,
+    insider,
     durationMs: Date.now() - t0,
   };
 }

@@ -277,17 +277,36 @@ function fmtNum(n: number): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
-// Sintetiza texto legible desde el ownership XML de un Form 4.
-export function parseForm4Xml(xml: string): string | null {
-  const owner = xmlValue(xml, "rptOwnerName");
-  if (!owner) return null;
-  const title =
-    xmlValue(xml, "officerTitle") ??
-    (/<isDirector>(1|true)<\/isDirector>/i.test(xml) ? "Director" : null);
-  const issuer = xmlValue(xml, "issuerName");
-  const symbol = xmlValue(xml, "issuerTradingSymbol");
+// Parseo ESTRUCTURADO del ownership XML — la fuente de verdad tanto del
+// texto legible (parseForm4Xml) como de las filas de insider_trades.
+export type Form4Transaction = {
+  code: string; // P S A M F G D C J X
+  shares: number;
+  price: number | null; // null en grants sin precio
+  value: number | null; // shares × price
+  date: string | null; // yyyy-mm-dd
+  sharesAfter: number | null;
+};
 
-  const lines: string[] = [];
+export type Form4Parsed = {
+  ownerName: string;
+  ownerTitle: string | null;
+  isDirector: boolean;
+  isOfficer: boolean;
+  isTenPercent: boolean;
+  issuerName: string | null;
+  symbol: string | null;
+  footnote: string | null;
+  transactions: Form4Transaction[];
+};
+
+export function parseForm4Structured(xml: string): Form4Parsed | null {
+  const ownerName = xmlValue(xml, "rptOwnerName");
+  if (!ownerName) return null;
+  const flag = (tag: string) =>
+    new RegExp(`<${tag}>\\s*(1|true)\\s*</${tag}>`, "i").test(xml);
+
+  const transactions: Form4Transaction[] = [];
   const txBlocks = [
     ...xml.matchAll(/<nonDerivativeTransaction>[\s\S]*?<\/nonDerivativeTransaction>/gi),
   ];
@@ -295,31 +314,166 @@ export function parseForm4Xml(xml: string): string | null {
     const block = b[0];
     const code = block.match(/<transactionCode>([A-Z])<\/transactionCode>/i)?.[1]?.toUpperCase();
     const shares = Number(xmlValue(block, "transactionShares") ?? NaN);
-    const price = Number(xmlValue(block, "transactionPricePerShare") ?? NaN);
-    const date = xmlValue(block, "transactionDate");
-    const after = Number(xmlValue(block, "sharesOwnedFollowingTransaction") ?? NaN);
     if (!code || !Number.isFinite(shares)) continue;
-    const verb = FORM4_TX_CODES[code] ?? `transacted (code ${code})`;
-    let line = `${verb} ${fmtNum(shares)} shares`;
-    if (Number.isFinite(price) && price > 0) {
-      line += ` at $${fmtNum(price)} (~$${fmtNum(shares * price)})`;
-    }
-    if (date) line += ` on ${date}`;
-    if (Number.isFinite(after)) line += `; owns ${fmtNum(after)} shares after the transaction`;
-    lines.push(line + ".");
+    const priceRaw = Number(xmlValue(block, "transactionPricePerShare") ?? NaN);
+    const price = Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : null;
+    const afterRaw = Number(xmlValue(block, "sharesOwnedFollowingTransaction") ?? NaN);
+    transactions.push({
+      code,
+      shares,
+      price,
+      value: price !== null ? shares * price : null,
+      date: xmlValue(block, "transactionDate"),
+      sharesAfter: Number.isFinite(afterRaw) ? afterRaw : null,
+    });
   }
-  if (!lines.length) return null;
 
-  const who = title ? `${owner} (${title})` : owner;
-  const of = issuer ? ` of ${issuer}${symbol ? ` (${symbol})` : ""}` : "";
-  const footnote = xmlValue(xml, "footnote");
+  return {
+    ownerName,
+    ownerTitle:
+      xmlValue(xml, "officerTitle") ?? (flag("isDirector") ? "Director" : null),
+    isDirector: flag("isDirector"),
+    isOfficer: flag("isOfficer"),
+    isTenPercent: flag("isTenPercentOwner"),
+    issuerName: xmlValue(xml, "issuerName"),
+    symbol: xmlValue(xml, "issuerTradingSymbol"),
+    footnote: xmlValue(xml, "footnote"),
+    transactions,
+  };
+}
+
+// Sintetiza texto legible desde el ownership XML de un Form 4.
+export function parseForm4Xml(xml: string): string | null {
+  const p = parseForm4Structured(xml);
+  if (!p || !p.transactions.length) return null;
+
+  const lines = p.transactions.map((t) => {
+    const verb = FORM4_TX_CODES[t.code] ?? `transacted (code ${t.code})`;
+    let line = `${verb} ${fmtNum(t.shares)} shares`;
+    if (t.price !== null) {
+      line += ` at $${fmtNum(t.price)} (~$${fmtNum(t.shares * t.price)})`;
+    }
+    if (t.date) line += ` on ${t.date}`;
+    if (t.sharesAfter !== null) {
+      line += `; owns ${fmtNum(t.sharesAfter)} shares after the transaction`;
+    }
+    return line + ".";
+  });
+
+  const who = p.ownerTitle ? `${p.ownerName} (${p.ownerTitle})` : p.ownerName;
+  const of = p.issuerName
+    ? ` of ${p.issuerName}${p.symbol ? ` (${p.symbol})` : ""}`
+    : "";
   return [
     `SEC Form 4 — insider transaction. ${who}${of}:`,
     ...lines,
-    footnote ? `Footnote: ${stripTags(footnote).slice(0, 400)}` : null,
+    p.footnote ? `Footnote: ${stripTags(p.footnote).slice(0, 400)}` : null,
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+// hrefs de la tabla de documentos de un -index.htm, resueltos contra el host.
+function secDocLinks(index: string): string[] {
+  return [...index.matchAll(/href="(\/Archives\/edgar\/data\/[^"]+)"/gi)].map(
+    (m) => `https://www.sec.gov${m[1]}`,
+  );
+}
+
+// Fetch + parseo estructurado del ownership XML de un Form 4 desde su
+// -index.htm. Lo usa la ingesta insider del cron (Node) — 2 requests SEC.
+export async function fetchForm4Structured(
+  indexUrl: string,
+): Promise<Form4Parsed | null> {
+  const index = await fetchSec(indexUrl);
+  if (!index) return null;
+  const xmlUrl = secDocLinks(index).find(
+    (h) => /\.xml$/i.test(h) && !/xsl|index/i.test(h),
+  );
+  if (!xmlUrl) return null;
+  const xml = await fetchSec(xmlUrl);
+  return xml ? parseForm4Structured(xml) : null;
+}
+
+// Cover de un Schedule 13D/13G: quién declara la participación y qué % del
+// float. Desde dic-2024 la SEC exige XML estructurado para 13D/G, así que
+// primero probamos el XML del filing; si no está (filings viejos/raros),
+// regex best-effort sobre el cover page HTML. Ambos campos son nullable —
+// la fila vale aunque solo sepamos "hay stake nueva en X".
+export type StakeCover = {
+  filerName: string | null;
+  percentOfClass: number | null;
+};
+
+function stakeFromXml(xml: string): StakeCover | null {
+  // Tags observados en el XML real de SCHEDULE 13D/G (2026):
+  // <filingPersonName> + <classPercent>. Los alternativos cubren variantes.
+  // Ambos campos pueden traer texto libre (classPercent: "(1) Fondo X:
+  // 4.90%..."; filingPersonName: párrafos legales enteros) — un nombre
+  // válido debe caber en 80 chars tras colapsar espacios; si no, se
+  // descarta ese candidato.
+  const nameCandidates = [
+    xmlValue(xml, "filingPersonName"),
+    xmlValue(xml, "reportingPersonName"),
+    xmlValue(xml, "rptOwnerName"),
+    xmlValue(xml, "filingManagerName"),
+  ];
+  let filerName: string | null = null;
+  for (const c of nameCandidates) {
+    const clean = c?.replace(/\s+/g, " ").trim() ?? "";
+    if (clean.length >= 2 && clean.length <= 80) {
+      filerName = clean;
+      break;
+    }
+  }
+  const pctRaw = Number(
+    xmlValue(xml, "classPercent") ??
+      xmlValue(xml, "percentOfClass") ??
+      xmlValue(xml, "percentageOfClass") ??
+      NaN,
+  );
+  const percentOfClass =
+    Number.isFinite(pctRaw) && pctRaw > 0 && pctRaw <= 100 ? pctRaw : null;
+  if (!filerName && percentOfClass === null) return null;
+  return { filerName, percentOfClass };
+}
+
+function stakeFromCoverHtml(doc: string): StakeCover {
+  const text = stripTags(doc).slice(0, 60_000);
+  // "1 NAMES OF REPORTING PERSONS Elliott Investment Management L.P. 2
+  // CHECK THE APPROPRIATE BOX…" — capturamos hasta el siguiente rótulo de
+  // fila del cover. Formatos muy variados entre filers → lazy + tolerante.
+  const nameM = text.match(
+    /NAMES? OF REPORTING PERSONS?(?:\s*\([^)]{0,60}\))?\s*[.:]?\s*(.{2,90}?)\s*(?:\d\s*)?(?:CHECK THE APPROPRIATE|I\.?R\.?S\.? IDENTIFICATION)/i,
+  );
+  const pctM = text.match(/PERCENT OF CLASS[^%]{0,200}?([\d.]{1,6})\s*%/i);
+  const pct = pctM ? Number(pctM[1]) : NaN;
+  return {
+    filerName: nameM ? nameM[1].trim().replace(/\s{2,}/g, " ") : null,
+    percentOfClass: Number.isFinite(pct) && pct > 0 && pct <= 100 ? pct : null,
+  };
+}
+
+export async function fetchStakeCover(
+  indexUrl: string,
+): Promise<StakeCover | null> {
+  const index = await fetchSec(indexUrl);
+  if (!index) return null;
+  const hrefs = secDocLinks(index);
+
+  const xmlUrl = hrefs.find((h) => /\.xml$/i.test(h) && !/xsl|index/i.test(h));
+  if (xmlUrl) {
+    const xml = await fetchSec(xmlUrl);
+    if (xml) {
+      const fromXml = stakeFromXml(xml);
+      if (fromXml) return fromXml;
+    }
+  }
+
+  const docUrl = hrefs.find((h) => /\.html?$/i.test(h) && !/-index/i.test(h));
+  if (!docUrl) return null;
+  const doc = await fetchSec(docUrl.replace("/ix?doc=", ""));
+  return doc ? stakeFromCoverHtml(doc) : null;
 }
 
 // Desde la página índice del filing (…-index.htm), localiza los documentos.
@@ -327,9 +481,7 @@ async function extractSecFiling(url: string): Promise<ExtractResult | null> {
   const index = await fetchSec(url);
   if (!index) return null;
 
-  // hrefs de la tabla de documentos, resueltos contra el host.
-  const hrefs = [...index.matchAll(/href="(\/Archives\/edgar\/data\/[^"]+)"/gi)]
-    .map((m) => `https://www.sec.gov${m[1]}`);
+  const hrefs = secDocLinks(index);
 
   // Form 3/4/5 → ownership XML CRUDO. El índice también lista la versión
   // /xslF345X…/ (render HTML del mismo doc) — hay que excluirla o el

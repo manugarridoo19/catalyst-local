@@ -1,14 +1,14 @@
 import Link from "next/link";
-import { TrendingUp } from "lucide-react";
+import { TrendingUp, Eye } from "lucide-react";
 import type { PicksRow } from "@/lib/ai/picks";
 import type { CompactQuote } from "@/lib/providers/finnhub";
 
-// AI Picks — franja colapsable bajo el AI Brief: los stocks que el tape de
-// hoy comenta como buenas inversiones (upgrades, beats, catalizadores
-// positivos), seleccionados y razonados por LLM sobre nuestros scores.
-// Server component puro, mismo patrón <details> que BriefPanel.
-// Framing SIEMPRE "as reported" — es lo que dice la calle, no una
-// recomendación nuestra.
+// AI Picks v2 — franja colapsable bajo el AI Brief: stocks donde el flujo
+// de noticias está CONSTRUYENDO momentum (cobertura acelerando, catalizadores
+// apilándose, insider buying) — candidatos de watchlist a futuro, no lo que
+// ya explotó hoy. Server component puro, mismo patrón <details> que
+// BriefPanel. Framing SIEMPRE "as reported" — es lo que dice el tape, no
+// una recomendación nuestra.
 
 export function PicksPanel({
   picks,
@@ -27,13 +27,13 @@ export function PicksPanel({
       <summary className="flex cursor-pointer select-none items-center gap-2 px-6 py-2 hover:bg-foreground/[0.02] [&::-webkit-details-marker]:hidden">
         <TrendingUp className="h-3.5 w-3.5 text-primary" aria-hidden />
         <span className="eyebrow text-[10px] text-foreground">
-          AI Picks · street favorites today
+          AI Picks · momentum building
         </span>
         <span className="font-mono text-[10px] text-muted-foreground/70">
           {hhmm}Z · {modelShort}
         </span>
         <span className="hidden font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/50 sm:inline">
-          as reported in the tape — not investment advice
+          watchlist candidates from the tape — not investment advice
         </span>
         <span className="ml-auto font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60 group-open:hidden">
           expand
@@ -71,6 +71,15 @@ export function PicksPanel({
               <p className="font-editorial text-[12.5px] leading-relaxed text-foreground/90">
                 {p.thesis}
               </p>
+              {p.momentum ? (
+                <p className="mt-1.5 font-mono text-[10.5px] leading-snug text-primary/90">
+                  <TrendingUp
+                    className="mr-1 inline h-3 w-3 align-[-0.15em]"
+                    aria-hidden
+                  />
+                  {p.momentum}
+                </p>
+              ) : null}
               {p.catalysts.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1">
                   {p.catalysts.map((c, i) => (
@@ -83,6 +92,18 @@ export function PicksPanel({
                   ))}
                 </div>
               )}
+              {p.watchFor ? (
+                <p className="mt-2 font-mono text-[10.5px] leading-snug text-muted-foreground">
+                  <Eye
+                    className="mr-1 inline h-3 w-3 align-[-0.15em] text-primary/70"
+                    aria-hidden
+                  />
+                  <span className="uppercase tracking-[0.1em] text-muted-foreground/70">
+                    Watch:
+                  </span>{" "}
+                  {p.watchFor}
+                </p>
+              ) : null}
               {p.caution ? (
                 <p className="mt-2 border-l-2 border-amber-500/50 pl-2 font-editorial text-[11.5px] leading-snug text-amber-700 dark:text-amber-300/90">
                   {p.caution}

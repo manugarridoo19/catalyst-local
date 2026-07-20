@@ -4,6 +4,7 @@ import {
   integer,
   smallint,
   bigint,
+  doublePrecision,
   timestamp,
   primaryKey,
   index,
@@ -79,6 +80,11 @@ export const news = pgTable(
     // los mismos items y duplican gasto de cuota LLM. TTL 10min en el
     // picker — un claim de un proceso muerto expira solo.
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    // Marca de intento de parseo estructurado insider (sec-edgar Form 4 /
+    // 13D/G → insider_trades / fund_stakes). Se pone SIEMPRE al intentar,
+    // haya salido bien o no — sin ella un filing sin transacciones (p.ej.
+    // amendment vacío) se re-fetchearía de SEC en cada tick para siempre.
+    insiderParsedAt: timestamp("insider_parsed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -333,6 +339,88 @@ export const articleExtracts = pgTable("article_extracts", {
   aiTake: text("ai_take"), // por qué importa para los tickers
   aiModel: text("ai_model"),
   aiGeneratedAt: timestamp("ai_generated_at", { withTimezone: true }),
+});
+
+// Transacciones insider estructuradas (SEC Form 4). Una fila por línea de
+// transacción del ownership XML (seq = índice dentro del filing). A
+// diferencia del resto de tablas satélite, news_id NO cascadea: la purga de
+// noticias es a 20 días pero el valor de esta tabla son los agregados
+// 7-90d ("dónde están comprando los insiders") — tiene su propia retención.
+// Números como double: aquí se agrega (SUM/AVG), no se re-muestra el
+// literal exacto como en quotes_cache.
+export const insiderTrades = pgTable(
+  "insider_trades",
+  {
+    id: serial("id").primaryKey(),
+    newsId: integer("news_id").references(() => news.id, {
+      onDelete: "set null",
+    }),
+    symbol: text("symbol")
+      .notNull()
+      .references(() => tickers.symbol, { onDelete: "cascade" }),
+    filingUrl: text("filing_url").notNull(),
+    seq: smallint("seq").notNull(), // índice de la transacción en el filing
+    ownerName: text("owner_name").notNull(),
+    ownerTitle: text("owner_title"),
+    isDirector: smallint("is_director").notNull().default(0),
+    isOfficer: smallint("is_officer").notNull().default(0),
+    isTenPercent: smallint("is_ten_percent").notNull().default(0),
+    txCode: text("tx_code").notNull(), // P S A M F G D C J X (Form 4 table 1)
+    shares: doublePrecision("shares").notNull(),
+    price: doublePrecision("price"), // null en grants sin precio
+    value: doublePrecision("value"), // shares × price, precalculado
+    txDate: text("tx_date"), // yyyy-mm-dd del XML
+    sharesAfter: doublePrecision("shares_after"),
+    filedAt: timestamp("filed_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("insider_trades_filing_seq_unique").on(t.filingUrl, t.seq),
+    index("insider_trades_symbol_filed_idx").on(t.symbol, t.filedAt),
+    index("insider_trades_filed_idx").on(t.filedAt),
+  ],
+);
+
+// Participaciones >5% (SC 13D activista / SC 13G pasiva). filerName y
+// percentOfClass salen del cover page por regex — best-effort, nullable.
+export const fundStakes = pgTable(
+  "fund_stakes",
+  {
+    id: serial("id").primaryKey(),
+    newsId: integer("news_id").references(() => news.id, {
+      onDelete: "set null",
+    }),
+    symbol: text("symbol")
+      .notNull()
+      .references(() => tickers.symbol, { onDelete: "cascade" }),
+    filingUrl: text("filing_url").notNull(),
+    formType: text("form_type").notNull(), // SC 13D | SC 13G (+ /A)
+    filerName: text("filer_name"),
+    percentOfClass: doublePrecision("percent_of_class"),
+    filedAt: timestamp("filed_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("fund_stakes_filing_unique").on(t.filingUrl),
+    index("fund_stakes_filed_idx").on(t.filedAt),
+  ],
+);
+
+// Digest IA "Smart Money" — lectura LLM de los agregados insider+fondos de
+// 7 días (net buying, cluster buys, stakes nuevas). content = JSON
+// InsiderDigestContent. Mismo patrón de cadencia/retención que ai_picks.
+export const insiderDigests = pgTable("insider_digests", {
+  id: serial("id").primaryKey(),
+  content: text("content").notNull(), // JSON InsiderDigestContent
+  model: text("model").notNull(),
+  tradeCount: integer("trade_count").notNull(),
+  generatedAt: timestamp("generated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export type Ticker = typeof tickers.$inferSelect;

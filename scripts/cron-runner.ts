@@ -92,6 +92,24 @@ async function main() {
     );
   }
 
+  // Smart Money digest (sección /insider): age check 6h, fallo no tumba.
+  try {
+    const { maybeGenerateInsiderDigest } = await import(
+      "../lib/ai/insider-digest"
+    );
+    const digest = await maybeGenerateInsiderDigest();
+    console.log(
+      digest.generated
+        ? `[cron-runner] insider digest regenerated (${digest.digest?.model})`
+        : "[cron-runner] insider digest still fresh — skipped",
+    );
+  } catch (err) {
+    console.warn(
+      "[cron-runner] insider digest failed (keeping previous):",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   console.log(`[cron-runner] total ${Date.now() - t0}ms`);
 }
 
