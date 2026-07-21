@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getFeed, getTickerMetaMap } from "@/lib/db/queries";
-import { fifteenDaysAgo, startOfTodayUtc } from "@/lib/time-windows";
+import { fifteenDaysAgo, liveFeedWindowStart } from "@/lib/time-windows";
 import {
   LIVE_FEED_CATEGORIES,
   LIVE_FEED_MAIN_CATEGORIES,
@@ -41,7 +41,7 @@ export async function GET(req: Request) {
             requireTicker: true,
           }
         : {
-            since: startOfTodayUtc(),
+            since: liveFeedWindowStart(),
             requireTicker: true,
             categories:
               categoryParam &&

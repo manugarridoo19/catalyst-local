@@ -23,7 +23,7 @@ import {
 const AUTHOR_HANDLE = process.env.AUTHOR_HANDLE ?? "Couch_Investor";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
 import { getSessionId } from "@/lib/session";
-import { startOfTodayUtc } from "@/lib/time-windows";
+import { liveFeedWindowStart } from "@/lib/time-windows";
 import { LIVE_FEED_MAIN_CATEGORIES } from "@/lib/categorizer";
 import type { FeedItem } from "@/lib/feed-types";
 
@@ -49,23 +49,24 @@ async function loadInitial(): Promise<{
     const session = await getSessionId();
     const [feedRows, insiderRows, watchRows, brief, picks, earnings, authorBrief] =
       await Promise.all([
-      // Live feed: solo noticias del día (UTC) con ticker asociado y
-      // categoría de signal. MACRO y OTHER viven en /news. Orden estricto
-      // por publishedAt DESC — el tiempo manda. Items aún sin grading
-      // entran y aparecen con placeholder; Pusher rebroadcast pinta el
-      // score cuando llega. INSIDER va en una query aparte: las ráfagas
-      // de Form 4 (~50% del volumen tras el cierre) desplazaban al resto
-      // del signal fuera del limit cuando compartían fetch.
+      // Live feed: rolling 24h (NO "hoy UTC" — el corte de día vaciaba el
+      // feed a las 00:00Z / 18:00 locales) con ticker asociado y categoría
+      // de signal. MACRO y OTHER viven en /news. Orden estricto por
+      // publishedAt DESC — el tiempo manda. Items aún sin grading entran y
+      // aparecen con placeholder; Pusher rebroadcast pinta el score cuando
+      // llega. INSIDER va en una query aparte: las ráfagas de Form 4 (~50%
+      // del volumen tras el cierre) desplazaban al resto del signal fuera
+      // del limit cuando compartían fetch.
       getFeed({
         limit: 100,
         requireTicker: true,
-        since: startOfTodayUtc(),
+        since: liveFeedWindowStart(),
         categories: LIVE_FEED_MAIN_CATEGORIES,
       }),
       getFeed({
         limit: 40,
         requireTicker: true,
-        since: startOfTodayUtc(),
+        since: liveFeedWindowStart(),
         categories: ["INSIDER"],
       }),
       getWatchlist(session),

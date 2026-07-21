@@ -163,14 +163,20 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
       try {
         // 1) Desvincular mislinks detectados por el LLM ANTES de decidir el
         // broadcast — si la noticia se queda sin tickers, sale del live feed
-        // (requireTicker) y no la anunciamos.
-        const wrong = new Set(score.wrongTickers);
-        if (wrong.size) {
-          await removeTickersFromNews(r.id, [...wrong]);
-          unlinked += wrong.size;
+        // (requireTicker) y no la anunciamos. removeTickersFromNews protege
+        // los links api-confidence (devuelve solo los borrados de verdad) —
+        // esos siguen vigentes y deben seguir en el broadcast.
+        let actuallyRemoved: string[] = [];
+        if (score.wrongTickers.length) {
+          actuallyRemoved = await removeTickersFromNews(
+            r.id,
+            score.wrongTickers,
+          );
+          unlinked += actuallyRemoved.length;
         }
+        const removedSet = new Set(actuallyRemoved.map((t) => t.toUpperCase()));
         const remaining = (r.tickers ?? []).filter(
-          (t) => !wrong.has(t.toUpperCase()),
+          (t) => !removedSet.has(t.toUpperCase()),
         );
 
         await insertScore(r.id, score);

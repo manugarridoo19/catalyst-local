@@ -8,7 +8,7 @@ import {
   tickers,
   watchlist,
 } from "./schema";
-import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
 import type {
   ExtractedTicker,
   NormalizedNewsItem,
@@ -224,20 +224,31 @@ export async function upsertScore(
 
 // Desvincula tickers concretos de una noticia. Lo usa el scorer batch v4
 // cuando el LLM marca wrong_tickers — mislinks del extractor que
-// sobrevivieron a las reglas estáticas.
+// sobrevivieron a las reglas estáticas. Los links `api` son INTOCABLES:
+// vienen anotados por el proveedor (SEC CIK map, Finnhub company news…) y
+// son verdad de mayor confianza que la opinión del LLM sobre un titular —
+// caso real 2026-07-20: "Honeywell Aerospace Inc. files Form 4" con ticker
+// HONA (spinoff nuevo, del regulador) — el modelo lo marcaba wrong porque
+// "Honeywell es HON" y dejaba el filing huérfano (rompía la ingesta
+// insider). wrong_tickers existe para mislinks dict/regex, no para api.
+// Devuelve los símbolos realmente borrados (el caller no debe ocultar del
+// broadcast los que sobrevivieron protegidos).
 export async function removeTickersFromNews(
   newsId: number,
   symbols: string[],
-): Promise<void> {
-  if (!symbols.length) return;
-  await db
+): Promise<string[]> {
+  if (!symbols.length) return [];
+  const removed = await db
     .delete(newsTickers)
     .where(
       and(
         eq(newsTickers.newsId, newsId),
         inArray(newsTickers.ticker, symbols.map((s) => s.toUpperCase())),
+        ne(newsTickers.extractionMethod, "api"),
       ),
-    );
+    )
+    .returning({ ticker: newsTickers.ticker });
+  return removed.map((r) => r.ticker);
 }
 
 export async function loadAliases() {

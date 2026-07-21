@@ -85,15 +85,13 @@ export function FeedList({ initial, watchlist = [], mode = "live" }: Props) {
     if (!pusher) return;
     const channel = pusher.subscribe(NEWS_CHANNEL);
     const onNew = (data: LivePayload) => {
-      // Live feed = solo today (UTC); News tab = 15 días.
+      // Live feed = rolling 24h (alineado con liveFeedWindowStart del
+      // server — el corte "hoy UTC" vaciaba el feed a las 00:00Z);
+      // News tab = 15 días.
       const cutoff =
         mode === "news"
           ? Date.now() - 15 * 24 * 3600 * 1000
-          : Date.UTC(
-              new Date().getUTCFullYear(),
-              new Date().getUTCMonth(),
-              new Date().getUTCDate(),
-            );
+          : Date.now() - 24 * 3600 * 1000;
       const inWindow = data.items.filter(
         (it) =>
           new Date(it.publishedAt).getTime() >= cutoff &&

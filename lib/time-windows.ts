@@ -4,11 +4,21 @@
 
 const MS_PER_DAY = 86_400_000;
 
-// Inicio del día UTC actual (00:00:00.000 UTC). El live feed muestra solo
-// noticias publishedAt >= este momento.
+// Inicio del día UTC actual (00:00:00.000 UTC). Lo usa el cap diario de
+// Form 4 por emisor (sec-edgar) — "por día" calendario tiene sentido ahí.
 export function startOfTodayUtc(): Date {
   const d = new Date();
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+// Ventana del live feed: ROLLING 24h, no "hoy UTC". Con el corte de día
+// calendario el feed se VACIABA de golpe a las 00:00Z — 18:00 para el
+// usuario (Mac en UTC-6), en pleno after-market — y se rellenaba gota a
+// gota (bug reportado 2026-07-20: "live feed roto, 0 noticias"). La
+// ventana deslizante mantiene el feed siempre lleno y el orden sigue
+// siendo estricto publishedAt DESC (regla recency-first intacta).
+export function liveFeedWindowStart(): Date {
+  return new Date(Date.now() - MS_PER_DAY);
 }
 
 // 15 días atrás desde ahora. Las páginas de ticker muestran noticias en
