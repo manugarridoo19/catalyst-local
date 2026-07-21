@@ -95,13 +95,18 @@ async function dbSizeMb(): Promise<number> {
  * la evidencia de un track record que sí es permanente.
  */
 async function purgeExpired(): Promise<number> {
-  const days = envInt("EMBED_RETENTION_DAYS", 90);
+  // 60d y no 90: medido 2026-07-21 con 1.820 filas reales, ~4,5 kB/fila con
+  // HNSW. A 90d × ~919 impact≥3/día serían ~353 MB solo de embeddings sobre
+  // ~95 MB del resto — cruzaría EMBED_MAX_DB_MB (380) hacia el día ~65 y la
+  // ventana dejaría de crecer igual. 60d ≈ 235 MB → cabe con margen.
+  const days = envInt("EMBED_RETENTION_DAYS", 60);
   const res = await db.execute(sql`
     DELETE FROM news_embeddings e
     WHERE e.published_at < now() - make_interval(days => ${days})
       AND NOT EXISTS (
         SELECT 1 FROM signal_events se
-        WHERE se.ref_id = e.news_id::text
+        WHERE se.kind = 'analyst_upgrade'
+          AND se.ref_id = e.news_id::text
       )
   `);
   return (res as { rowCount?: number }).rowCount ?? 0;

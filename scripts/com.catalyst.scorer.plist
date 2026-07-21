@@ -58,6 +58,12 @@
     <string>production</string>
     <key>LOCAL_MODE</key>
     <string>1</string>
+    <!-- Único escritor de embeddings = cron GH (patrón SKIP_BRIEFS): el
+         pick de embeddings no tiene claim atómico como el de scoring, y dos
+         escritores solapados embeben el MISMO lote dos veces — la cuota
+         (100/min/key, cada texto cuenta) se paga doble sin ganar nada. -->
+    <key>EMBED_ENABLED</key>
+    <string>0</string>
     <!-- max-http-header-size: Yahoo Finance responde headers >16KB
          (CSP+cookies) y undici los rechaza con UND_ERR_HEADERS_OVERFLOW,
          rompiendo la extracción de artículos (2026-07-18). -->

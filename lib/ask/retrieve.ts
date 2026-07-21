@@ -29,6 +29,8 @@ export type Citation = {
   sentiment: number;
   /** Cómo llegó aquí — se pinta en la UI y ayuda a depurar el retrieval. */
   via: "vector" | "lexical";
+  /** Distancia coseno al query (solo canal vectorial). La lee hasCoverage. */
+  dist?: number;
 };
 
 export type StructuredFacts = {

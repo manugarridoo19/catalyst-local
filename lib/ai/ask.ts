@@ -85,9 +85,27 @@ function formatItems(citations: Citation[]): string {
  * ser demasiado estricto rechaza preguntas legítimas sobre temas con poca
  * cobertura, que son justo donde el archivo aporta algo que Google no.
  */
+// Umbral de distancia coseno para "esta cita habla de lo que preguntan".
+// gemini-embedding-001@768 normalizado: pares relacionados suelen caer en
+// ~0.3-0.5 y ruido temático en >0.65. 0.62 por defecto, ajustable por env
+// sin desplegar (ASK_MAX_DIST) — calibrar mirando `dist` en las citas.
+const MAX_VECTOR_DIST = Number(process.env.ASK_MAX_DIST ?? 0.62);
+
 export function hasCoverage(r: Retrieval): boolean {
-  // TODO(usuario): política de cobertura.
-  return r.citations.length > 0 || r.facts.length > 0;
+  // Símbolo reconocido → hay agregados SQL reales que contar: siempre vale.
+  if (r.facts.length > 0) return true;
+  if (r.vectorUsed) {
+    // Pregunta temática sin ticker: exigir ≥2 citas semánticamente CERCA.
+    // El caso real que motiva esto: "quantum computing" recuperó 18 items,
+    // ninguno relevante, y se gastó la llamada LLM para oír "no coverage".
+    const near = r.citations.filter(
+      (c) => c.via === "vector" && c.dist !== undefined && c.dist <= MAX_VECTOR_DIST,
+    );
+    return near.length >= 2;
+  }
+  // Léxico puro (anónimo o cuota agotada): no hay distancia que juzgar;
+  // con ≥2 matches se intenta — el coste es una query, no una llamada LLM.
+  return r.citations.length >= 2;
 }
 
 export async function askArchive(r: Retrieval, question: string): Promise<AskAnswer> {
