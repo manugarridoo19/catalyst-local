@@ -46,7 +46,7 @@ export type EmbedResult = {
   picked: number;
   embedded: number;
   purged: number;
-  skipped: "disabled" | "storage" | "quota" | null;
+  skipped: "disabled" | "storage" | "quota" | "budget" | null;
   dbMb: number;
   durationMs: number;
 };
@@ -141,11 +141,35 @@ export async function runEmbedIngest(
     return done({ skipped: "storage", dbMb });
   }
 
+  // Presupuesto DIARIO propio, por debajo de la cuota real (3×1.000, reset
+  // medianoche Pacific): la ingesta puede comerse el día entero (pasó el
+  // 20 y el 21-jul con la puesta al día: parón a las 12:52Z y /ask del dueño
+  // degradado a léxico el resto del día). Con techo 2.500 quedan ~500 para
+  // preguntas de /ask y para el margen de ráfaga por minuto. El régimen
+  // normal (~400-900 impact≥3/día) ni se acerca; esto solo muerde en
+  // catch-ups, que es exactamente cuando hay que repartir.
+  const dailyBudget = envInt("EMBED_DAILY_BUDGET", 2500);
+  const usedToday = unwrapRows<{ n: number }>(
+    await db.execute(sql`
+      SELECT count(*)::int AS n FROM news_embeddings
+      WHERE (created_at AT TIME ZONE 'America/Los_Angeles')::date
+            = (now() AT TIME ZONE 'America/Los_Angeles')::date
+    `),
+  )[0]?.n ?? 0;
+  if (usedToday >= dailyBudget) {
+    console.log(
+      `[embed] presupuesto diario agotado (${usedToday}/${dailyBudget}) — el resto queda para /ask; se reanuda a medianoche Pacific`,
+    );
+    return done({ skipped: "budget", dbMb });
+  }
+
   // Recency-first, como todo en Catalyst: lo nuevo entra primero y la cola
   // vieja la libera la purga, no el picker.
   const limit = Math.min(
     Math.max(opts.limit ?? envInt("EMBED_BATCH", 100), 1),
     EMBED_MAX_BATCH,
+    // No pedir más de lo que queda de presupuesto del día.
+    Math.max(dailyBudget - usedToday, 1),
   );
   const candidates = unwrapRows<Candidate>(
     await db.execute(sql`
