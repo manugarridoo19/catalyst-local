@@ -165,22 +165,58 @@ export async function runEmbedIngest(
   if (candidates.length === 0) return done({ purged, dbMb });
 
   const prepared = candidates.map((c) => ({ c, ...embedText(c) }));
-  let vectors: number[][];
-  try {
-    vectors = await embedBatch(prepared.map((p) => p.text));
-  } catch (err) {
-    if (err instanceof EmbedQuotaError) {
-      return done({ picked: candidates.length, purged, dbMb, skipped: "quota" });
+
+  // Se trocea en llamadas MÁS PEQUEÑAS que el límite por minuto (100/min/key),
+  // nunca iguales. Un batch de exactamente 100 sólo entra si el cubo del minuto
+  // está intacto: cualquier otro consumo en esos 60s (una pregunta de /ask, el
+  // reintento anterior) lo hace imposible, y como el mismo lote se reenviaba a
+  // las 3 keys, las quemaba las tres y el tick moría entero. Así se atascó la
+  // ingesta 2h el 2026-07-21 (429 `EmbedContentRequestsPerMinute...`, limit 100).
+  // Trocear además hace el tick RESUMABLE: lo ya embebido se guarda aunque el
+  // trozo siguiente se quede sin cuota.
+  const chunkSize = Math.min(
+    Math.max(envInt("EMBED_CHUNK", 50), 1),
+    EMBED_MAX_BATCH,
+  );
+  let embedded = 0;
+  let quotaHit = false;
+
+  for (let start = 0; start < prepared.length; start += chunkSize) {
+    const chunk = prepared.slice(start, start + chunkSize);
+    let vectors: number[][];
+    try {
+      vectors = await embedBatch(chunk.map((p) => p.text));
+    } catch (err) {
+      if (err instanceof EmbedQuotaError) {
+        quotaHit = true;
+        break;
+      }
+      throw err;
     }
-    throw err;
+    embedded += await insertChunk(chunk, vectors);
   }
 
-  // Un INSERT por fila: son <=100 y el driver HTTP no soporta transacción
-  // interactiva. ON CONFLICT hace idempotente el reintento si el tick muere
-  // a mitad (dos scorers pueden solaparse igual que en el pick de scoring).
+  return done({
+    picked: candidates.length,
+    embedded,
+    purged,
+    dbMb,
+    // "quota" sólo si el tick se fue de vacío: si algo entró, es progreso
+    // parcial y el resto lo coge el siguiente tick.
+    skipped: quotaHit && embedded === 0 ? "quota" : null,
+  });
+}
+
+/** Un INSERT por fila: el driver HTTP no soporta transacción interactiva.
+ *  ON CONFLICT hace idempotente el reintento si el tick muere a mitad (dos
+ *  scorers pueden solaparse igual que en el pick de scoring). */
+async function insertChunk(
+  chunk: Array<{ c: Candidate; snapshotSummary: string | null }>,
+  vectors: number[][],
+): Promise<number> {
   let embedded = 0;
-  for (let i = 0; i < prepared.length; i++) {
-    const { c, snapshotSummary } = prepared[i];
+  for (let i = 0; i < chunk.length; i++) {
+    const { c, snapshotSummary } = chunk[i];
     const vec = `[${vectors[i].join(",")}]`;
     // ARRAY[...] explícito: un array JS como parámetro suelto lo aplana el
     // driver a "AAPL" y Postgres responde `malformed array literal`.
@@ -206,6 +242,5 @@ export async function runEmbedIngest(
       );
     }
   }
-
-  return done({ picked: candidates.length, embedded, purged, dbMb });
+  return embedded;
 }

@@ -11,8 +11,24 @@
 //     texto cuenta como una request**, no el batch entero (verificado: 66
 //     sueltas + 1 batch de 100 → 429 con `limit: 100`). El batch ahorra
 //     latencia y handshakes, nunca cuota.
-//   - Máximo 100 textos por batch (400 INVALID_ARGUMENT por encima).
-//   - Cuota diaria: ver EMBED_DAILY_NOTE abajo.
+//   - Máximo 100 textos por batch (400 INVALID_ARGUMENT por encima), pero
+//     **nunca pedir 100**: el tope de la API coincide con el del minuto, así
+//     que un batch de 100 sólo entra con el cubo intacto y basta 1 embedding
+//     previo en esos 60s (una pregunta de /ask) para que el lote ENTERO caiga
+//     con 429. El caller trocea a EMBED_CHUNK (50) — ver lib/embeddings/ingest.
+//     Diagnóstico completo: 2026-07-21, la ingesta se atascó 2h porque el
+//     mismo lote de 100 se reenviaba a las 3 keys y las quemaba las tres.
+//   - **1.000 embeddings/DÍA y key** (`EmbedContentRequestsPerDayPerProject…`),
+//     reset a medianoche Pacific. MEDIDO el 2026-07-21 contando filas por día
+//     Pacific: exactamente 3.000 en el día (= 3 keys × 1.000) y parón en seco
+//     a las 12:52Z. Ese 3×1.000 confirma además que las 3 keys están en
+//     PROYECTOS DISTINTOS: el cupo no se comparte, el round-robin sí suma.
+//   - Demanda real ~919 noticias impact≥3/día → cabe con holgura en 3.000.
+//     Lo que agotó el cupo ese día fue la puesta al día inicial de Fase 2,
+//     no el régimen normal.
+//   - El 429 identifica la métrica en `details[].violations[].quotaId` y ése
+//     es el ÚNICO campo fiable para distinguir minuto de día: el diario llega
+//     con `retryDelay` de ~2s, igual de pequeño que el de una ráfaga.
 //
 // Con outputDimensionality<3072 el vector NO viene normalizado (norma ~0.6):
 // sólo la dimensión nativa lo está. Normalizamos aquí para que el coseno de
@@ -46,21 +62,29 @@ function isCool(label: string): boolean {
   return (cooldown.get(label) ?? 0) <= Date.now();
 }
 
-/** Clasifica un 429. Google manda `retryDelay` en los límites por minuto;
- *  el diario llega sin él (o pidiendo esperar horas), y se enfría hasta el
- *  reset Pacific. Ante la duda, cooldown corto: perder un tick es barato,
- *  enfriar 12h una key sana no. */
+/** Clasifica un 429 por su `quotaId`, que es el campo AUTORITATIVO.
+ *
+ *  NO se puede deducir del `retryDelay`: Google manda un delay minúsculo
+ *  también cuando el que revienta es el límite DIARIO — medido el 2026-07-21,
+ *  `EmbedContentRequestsPerDayPerProjectPerModel-FreeTier` llegó pidiendo
+ *  "retry in 2.35s". La heurística anterior (delay pequeño ⇒ ráfaga por
+ *  minuto) enfriaba 2s una cuota agotada 24h, así que el pool se pasó la
+ *  tarde entera reintentando contra una pared y logueando "RPM burst"; la
+ *  ingesta estuvo parada ~2h sin que nada lo dijera. */
 function applyRateLimit(label: string, body: string): void {
+  const quotaId = body.match(/"quotaId"\s*:\s*"([^"]+)"/)?.[1] ?? "";
   const m = body.match(/"retryDelay"\s*:\s*"(\d+)/) ?? body.match(/retry in (\d+)/i);
   const retrySec = m ? Number(m[1]) + 2 : 0;
-  if (retrySec > 0 && retrySec <= 300) {
+
+  // El diario manda: si el quotaId dice PerDay, da igual lo que pida esperar.
+  if (!/PerDay/i.test(quotaId) && retrySec > 0 && retrySec <= 300) {
     cooldown.set(label, Date.now() + retrySec * 1000);
     console.warn(`[gemini-embed] ${label} RPM burst — cooled ${retrySec}s`);
     return;
   }
   cooldown.set(label, geminiDailyResetMs());
   console.warn(
-    `[gemini-embed] ${label} DAILY QUOTA — cooled until ${new Date(geminiDailyResetMs()).toISOString().slice(0, 16)}Z`,
+    `[gemini-embed] ${label} DAILY QUOTA (${quotaId || "sin quotaId"}) — cooled until ${new Date(geminiDailyResetMs()).toISOString().slice(0, 16)}Z`,
   );
 }
 
