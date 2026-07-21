@@ -19,6 +19,7 @@ import {
   type FundFiling,
 } from "@/lib/funds/filings";
 import { resolveCusips } from "@/lib/providers/openfigi";
+import { jobRanWithin, markJobRun } from "@/lib/cron/job-state";
 
 export type FundsIngestResult = {
   fundsChecked: number;
@@ -34,18 +35,6 @@ const SWEEP_HOURS = 12;
  *  semana, que es exactamente lo que pasa al vencer el plazo de 45 días. */
 const MAX_NEW_FUNDS_PER_SWEEP = 6;
 const GAP_MS = 250;
-
-async function sweptRecently(): Promise<boolean> {
-  return (
-    unwrapRows<{ recent: boolean | null }>(
-      await db.execute(sql`
-        SELECT (MAX(created_at) > now() - (${SWEEP_HOURS} || ' hours')::interval)
-          AS recent
-        FROM fund_holdings
-      `),
-    )[0]?.recent === true
-  );
-}
 
 /**
  * Accessions ya ingestados Y COMPLETOS. Un filing al que le falte
@@ -99,7 +88,14 @@ async function storeFiling(
 ): Promise<number> {
   const rows = aggregate(filing);
   if (rows.length === 0) return 0;
-  const symbols = await resolveCusips(rows.map((r) => r.cusip));
+  // Solo caché (maxRequests: 0): con 6 fondos nuevos en la misma pasada, el
+  // default de 40 peticiones POR FILING sumaba hasta 280 (~12 min a 2,5s) y
+  // reventaba el presupuesto del tick en plena temporada de filings. Todo el
+  // presupuesto de API vive en fillMissingSymbols() al final del barrido; lo
+  // que hoy quede a NULL lo rellena esa misma pasada o las siguientes.
+  const symbols = await resolveCusips(rows.map((r) => r.cusip), {
+    maxRequests: 0,
+  });
 
   let stored = 0;
   const CHUNK = 300;
@@ -195,7 +191,13 @@ export async function runFundHoldingsIngest(
   if (process.env.FUND_HOLDINGS_ENABLED === "0") {
     return done({ skipped: "disabled" });
   }
-  if (!opts.force && (await sweptRecently())) return done({ skipped: "recent" });
+  // Guard por INTENTO (job_state), no por MAX(created_at) de fund_holdings:
+  // con dato trimestral casi nunca hay filas nuevas y aquel guard corría el
+  // barrido entero (15 GETs a EDGAR) en cada tick de 10 min.
+  if (!opts.force && (await jobRanWithin("funds-sweep", SWEEP_HOURS))) {
+    return done({ skipped: "recent" });
+  }
+  await markJobRun("funds-sweep");
 
   // Purga de fondos retirados de la lista: sin esto sus posiciones seguirían
   // contando en "dónde coinciden los fondos" y en la comparación entre
@@ -235,8 +237,11 @@ export async function runFundHoldingsIngest(
     try {
       const known = await knownAccessions(fund.cik);
       // Primera vez: 2 trimestres para tener con qué comparar. Después basta
-      // el último, porque el anterior ya está guardado.
-      const want = known.size === 0 ? 2 : 1;
+      // el último, porque el anterior ya está guardado. `< 2` y no `=== 0`:
+      // un fondo que se quedó con un solo trimestre (fallo transitorio a
+      // mitad de baseline) debe poder completar el segundo, o jamás emitiría
+      // fund_new_position.
+      const want = known.size < 2 ? 2 : 1;
       const filings = await fetchFundFilings(fund.cik, want);
       fundsChecked++;
       const fresh = filings.filter((f) => !known.has(f.accession));

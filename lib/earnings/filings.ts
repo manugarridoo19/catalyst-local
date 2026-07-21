@@ -75,6 +75,11 @@ export async function findLatestEarningsFiling(
   const cutoff = new Date(Date.now() - withinDays * 86_400_000);
 
   for (let i = 0; i < forms.length; i++) {
+    // Solo "8-K" exacto, A PROPÓSITO sin "8-K/A": una enmienda del mismo
+    // trimestre chocaría con la ventana anti-duplicado de
+    // earningsReportExists (60d) y, si se la saltara, pisaría el resumen
+    // bueno. Soportar correcciones exige tratar el 8-K/A como reemplazo
+    // explícito — está en el backlog, no se añade "gratis" aquí.
     if (forms[i] !== "8-K") continue;
     // Coincidencia por ítem EXACTO: `items` es una lista separada por comas
     // ("2.02,9.01"). Un `includes("2.02")` casaría también con un hipotético

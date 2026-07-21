@@ -10,7 +10,7 @@
 // requisito de diseño.
 
 import { sql } from "drizzle-orm";
-import { db } from "@/lib/db";
+import { db, unwrapRows } from "@/lib/db";
 import { earningsReports } from "@/lib/db/schema";
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { extractSecExhibitText } from "@/lib/articles/extract";
@@ -131,14 +131,30 @@ export async function generateEarningsReport(
   return content;
 }
 
-/** ¿Ya hemos leído este filing? */
+/**
+ * ¿Ya hemos leído este filing — o uno del MISMO trimestre? El dedupe por
+ * accession solo no basta: una empresa puede registrar un segundo 8-K con
+ * ítem 2.02 en el mismo trimestre (materiales de investor day, comunicado
+ * preliminar) y, sin la ventana, ese segundo filing pagaría otra llamada LLM
+ * y PISARÍA el resumen bueno (getLatestEarningsReport coge el más reciente).
+ * 60 días < al ciclo trimestral de ~90, así que nunca bloquea el trimestre
+ * siguiente. Consciente: también excluye correcciones vía 8-K/A (raras); si
+ * algún día se soportan, tienen que saltarse ESTA ventana a propósito.
+ */
 export async function earningsReportExists(
   symbol: string,
   accession: string,
+  filingDate?: string,
 ): Promise<boolean> {
-  const rows = (await db.execute(sql`
-    SELECT 1 FROM earnings_reports
-    WHERE symbol = ${symbol} AND accession = ${accession} LIMIT 1
-  `)) as { rows?: unknown[] };
-  return (rows.rows?.length ?? 0) > 0;
+  const rows = unwrapRows(
+    await db.execute(sql`
+      SELECT 1 FROM earnings_reports
+      WHERE symbol = ${symbol}
+        AND (accession = ${accession}
+             OR (${filingDate ?? null}::date IS NOT NULL
+                 AND filing_date::date >= ${filingDate ?? null}::date - interval '60 days'))
+      LIMIT 1
+    `),
+  );
+  return rows.length > 0;
 }

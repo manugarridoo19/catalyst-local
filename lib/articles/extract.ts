@@ -136,6 +136,13 @@ export function extractSecExhibitText(
 ): string | null {
   let doc = html;
 
+  // 0. Un exhibit puede ser un binario (la SEC admite PDFs como 99.1). Los
+  // regex de abajo convertirían los bytes en pseudo-texto >200 chars y el
+  // LLM resumiría basura con números inventados-verosímiles: mejor null.
+  if (doc.startsWith("%PDF") || doc.slice(0, 2000).includes("%PDF-")) {
+    return null;
+  }
+
   // 1. Sobre SGML de EDGAR: el documento real va dentro de <TEXT>.
   const start = doc.search(/<TEXT>/i);
   if (start >= 0) doc = doc.slice(start + "<TEXT>".length);

@@ -15,6 +15,7 @@ import {
   earningsReportExists,
   generateEarningsReport,
 } from "@/lib/ai/earnings-report";
+import { jobRanWithin, markJobRun } from "@/lib/cron/job-state";
 
 export type EarningsIngestResult = {
   checked: number;
@@ -33,17 +34,11 @@ const MAX_NEW_PER_SWEEP = 3;
 /** SEC pide no pasar de 10 req/s; vamos MUY por debajo. */
 const GAP_MS = 200;
 
-async function sweptRecently(): Promise<boolean> {
-  return (
-    unwrapRows<{ recent: boolean | null }>(
-      await db.execute(sql`
-        SELECT (MAX(created_at) > now() - (${SWEEP_HOURS} || ' hours')::interval)
-          AS recent
-        FROM earnings_reports
-      `),
-    )[0]?.recent === true
-  );
-}
+/** Horas de espera antes de reintentar un filing que falló (extracción vacía,
+ *  JSON del LLM inválido). Sin esta memoria, un filing roto pagaba la cadena
+ *  entera de fetches SEC + una llamada LLM en CADA barrido durante los 14
+ *  días de su ventana. */
+const FAIL_RETRY_HOURS = 24;
 
 /** Símbolos de TODAS las watchlists (en local sólo hay una). */
 async function watchlistSymbols(): Promise<string[]> {
@@ -69,11 +64,13 @@ export async function runEarningsReportsIngest(
   if (process.env.EARNINGS_REPORTS_ENABLED === "0") {
     return done({ skipped: "disabled" });
   }
-  // El guard mira la última LECTURA guardada, no un reloj aparte. Efecto
-  // secundario querido: mientras no haya ningún comunicado nuevo la tabla no
-  // crece y el barrido se repite cada 6h; en cuanto entra uno, el siguiente
-  // barrido espera esas 6h.
-  if (!opts.force && (await sweptRecently())) return done({ skipped: "recent" });
+  // Guard por INTENTO (job_state). El anterior miraba MAX(created_at) de
+  // earnings_reports, así que mientras no entraba ningún comunicado nuevo
+  // (o sea, casi siempre) barría en cada tick de 10 min, no cada 6h.
+  if (!opts.force && (await jobRanWithin("earnings-sweep", SWEEP_HOURS))) {
+    return done({ skipped: "recent" });
+  }
+  await markJobRun("earnings-sweep");
 
   const symbols = opts.symbols?.length
     ? opts.symbols.map((s) => s.toUpperCase())
@@ -88,20 +85,29 @@ export async function runEarningsReportsIngest(
       );
       break;
     }
+    let failKey: string | null = null;
     try {
       const filing = await findLatestEarningsFiling(symbol);
       checked++;
       if (!filing) continue;
-      if (await earningsReportExists(symbol, filing.accession)) continue;
+      if (await earningsReportExists(symbol, filing.accession, filing.filingDate))
+        continue;
+      failKey = `earnings-fail:${symbol}:${filing.accession}`;
+      if (await jobRanWithin(failKey, FAIL_RETRY_HOURS)) continue;
       const content = await generateEarningsReport(filing);
       if (content) {
         generated++;
         console.log(
           `[earnings] ${symbol} ${filing.filingDate}: ${content.summary.length} bullets`,
         );
+      } else {
+        // Exhibit sin texto utilizable: probablemente permanente, pero se
+        // reintenta cada FAIL_RETRY_HOURS por si fue transitorio.
+        await markJobRun(failKey);
       }
     } catch (err) {
       // Una empresa que falle no puede tumbar el barrido de las demás.
+      if (failKey) await markJobRun(failKey).catch(() => {});
       console.warn(
         `[earnings] ${symbol} falló:`,
         err instanceof Error ? err.message.slice(0, 140) : err,

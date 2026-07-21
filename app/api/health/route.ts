@@ -36,7 +36,14 @@ export async function GET() {
         -- que se parecería a una caída del feed.
         (pg_database_size(current_database()) / 1048576.0)::float8 AS db_mb,
         (SELECT COUNT(*) FROM news_embeddings)::int AS embeddings_total,
-        (SELECT MAX(created_at) FROM news_embeddings)::timestamptz AS last_embedded_at
+        (SELECT MAX(created_at) FROM news_embeddings)::timestamptz AS last_embedded_at,
+        -- Fase 3: sin estas señales, una rotura silenciosa de FINRA (API sin
+        -- contrato de versión) o de un barrido del cron sólo se descubriría
+        -- mirando un ticker a mano semanas después.
+        (SELECT MAX(fetched_at) FROM short_interest)::timestamptz AS short_interest_fetched_at,
+        (SELECT COUNT(*) FROM short_interest)::int AS short_interest_rows,
+        (SELECT ran_at FROM job_state WHERE key = 'funds-sweep')::timestamptz AS funds_sweep_at,
+        (SELECT ran_at FROM job_state WHERE key = 'earnings-sweep')::timestamptz AS earnings_sweep_at
     `);
     const row = ((r as { rows?: Record<string, unknown>[] }).rows ?? (r as unknown as Record<string, unknown>[]))[0];
 
@@ -96,6 +103,25 @@ export async function GET() {
       scoredLastHour: row.scored_last_hour,
       lastAuthorBriefAt: lastAuthorBrief?.toISOString() ?? null,
       authorBriefAgeMin,
+      phase3: {
+        // FINRA publica cada ~15 días con ~2 semanas de retraso: una edad
+        // de hasta ~30 días es normal; >35 días = ingesta rota.
+        shortInterestAgeDays: row.short_interest_fetched_at
+          ? Math.round(
+              (now - new Date(row.short_interest_fetched_at as string).getTime()) /
+                86_400_000,
+            )
+          : null,
+        shortInterestRows: row.short_interest_rows,
+        fundsSweepAgeMin: row.funds_sweep_at
+          ? Math.round((now - new Date(row.funds_sweep_at as string).getTime()) / 60000)
+          : null,
+        earningsSweepAgeMin: row.earnings_sweep_at
+          ? Math.round(
+              (now - new Date(row.earnings_sweep_at as string).getTime()) / 60000,
+            )
+          : null,
+      },
       storage: {
         dbMb: Math.round(Number(row.db_mb ?? 0)),
         freeTierMb: NEON_FREE_MB,

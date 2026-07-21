@@ -644,6 +644,16 @@ export const earningsReports = pgTable(
   ],
 );
 
+// Marcas de "última vez que se INTENTÓ" de los jobs del cron. Los guards que
+// miraban MAX(created_at) de su propia tabla sólo se activaban cuando había
+// datos NUEVOS — con datos trimestrales (13F, earnings) eso es casi nunca, y
+// el barrido "cada 12h" corría en realidad en cada tick de 10 min. También
+// sirve de memoria de fallos por filing (key `earnings-fail:SYM:accession`).
+export const jobState = pgTable("job_state", {
+  key: text("key").primaryKey(),
+  ranAt: timestamp("ran_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // CUSIP → ticker. Caché PERMANENTE: la correspondencia no cambia (un CUSIP
 // identifica una emisión concreta para siempre), así que una vez resuelto no
 // se vuelve a preguntar a OpenFIGI jamás. Es el "gate" que el design doc
