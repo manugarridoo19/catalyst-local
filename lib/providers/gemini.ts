@@ -10,10 +10,24 @@
 // sale por una key distinta, así N keys ≈ N× el RPM efectivo y las cuotas
 // diarias se consumen en paralelo y por igual, sin solaparse.
 //
-// Modelo: gemini-3.1-flash-lite — el tier "lite" es el de mayor cuota
+// Modelo: gemini-3.5-flash-lite — el tier "lite" es el de mayor cuota
 // free (el 2.5-flash-lite que lo inauguró ya no está disponible para
-// cuentas nuevas; 3.1 es su sucesor estable). Fallback in-provider:
-// gemini-2.0-flash-lite.
+// cuentas nuevas; 3.5 es el sucesor vigente, 2026-07-21). Fallback
+// in-provider: gemini-3.1-flash-lite.
+//
+// El fallback NO es gemini-2.0-flash-lite desde 2026-07-21: su free tier
+// está a cero (una sola request viola a la vez las cuotas por-día Y las
+// por-minuto en las 4 keys — sólo pasa si el límite es 0). Y un fallback
+// muerto no era neutro, era ACTIVAMENTE tóxico: su 429 lleva quotaId
+// `...PerDay...`, que `applyRateLimit` interpretaba como cuota diaria de
+// la KEY ENTERA y la enfriaba hasta medianoche Pacific — aunque la cuota
+// agotada fuese sólo la de ESE modelo. Como el bucle de modelos es el
+// externo, un bache pasajero en el modelo de cabeza barría los 2.0 detrás
+// y dejaba todas las keys (incluida la de reserva) muertas el resto del día.
+// Desde entonces el cooldown de cuota tiene dimensión de MODELO (las cuotas
+// free de Google son `…PerProjectPerModel`): agotar 3.5 en una key ya no
+// quema 3.1 en esa key. Un modelo sin cuota en GEMINI_MODELS sigue siendo
+// mala idea (regala una request muerta por sweep), pero ya no envenena.
 
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -25,7 +39,7 @@ import type {
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 
-const GEMINI_MODELS = ["gemini-3.1-flash-lite", "gemini-2.0-flash-lite"];
+const GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 
 // Off-repo secrets file, mismo patrón que ~/.catalyst-openrouter-keys
 // (los settings del usuario deniegan tocar ./.env*). Formato:
@@ -53,8 +67,14 @@ function readLocalVar(name: string): string {
 
 type KeyState = {
   key: string;
-  /** ms epoch; 0 = disponible. */
+  /** ms epoch; 0 = disponible. Cooldown de la KEY completa — solo para
+   *  cuotas cuyo quotaId NO lleva dimensión de modelo. */
   cooldownUntil: number;
+  /** ms epoch por modelo. Las cuotas free de Google son
+   *  `…PerProjectPerModel`: agotar la diaria de 3.5 en esta key no dice
+   *  NADA de la de 3.1 en esta key — enfriar la key entera tiraba esa
+   *  capacidad hasta medianoche Pacific (pendiente del audit 2026-07-21). */
+  modelCooldowns: Map<string, number>;
   label: string;
   /** Reserva: cuenta principal del usuario, blindada. Solo se usa cuando
    *  NINGUNA key primaria está disponible. Uso mínimo = perfil casi humano
@@ -93,12 +113,24 @@ function loadKeyPool(): KeyState[] {
   for (const key of primary) {
     if (seen.has(key)) continue;
     seen.add(key);
-    pool.push({ key, cooldownUntil: 0, label: `g${++i}`, reserve: false });
+    pool.push({
+      key,
+      cooldownUntil: 0,
+      modelCooldowns: new Map(),
+      label: `g${++i}`,
+      reserve: false,
+    });
   }
   for (const key of reserve) {
     if (seen.has(key)) continue;
     seen.add(key);
-    pool.push({ key, cooldownUntil: 0, label: `gR${++i}`, reserve: true });
+    pool.push({
+      key,
+      cooldownUntil: 0,
+      modelCooldowns: new Map(),
+      label: `gR${++i}`,
+      reserve: true,
+    });
   }
   return pool;
 }
@@ -140,28 +172,81 @@ class GeminiRetriable extends Error {
   }
 }
 
-/** Parsea el body de un 429 de Google: cuota diaria (enfriar la key hasta
- *  el reset Pacific) vs burst por-minuto (cooldown corto, respetando el
- *  RetryInfo.retryDelay que manda la API si viene). */
-function applyRateLimit(state: KeyState, bodyText: string): void {
-  if (/perday|per_day|daily/i.test(bodyText)) {
-    state.cooldownUntil = nextPacificMidnightMs();
-    console.warn(
-      `[gemini] ${state.label} ${maskKey(state.key)} HIT DAILY QUOTA — cooled until ${new Date(state.cooldownUntil).toISOString().slice(0, 16)}Z`,
-    );
-    return;
+/** Parsea el body de un 429 de Google y enfría el ÁMBITO correcto.
+ *
+ *  - MÉTRICA por `details[].violations[].quotaId`, el campo AUTORITATIVO
+ *    (mismo patrón que gemini-embed.ts): el diario también llega pidiendo
+ *    "retry in 2.35s", así que el tamaño del retryDelay no clasifica nada.
+ *    Sin quotaId, se cae al regex legacy sobre el body.
+ *  - ÁMBITO: las cuotas free son `…PerProjectPerModel` → cooldown por
+ *    (key, modelo); solo un quotaId explícito SIN `PerModel` enfría la key
+ *    completa. Sin quotaId también se enfría solo el modelo: si el problema
+ *    fuese de la key entera, el siguiente modelo cosecha su propio 429 y
+ *    cae igual (cuesta 1 request), mientras que el error inverso —enfriar
+ *    la key por la cuota de UN modelo— tira hasta medianoche Pacific la
+ *    capacidad de los demás (el envenenamiento del 2.0-flash-lite). */
+function applyRateLimit(
+  state: KeyState,
+  model: string,
+  bodyText: string,
+): void {
+  const quotaId = bodyText.match(/"quotaId"\s*:\s*"([^"]+)"/)?.[1] ?? "";
+  const daily = quotaId
+    ? /PerDay/i.test(quotaId)
+    : /perday|per_day|daily/i.test(bodyText);
+  const wholeKey = quotaId !== "" && !/PerModel/i.test(quotaId);
+
+  let until: number;
+  let what: string;
+  if (daily) {
+    until = nextPacificMidnightMs();
+    what = `DAILY QUOTA (${quotaId || "sin quotaId"}) — cooled until ${new Date(until).toISOString().slice(0, 16)}Z`;
+  } else {
+    const m = bodyText.match(/"retryDelay"\s*:\s*"(\d+)/);
+    const retrySec = m ? Math.min(Number(m[1]) + 2, 300) : 60;
+    until = Date.now() + retrySec * 1000;
+    what = `RPM burst — cooled ${retrySec}s`;
   }
-  const m = bodyText.match(/"retryDelay"\s*:\s*"(\d+)/);
-  const retrySec = m ? Math.min(Number(m[1]) + 2, 300) : 60;
-  state.cooldownUntil = Date.now() + retrySec * 1000;
-  console.warn(
-    `[gemini] ${state.label} RPM burst — cooled ${retrySec}s`,
+  if (wholeKey) {
+    state.cooldownUntil = until;
+    console.warn(
+      `[gemini] ${state.label} ${maskKey(state.key)} WHOLE KEY ${what}`,
+    );
+  } else {
+    state.modelCooldowns.set(model, until);
+    console.warn(
+      `[gemini] ${state.label} ${maskKey(state.key)} [${model}] ${what}`,
+    );
+  }
+}
+
+/** ¿Puede esta key intentar ESTE modelo ahora? (cooldown de key y de
+ *  (key, modelo) expirados). */
+function keyUsableFor(state: KeyState, model: string, now: number): boolean {
+  return (
+    state.cooldownUntil <= now &&
+    (state.modelCooldowns.get(model) ?? 0) <= now
   );
+}
+
+// El control de "no pienses" cambió de dialecto en Gemini 3.x: `thinkingBudget`
+// (numérico) sólo lo entienden 2.x/2.5, y 3.x exige el enum `thinkingLevel`.
+// Mandarle `thinkingBudget:0` a un 3.x devuelve 400 INVALID_ARGUMENT — y 400 NO
+// está en la lista de retriables, así que tumbaría el modelo de cabeza en TODAS
+// las keys (verificado a mano contra la API el 2026-07-21). `minimal` es el
+// nivel más bajo del enum: "none" no existe. Misma intención que budget 0.
+// Por eso el payload se construye POR MODELO y no una vez para toda la cadena:
+// el fallback mezcla familias y cada una habla su dialecto.
+function thinkingConfigFor(model: string): Record<string, unknown> {
+  return model.startsWith("gemini-3")
+    ? { thinkingLevel: "minimal" }
+    : { thinkingBudget: 0 };
 }
 
 function toGeminiPayload(
   messages: ChatMessage[],
   opts: { temperature?: number; maxTokens?: number; jsonMode?: boolean },
+  model: string,
 ): Record<string, unknown> {
   const system = messages
     .filter((m) => m.role === "system")
@@ -178,8 +263,8 @@ function toGeminiPayload(
     maxOutputTokens: opts.maxTokens ?? 256,
     // flash-lite puede razonar si se lo dejan puesto — mismo problema que
     // Nemotron en OpenRouter (quema el output budget en pensamiento).
-    // Presupuesto 0 = thinking off.
-    thinkingConfig: { thinkingBudget: 0 },
+    // Thinking al mínimo que permita la familia del modelo.
+    thinkingConfig: thinkingConfigFor(model),
   };
   if (opts.jsonMode) generationConfig.responseMimeType = "application/json";
   const payload: Record<string, unknown> = { contents, generationConfig };
@@ -217,7 +302,7 @@ async function tryOnceWithKey(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    if (res.status === 429) applyRateLimit(state, text);
+    if (res.status === 429) applyRateLimit(state, model, text);
     if ([404, 408, 429, 500, 502, 503].includes(res.status)) {
       throw new GeminiRetriable(
         `${res.status} ${res.statusText}: ${text.slice(0, 120)}`,
@@ -276,7 +361,6 @@ export async function geminiChatCompletion(opts: {
       "No Gemini keys configured — set GEMINI_API_KEYS or GEMINI_API_KEY",
     );
   }
-  const payload = toGeminiPayload(opts.messages, opts);
   const timeoutMs = opts.timeoutMs ?? 20_000;
   const models = opts.model
     ? [opts.model, ...GEMINI_MODELS.filter((m) => m !== opts.model)]
@@ -303,10 +387,12 @@ export async function geminiChatCompletion(opts: {
     // primera en cada request.
     const base = rrCursor;
     for (const model of models) {
+      // Por modelo, no por request: cada familia quiere su thinkingConfig.
+      const payload = toGeminiPayload(opts.messages, opts, model);
       for (let i = 0; i < keys.length; i++) {
         const idx = rotate ? (base + i) % keys.length : i;
         const state = keys[idx];
-        if (state.cooldownUntil > Date.now()) continue;
+        if (!keyUsableFor(state, model, Date.now())) continue;
         if (rotate) rrCursor = (base + i + 1) % keys.length;
         try {
           const result = await tryOnceWithKey(state, model, payload, timeoutMs);
@@ -377,20 +463,30 @@ export function getGeminiPoolStatus(): {
     reserve: boolean;
     available: boolean;
     cooldownUntil: string | null;
+    cooledModels: Record<string, string>;
   }>;
 } {
   const now = Date.now();
+  // "Disponible" = puede intentar AL MENOS un modelo de la cadena. Una key
+  // con 3.5 agotado pero 3.1 vivo sigue siendo capacidad real.
+  const usable = (k: KeyState) =>
+    GEMINI_MODELS.some((m) => keyUsableFor(k, m, now));
   return {
     total: KEY_POOL.length,
-    available: KEY_POOL.filter((k) => k.cooldownUntil <= now).length,
+    available: KEY_POOL.filter(usable).length,
     primary: KEY_POOL.filter((k) => !k.reserve).length,
     reserve: KEY_POOL.filter((k) => k.reserve).length,
     pool: KEY_POOL.map((k) => ({
       label: k.label,
       reserve: k.reserve,
-      available: k.cooldownUntil <= now,
+      available: usable(k),
       cooldownUntil:
         k.cooldownUntil > now ? new Date(k.cooldownUntil).toISOString() : null,
+      cooledModels: Object.fromEntries(
+        [...k.modelCooldowns]
+          .filter(([, t]) => t > now)
+          .map(([m, t]) => [m, new Date(t).toISOString()]),
+      ),
     })),
   };
 }

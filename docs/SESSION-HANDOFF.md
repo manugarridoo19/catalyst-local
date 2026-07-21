@@ -112,10 +112,51 @@ pre-comprometido a los transcripts (copyright + fuente frágil).
 | 8-K exhibit 99.1 | ✅ HECHO | El `<TYPE>EX-99.1` sale del `{acc}-index.html` (10 KB). OJO: **no** lo lee el extractor genérico → `extractSecExhibitText()`. |
 | OpenFIGI CUSIP→ticker | ✅ | Sin key, por lotes. Filtrar `exchCode: "US"`, cachear para siempre. |
 
+### 6. Gemini 3.1 → 3.5 flash-lite, y un fallback que envenenaba el pool (COMMITEADO + cooldown por (key, modelo) en la sesión siguiente)
+
+Petición: "sustituye quirúrgicamente el modelo por `gemini-3.5-flash-lite`".
+Cambiar sólo el string **habría tumbado el tier entero de Gemini**.
+
+**Gemini 3.x cambió el dialecto del control de razonamiento**: `thinkingBudget`
+(numérico) es de 2.x; 3.x exige el enum `thinkingLevel`. Medido contra la API:
+3.5 con `thinkingBudget:0` → **400 INVALID_ARGUMENT**; con
+`thinkingLevel:"minimal"` → 200 (`"none"` no existe en el enum). Y **400 no
+está en la lista de retriables**, así que habría fallado en las 4 keys, en la
+de reserva, y sin reintento.
+
+Por eso el payload ahora se construye **por modelo dentro del bucle**
+(`thinkingConfigFor()`), no una vez para toda la cadena: el fallback mezcla
+familias y cada una habla su dialecto.
+
+**Hallazgo gordo, aparte del swap**: `gemini-2.0-flash-lite` tiene el free tier
+**a cero** — una sola request viola a la vez las cuotas por-día Y las
+por-minuto, en las 4 keys (un límite por minuto no se agota con 1 request salvo
+que valga 0). Y ese fallback muerto no era neutro: su 429 lleva quotaId
+`GenerateRequestsPerDayPerProjectPerModel`, que el regex de `applyRateLimit`
+(`gemini.ts:147`) lee como cuota diaria y **enfría la KEY ENTERA hasta
+medianoche Pacific**, por una cuota que era sólo de ESE modelo. Como el bucle de
+modelos es el externo, un bache pasajero en el modelo de cabeza barría los 2.0
+de detrás y dejaba las 4 primarias + la reserva muertas 24h. Cadena nueva:
+**`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`** (ambos verificados vivos y
+ambos aceptan `thinkingLevel:"minimal"`).
+
+Verificado: llamada real end-to-end por el provider, cadena completa con stub de
+`fetch` confirmando el dialecto de cada modelo, las 4 keys medidas una a una,
+`typecheck` + `lint` limpios. **Sin commit ni deploy**: quedan modificados
+`lib/providers/gemini.ts` y `CLAUDE.md` en el working tree.
+
 ---
 
 ## Lo que hay que mirar en la próxima sesión
 
+0. ~~Commitear/desplegar el swap de Gemini~~ **HECHO (sesión 2026-07-21 noche)**:
+   swap auditado (dialecto por familia OK, payload por modelo OK, cadena
+   3.5→3.1 verificada en vivo con las keys reales) e implementado el pendiente:
+   **cooldown por `(key, modelo)`** en `applyRateLimit` — clasifica por
+   `quotaId` (autoritativo, mismo patrón que gemini-embed.ts) y solo un quotaId
+   explícito SIN `PerModel` enfría la key completa. Verificado con fetch
+   stubeado: 429 diario PerModel en 3.5 → cae a 3.1 en la MISMA key y la key
+   sigue disponible; `/api/health` ahora expone `cooledModels` por key.
 1. **Mañana (tras las 07:05Z) confirmar que los embeddings se reanudan solos**
    y drenan las ~1.900 pendientes. `curl .../api/health | grep embed`. Si
    `embedAgeMin` vuelve a dispararse, mirar el `quotaId` del 429 en el log del
