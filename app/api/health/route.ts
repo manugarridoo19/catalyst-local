@@ -13,6 +13,9 @@ export const dynamic = "force-dynamic";
 // Función rápida, una sola query — no necesita 60s budget.
 export const maxDuration = 10;
 
+/** Plan free de Neon: 0.5 GB de almacenamiento para toda la base. */
+const NEON_FREE_MB = 512;
+
 export async function GET() {
   try {
     const r = await db.execute(sql`
@@ -26,7 +29,14 @@ export async function GET() {
         (SELECT COUNT(*) FROM news_scores)::int AS scored_total,
         (SELECT MAX(scored_at) FROM news_scores)::timestamptz AS last_scored_at,
         (SELECT COUNT(*) FROM news_scores WHERE scored_at > NOW() - INTERVAL '1 hour')::int AS scored_last_hour,
-        (SELECT MAX(generated_at) FROM author_briefs)::timestamptz AS last_author_brief_at
+        (SELECT MAX(generated_at) FROM author_briefs)::timestamptz AS last_author_brief_at,
+        -- Almacenamiento: Neon free son 0.5 GB para TODA la base y los
+        -- embeddings son lo primero que puede comérselos. Sin este número
+        -- el techo se descubre cuando la BD deja de aceptar escrituras,
+        -- que se parecería a una caída del feed.
+        (pg_database_size(current_database()) / 1048576.0)::float8 AS db_mb,
+        (SELECT COUNT(*) FROM news_embeddings)::int AS embeddings_total,
+        (SELECT MAX(created_at) FROM news_embeddings)::timestamptz AS last_embedded_at
     `);
     const row = ((r as { rows?: Record<string, unknown>[] }).rows ?? (r as unknown as Record<string, unknown>[]))[0];
 
@@ -57,6 +67,13 @@ export async function GET() {
       ? Math.round((now - lastAuthorBrief.getTime()) / 60000)
       : null;
 
+    const lastEmbedded = row.last_embedded_at
+      ? new Date(row.last_embedded_at as string)
+      : null;
+    const embedAgeMin = lastEmbedded
+      ? Math.round((now - lastEmbedded.getTime()) / 60000)
+      : null;
+
     // Pool + cooldown diagnostic. Sin exponer keys: solo labels + flags.
     // Útil para correlacionar gaps de scoring con saturación de providers
     // antes de mirar logs.
@@ -79,6 +96,18 @@ export async function GET() {
       scoredLastHour: row.scored_last_hour,
       lastAuthorBriefAt: lastAuthorBrief?.toISOString() ?? null,
       authorBriefAgeMin,
+      storage: {
+        dbMb: Math.round(Number(row.db_mb ?? 0)),
+        freeTierMb: NEON_FREE_MB,
+        pctUsed: Math.round((Number(row.db_mb ?? 0) / NEON_FREE_MB) * 100),
+        // Umbral con el que la ingesta de embeddings se pausa sola. Si
+        // dbMb lo supera, el archivo consultable deja de crecer (a
+        // propósito) pero el feed sigue.
+        embedPauseAtMb: Number(process.env.EMBED_MAX_DB_MB ?? 380),
+        embeddingsTotal: row.embeddings_total,
+        lastEmbeddedAt: lastEmbedded?.toISOString() ?? null,
+        embedAgeMin: embedAgeMin,
+      },
       scoring: {
         openrouter: {
           total: openrouterPool.total,
