@@ -265,6 +265,7 @@ async function main() {
       maxSymbols: 15,
       maxEvents: 500,
       budgetMs: 120_000,
+      force: true, // el backfill sí quiere varias pasadas seguidas
     });
     filled += res.outcomesFilled;
     console.log(

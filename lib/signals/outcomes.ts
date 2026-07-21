@@ -5,10 +5,13 @@ import { getAdjCloseSeries, fmpFallbackUsed } from "@/lib/signals/prices";
 import { HORIZONS } from "@/lib/signals/kinds";
 
 // Job que mide las señales contra los precios posteriores. Node-only (pega a
-// Yahoo); vive en el cron-runner, chunked + resumable como score-orphans:
-// cada pasada coge un puñado de eventos maduros, escribe lo que puede y sale
-// dentro del presupuesto de tiempo. Nunca hay "estado a medias": cada
-// (evento, horizonte) se rellena una vez y es idempotente.
+// proveedores de precios); vive en el cron-runner, chunked + resumable como
+// score-orphans: cada pasada coge los eventos maduros más antiguos, escribe
+// lo que puede y sale dentro del presupuesto de tiempo. Nunca hay "estado a
+// medias": cada (evento, horizonte) se rellena una vez y es idempotente.
+//
+// Cadencia: UNA pasada al día (guard global abajo). El cron corre cada 10min
+// porque las noticias son perecederas; un cierre de ayer no lo es.
 
 const BENCHMARK_SYMBOL = "SPY";
 // Un símbolo que Yahoo no sirve (deslistado, fusionado, ticker exótico) se
@@ -16,10 +19,10 @@ const BENCHMARK_SYMBOL = "SPY";
 // llega ahí: el contador se resetea en cuanto se rellena un horizonte.
 const MAX_ATTEMPTS = 10;
 const RETRY_HOURS = 20;
-const DEFAULT_MAX_SYMBOLS = 12;
+const DEFAULT_MAX_SYMBOLS = 40;
 const DEFAULT_MAX_EVENTS = 300;
 const YAHOO_GAP_MS = 150;
-const DEFAULT_BUDGET_MS = 90_000;
+const DEFAULT_BUDGET_MS = 150_000;
 
 // Días de calendario a partir de los cuales un horizonte en días HÁBILES
 // puede haber madurado (5 sesiones = 7 días naturales, + festivos + margen).
@@ -135,11 +138,39 @@ export async function runSignalOutcomesCron(opts?: {
   maxSymbols?: number;
   maxEvents?: number;
   budgetMs?: number;
+  force?: boolean;
 }): Promise<OutcomesResult> {
   const t0 = Date.now();
   const maxSymbols = opts?.maxSymbols ?? DEFAULT_MAX_SYMBOLS;
   const maxEvents = opts?.maxEvents ?? DEFAULT_MAX_EVENTS;
   const budgetMs = opts?.budgetMs ?? DEFAULT_BUDGET_MS;
+
+  // Guard global de UNA pasada al día. El cron corre ~144 veces al día, y
+  // los precios ya NO son gratis e ilimitados: Yahoo limita por IP (429 a
+  // todo, también desde los runners de GitHub) y el fallback FMP gasta de
+  // una cuota de 250/día. Un horizonte que vence hoy da exactamente el mismo
+  // número si se mide a las 04:00 o a las 23:00, así que medir 144 veces no
+  // aporta nada y sí quema cuota. Los guards por-evento (20h) siguen ahí;
+  // éste evita además el coste fijo del benchmark en cada tick.
+  if (!opts?.force) {
+    const recent = unwrapRows<{ recent: boolean | null }>(
+      await db.execute(sql`
+        SELECT (MAX(last_outcome_at) > now()
+          - (${RETRY_HOURS} || ' hours')::interval) AS recent
+        FROM signal_events
+      `),
+    )[0]?.recent;
+    if (recent) {
+      return {
+        eventsProcessed: 0,
+        outcomesFilled: 0,
+        symbols: 0,
+        abandoned: 0,
+        fmpCalls: fmpFallbackUsed(),
+        durationMs: Date.now() - t0,
+      };
+    }
+  }
 
   const pending = await loadPending(maxEvents);
   if (!pending.length) {

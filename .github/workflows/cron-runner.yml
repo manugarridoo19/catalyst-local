@@ -43,13 +43,17 @@ jobs:
           # duerme. 120/tick (12 llamadas batch) compensa la cadencia; el
           # scorer local de cada 15min mantiene su default de 60.
           ORPHAN_BATCH: "120"
-          # Signal Lab: símbolos por pasada del job de outcomes. El runner
-          # tiene IP limpia para Yahoo (desde una residencial castigada por
-          # 429 el job no rellena nada), así que aquí es donde de verdad se
-          # drena el backlog del backfill. Sin FMP_API_KEY en este env a
-          # propósito: el fallback de pago-por-cuota NO debe entrar en un
-          # job que corre 144 veces al día (ver lib/signals/prices.ts).
-          OUTCOMES_MAX_SYMBOLS: "25"
+          # Signal Lab — job de outcomes. Corre UNA vez al día (guard global
+          # en lib/signals/outcomes.ts), no en cada tick: un cierre de ayer da
+          # el mismo número a las 04:00 que a las 23:00.
+          # Yahoo devuelve 429 a TODO chart también desde los runners de
+          # GitHub (verificado 2026-07-21), así que el fallback FMP es hoy la
+          # vía real. Con 1 pasada/día el techo es 40 símbolos + SPY = 41
+          # llamadas contra la cuota free de 250/día que comparte con los
+          # fundamentales. Si Yahoo vuelve, este gasto cae solo a ~0.
+          OUTCOMES_MAX_SYMBOLS: "40"
+          LAB_FMP_MAX_CALLS: "45"
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           # Yahoo Finance responde headers >16KB (CSP+cookies) y undici los
           # rechaza con UND_ERR_HEADERS_OVERFLOW — sin esto la extracción de
           # artículos (pre-enrich impact>=4) falla para rss:yahoo-finance.

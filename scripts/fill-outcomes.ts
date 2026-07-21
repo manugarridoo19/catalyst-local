@@ -13,7 +13,11 @@ async function main() {
   const res = await runSignalOutcomesCron({
     maxSymbols,
     maxEvents: 500,
-    budgetMs: 120_000,
+    budgetMs: 180_000,
+    // force: salta el guard global de 1×/día. Este script es para ponerse al
+    // día a mano; si Yahoo está limitando esta IP, acompáñalo del fallback:
+    //   LAB_FMP_MAX_CALLS=40 pnpm exec tsx scripts/fill-outcomes.ts
+    force: true,
   });
   console.log(
     `[fill-outcomes] ${res.outcomesFilled} outcomes / ${res.eventsProcessed} events / ${res.symbols} symbols` +
