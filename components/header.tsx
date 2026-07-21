@@ -100,7 +100,7 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border/70 bg-card/55 px-6 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-card/40">
-      <div className="flex items-center gap-7">
+      <div className="flex shrink-0 items-center gap-7">
         <Link
           href="/"
           aria-label="Catalyst home"
@@ -159,15 +159,20 @@ export function Header() {
         </nav>
       </div>
 
-      {/* Firma del creador — se centra en el hueco entre la navegación y el
-          bloque de acciones. Serif editorial en itálica (contraste con el
-          mono técnico del resto del header) y colores semánticos
-          (muted-foreground / primary / foreground) que se adaptan solos al
-          tema claro/oscuro. Absolute + centrado respecto al header sticky,
-          pointer-events-none para no interferir, y solo en pantallas anchas
-          (xl) donde el hueco existe de verdad. */}
-      <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 select-none xl:block">
-        <p className="whitespace-nowrap font-editorial text-[13.5px] italic tracking-wide text-muted-foreground/80">
+      {/* Firma del creador — serif editorial en itálica (contraste con el mono
+          técnico del resto del header) y colores semánticos (muted-foreground /
+          primary / foreground) que se adaptan solos al tema claro/oscuro.
+          EN FLUJO, no absolute: es la columna del medio (flex-1) del header, así
+          que se centra en el HUECO REAL entre la nav y el bloque de acciones y
+          no puede solaparse por muchas pestañas que crezca la nav. Centrarla en
+          el viewport (left-1/2) la metía 158px encima de Insider/Lab/Ask al
+          añadir esas pestañas. Breakpoint a medida (1380px, no 2xl=1536): la
+          pantalla del usuario es de 1440px lógicos, así que su ventana real ronda
+          los 1400 y un gate en 2xl la haría desaparecer justo donde vive. Por
+          debajo de 1380 el hueco (~180px con el estado en "Connecting", el caso
+          más ancho) es más estrecho que la frase y habría que recortarla. */}
+      <div className="pointer-events-none hidden min-w-0 flex-1 select-none justify-center overflow-hidden min-[1380px]:flex">
+        <p className="whitespace-nowrap font-editorial text-[12px] italic tracking-wide text-muted-foreground/80">
           <span className="mr-1 align-[0.05em] not-italic text-primary/55">«</span>
           ¿Qué pensaría el{" "}
           <span className="text-foreground/90">Manu de Cádiz</span>?
@@ -175,7 +180,7 @@ export function Header() {
         </p>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-4">
         {/* Search */}
         <button
           type="button"
