@@ -129,10 +129,11 @@ async function main() {
     );
   }
 
-  // Outcomes: mide señales maduras contra los precios posteriores. Chunked +
-  // resumable con presupuesto de tiempo — lo que no entre en esta pasada
-  // sigue en la siguiente. Cada evento se reintenta como mucho 1×/20h, así
-  // que la carga sobre Yahoo es mínima aunque el tick corra cada 10min.
+  // Outcomes: mide señales maduras contra los precios posteriores. Chunked
+  // con presupuesto de tiempo, pero OJO: el guard global de outcomes.ts hace
+  // que corra 1×/20h — lo que no entre en una pasada espera a la de MAÑANA,
+  // no al siguiente tick. Capacidad real ≈ OUTCOMES_MAX_SYMBOLS símbolos/día;
+  // si el backlog de símbolos pendientes creciera por encima, subir ese env.
   try {
     const { runSignalOutcomesCron } = await import("../lib/signals/outcomes");
     const out = await runSignalOutcomesCron({
