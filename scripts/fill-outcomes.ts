@@ -9,6 +9,26 @@ config({ path: ".env.local" });
 
 async function main() {
   const maxSymbols = Number(process.argv[2] ?? 15);
+
+  // --reset: devuelve a la cola los eventos que quedaron marcados como
+  // intentados pero SIN ningún outcome. Sirve tras una caída del proveedor
+  // de precios (Yahoo 429 durante una pasada entera): esos intentos no
+  // midieron nada, así que esperar 20h a reintentarlos es tiempo perdido.
+  // Solo toca eventos sin outcomes — jamás reescribe una medición hecha.
+  if (process.argv.includes("--reset")) {
+    const { sql } = await import("drizzle-orm");
+    const { db } = await import("../lib/db");
+    const res = await db.execute(sql`
+      UPDATE signal_events e
+      SET outcome_attempts = 0, last_outcome_at = NULL
+      WHERE e.last_outcome_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM signal_outcomes o WHERE o.event_id = e.id)
+    `);
+    console.log(
+      `[fill-outcomes] reset de ${(res as { rowCount?: number }).rowCount ?? 0} eventos sin medir`,
+    );
+  }
+
   const { runSignalOutcomesCron } = await import("../lib/signals/outcomes");
   const res = await runSignalOutcomesCron({
     maxSymbols,
