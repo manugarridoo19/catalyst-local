@@ -37,34 +37,36 @@ export type KindSpec = {
 };
 
 export const KIND_SPECS: Record<SignalKind, KindSpec> = {
+  // `description` se PINTA en /lab, así que va en inglés como el resto de la
+  // interfaz; los comentarios de código siguen en castellano.
   ai_pick: {
     label: "AI Pick",
-    description: "Selección de AI Picks (momentum en construcción).",
+    description: "Selected by AI Picks as momentum building.",
     cooldownDays: 3,
   },
   cluster_buy: {
     label: "Cluster buy",
-    description: "≥2 insiders distintos comprando a mercado abierto en 7d.",
+    description: "2+ distinct insiders buying on the open market in 7d.",
     cooldownDays: 14,
   },
   insider_net_buy: {
     label: "Insider net buy",
-    description: "Compra neta insider >$1M en 7d (open market).",
+    description: "Net insider buying above $1M in 7d (open market).",
     cooldownDays: 14,
   },
   stake_13d: {
     label: "13D stake",
-    description: "Nueva participación activista >5% (SC 13D).",
+    description: "New activist 5%+ position (SC 13D).",
     cooldownDays: 0,
   },
   analyst_upgrade: {
     label: "Analyst upgrade",
-    description: "Noticia ANALYST con impact ≥4 y sentiment ≥ +2.",
+    description: "Analyst news scored impact 4+ and sentiment +2 or better.",
     cooldownDays: 3,
   },
   author_call: {
     label: "Author call",
-    description: "Valor mencionado en el brief diario de Author Watch.",
+    description: "Name discussed in the daily Author Watch brief.",
     cooldownDays: 3,
   },
 };
