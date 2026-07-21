@@ -58,7 +58,19 @@ export function WatchlistPanel({ items, initialQuotes = {}, footer }: Props) {
         if (!res.ok || cancelled) return;
         const data = (await res.json()) as { quotes: QuotesMap };
         if (cancelled) return;
-        setQuotes(data.quotes);
+        // MERGE, nunca reemplazo: getQuotesMap devuelve null por símbolo
+        // cuando Finnhub falla o ratelimita ese fetch concreto, y machacar
+        // el mapa entero borraba de pantalla precios que ya teníamos (filas
+        // en "—" hasta el siguiente tick bueno). El último valor conocido
+        // es mejor que un hueco; el flash de la row ya comunica frescura.
+        setQuotes((prev) => {
+          const next = { ...prev };
+          for (const [sym, q] of Object.entries(data.quotes)) {
+            if (q) next[sym] = q;
+            else if (!(sym in next)) next[sym] = null;
+          }
+          return next;
+        });
         setLastTick(Date.now());
       } catch {
         // Silencioso — el último valor sigue visible.

@@ -16,6 +16,7 @@ import type { Retrieval, Citation, StructuredFacts } from "@/lib/ask/retrieve";
 
 const ASK_SYSTEM_PROMPT = `You answer questions about a proprietary news archive (Catalyst). You are a librarian of that archive, NOT a market commentator.
 You receive: (a) numbered ARCHIVE ITEMS retrieved for the question, and optionally (b) COMPUTED FACTS — aggregates calculated by SQL over structured filings data.
+Some items carry a CONTENT line: the extracted body of the article. When present, base your answer on the CONTENT, not just the headline — the substance (and sometimes a contradiction of the headline) lives there.
 Output ONLY a JSON object: {"answer": "...", "used": [1, 4, 7], "coverage": "full" | "partial" | "none"}
 Rules:
 - Use ONLY the provided items and facts. If they do not answer the question, say so plainly and set "coverage":"none". NEVER fall back on your own knowledge of companies, prices or events — your training data is stale and the user cannot tell the difference.
@@ -68,7 +69,11 @@ function formatItems(citations: Citation[]): string {
     .map((c) => {
       const date = c.publishedAt.slice(0, 10);
       const syms = c.symbols.length ? ` [${c.symbols.join(",")}]` : "";
-      return `[${c.n}] ${date}${syms} ${c.headline}${c.summary ? ` — ${c.summary}` : ""} (${c.source})`;
+      const head = `[${c.n}] ${date}${syms} ${c.headline}${c.summary ? ` — ${c.summary}` : ""} (${c.source})`;
+      // El cuerpo extraído del artículo (cuando existe) es lo que permite
+      // ANALIZAR en vez de parafrasear el titular — p.ej. el titular dice
+      // "cae la acción" y el cuerpo cuenta las compras institucionales.
+      return c.body ? `${head}\n    CONTENT: ${c.body}` : head;
     })
     .join("\n");
 }

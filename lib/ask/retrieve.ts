@@ -31,6 +31,10 @@ export type Citation = {
   via: "vector" | "lexical";
   /** Distancia coseno al query (solo canal vectorial). La lee hasCoverage. */
   dist?: number;
+  /** Sustancia del artículo YA extraída (article_extracts): resumen IA o
+   *  primeros chars del texto. Sin esto el LLM de /ask solo veía titular +
+   *  summary del scoring y "analizaba" parafraseando el header. */
+  body?: string | null;
 };
 
 export type StructuredFacts = {
@@ -341,5 +345,55 @@ export async function retrieve(opts: {
     if (citations.length >= limit) break;
   }
 
+  await attachExtracts(citations);
+
   return { symbols, citations, facts, vectorUsed: Boolean(queryVec) };
+}
+
+/** Cuántas citas se enriquecen con el cuerpo del artículo (las primeras N,
+ *  que son las mejor rankeadas) y cuántos chars viajan de cada una. Acota
+ *  los tokens del prompt de /ask: 10×~700 ≈ 1,8k tokens extra como mucho. */
+const EXTRACT_MAX_CITATIONS = 10;
+const EXTRACT_MAX_CHARS = 700;
+
+/**
+ * Adjunta a las citas la sustancia del artículo que YA está en
+ * `article_extracts` (extraído on-click o pre-enriquecido en el cron).
+ * Coste: 1 query por pregunta, cero red y cero LLM — el hueco que tapa es
+ * que /ask respondía parafraseando titulares aunque el artículo entero
+ * estuviera cacheado en la BD. Best-effort: extracts cascadean con la purga
+ * de news a 20d, así que citas viejas van sin body (el snapshot sobrevive).
+ */
+async function attachExtracts(citations: Citation[]): Promise<void> {
+  const ids = citations
+    .slice(0, EXTRACT_MAX_CITATIONS)
+    .map((c) => c.newsId)
+    .filter((id): id is number => id !== null);
+  if (!ids.length) return;
+  try {
+    const rows = unwrapRows<{ newsId: number; body: string | null }>(
+      await db.execute(sql`
+        SELECT news_id AS "newsId",
+               COALESCE(
+                 NULLIF(TRIM(CONCAT_WS(' — ', ai_summary, ai_take)), ''),
+                 LEFT(text, ${EXTRACT_MAX_CHARS})
+               ) AS body
+        FROM article_extracts
+        WHERE news_id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+          AND status = 'ok'
+      `),
+    );
+    const byId = new Map(rows.map((r) => [Number(r.newsId), r.body]));
+    for (const c of citations) {
+      if (c.newsId !== null && byId.has(c.newsId)) {
+        c.body = byId.get(c.newsId)?.slice(0, EXTRACT_MAX_CHARS) ?? null;
+      }
+    }
+  } catch (err) {
+    // Sin body se responde igual (como antes de esta mejora).
+    console.warn(
+      "[ask] attachExtracts falló:",
+      err instanceof Error ? err.message.slice(0, 120) : err,
+    );
+  }
 }
