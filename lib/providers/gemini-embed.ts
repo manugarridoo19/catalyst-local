@@ -72,6 +72,18 @@ function l2normalize(v: number[]): number[] {
   return v.map((x) => x / norm);
 }
 
+/** 401/403: la key no sirve (revocada, proyecto sin la API activada). No es
+ *  transitorio, así que se aparta hasta el reset diario en vez de
+ *  reintentarla en cada llamada — y se avisa fuerte, porque el
+ *  skip-and-continue que impide que una key mala tumbe al proveedor es
+ *  también lo que hace que una key muerta pase desapercibida. */
+function applyAuthFailure(label: string): void {
+  cooldown.set(label, geminiDailyResetMs());
+  console.warn(
+    `[gemini-embed] ${label} AUTH FAILED (401/403) — key inválida, apartada hasta el reset`,
+  );
+}
+
 let rr = 0;
 
 async function callWithKey(
@@ -136,6 +148,11 @@ export async function embedBatch(
   const reserve = keys.filter((k) => k.reserve);
   let lastErr: unknown = null;
   let anyAvailable = false;
+  // ¿Todo lo que falló fue "esta key no está disponible" (cuota o auth)?
+  // Entonces esto es un "vuelve luego", no un error del job: el caller debe
+  // reintentar en el siguiente tick en vez de morirse. Un backfill entero
+  // se cayó por dejar escapar el 401 de la key de reserva (2026-07-21).
+  let onlyUnavailable = true;
 
   for (const [tier, rotate] of [
     [primary, true],
@@ -151,20 +168,23 @@ export async function embedBatch(
         const r = await callWithKey(k.key, texts, taskType, timeoutMs);
         if (r.ok) return r.vectors;
         if (r.status === 429) applyRateLimit(k.label, r.body);
+        else if (r.status === 401 || r.status === 403) applyAuthFailure(k.label);
+        else onlyUnavailable = false;
         lastErr = new Error(`gemini-embed ${k.label} ${r.status}: ${r.body.slice(0, 140)}`);
       } catch (err) {
         // Skip-and-continue en cualquier fallo per-key (mismo criterio que
         // gemini.ts): un error duro no debe wedgear el tier entero.
+        onlyUnavailable = false;
         lastErr = err;
       }
     }
   }
 
-  if (!anyAvailable) {
-    const until = Math.min(
-      ...keys.map((k) => cooldown.get(k.label) ?? Date.now()),
-    );
-    throw new EmbedQuotaError(until);
+  if (!anyAvailable || onlyUnavailable) {
+    const untils = keys
+      .map((k) => cooldown.get(k.label) ?? 0)
+      .filter((t) => t > Date.now());
+    throw new EmbedQuotaError(untils.length ? Math.min(...untils) : Date.now());
   }
   throw lastErr instanceof Error ? lastErr : new Error("gemini-embed: all keys failed");
 }

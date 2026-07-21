@@ -14,7 +14,7 @@
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
-const SLEEP_MS = Number(process.env.EMBED_SLEEP_MS ?? 20_000);
+const SLEEP_MS = Number(process.env.EMBED_SLEEP_MS ?? 30_000);
 
 async function main() {
   const dryRun = process.argv.includes("--dry-run");
@@ -40,15 +40,30 @@ async function main() {
 
   const { runEmbedIngest } = await import("../lib/embeddings/ingest");
   let total = 0;
+  // Un 429 por RPM es lo normal en un backfill (100/min y key, y el scorer
+  // consume de las mismas): esperar y seguir. Sólo se abandona si la cuota
+  // sigue agotada varias veces seguidas, que ya es el límite diario.
+  let quotaWaits = 0;
+  const MAX_QUOTA_WAITS = 4;
   for (;;) {
     const r = await runEmbedIngest();
     total += r.embedded;
     console.log(
       `[embed-backfill] +${r.embedded} (total ${total}) db=${r.dbMb.toFixed(0)}MB${r.skipped ? ` skipped=${r.skipped}` : ""}`,
     );
-    // Parar en seco ante cualquier freno: cuota agotada, disco al límite o
-    // simplemente no quedan candidatos. Reintentar aquí sólo quemaría 429s.
-    if (r.skipped || r.embedded === 0) break;
+    // Frenos definitivos: kill-switch, disco al límite o no quedan
+    // candidatos. Reintentarlos aquí no cambiaría nada.
+    if (r.skipped === "disabled" || r.skipped === "storage") break;
+    if (r.skipped === "quota") {
+      if (++quotaWaits > MAX_QUOTA_WAITS) {
+        console.log("[embed-backfill] cuota agotada — reanuda en otra pasada");
+        break;
+      }
+      await new Promise((res) => setTimeout(res, 70_000));
+      continue;
+    }
+    quotaWaits = 0;
+    if (r.embedded === 0) break;
     if (maxRows && total >= maxRows) break;
     await new Promise((res) => setTimeout(res, SLEEP_MS));
   }
