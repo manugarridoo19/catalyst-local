@@ -8,6 +8,7 @@ import {
   getRecentStakes,
   type InsiderFlowRow,
 } from "@/lib/insider/queries";
+import { getEmpiricalPriors } from "@/lib/signals/priors";
 
 // Smart Money digest — lectura LLM de los agregados insider+fondos de 7d:
 // dónde están comprando los insiders (open market), cluster buys, ventas
@@ -169,9 +170,23 @@ export async function generateInsiderDigest(): Promise<InsiderDigestRow> {
     );
   }
 
+  // Priors del Signal Lab para los kinds insider (ver lib/signals/priors.ts):
+  // si los cluster buys han rendido y las stakes 13D no, el digest debe
+  // ordenar sus highlights en consecuencia.
+  const priors = await getEmpiricalPriors([
+    "cluster_buy",
+    "insider_net_buy",
+    "stake_13d",
+  ]);
+
   const result = await proseCompletion({
     messages: [
-      { role: "system", content: DIGEST_SYSTEM_PROMPT },
+      {
+        role: "system",
+        content: priors
+          ? DIGEST_SYSTEM_PROMPT + "\n" + priors
+          : DIGEST_SYSTEM_PROMPT,
+      },
       { role: "user", content: sections.join("\n") },
     ],
     temperature: 0.3,

@@ -3,6 +3,7 @@ import { db, unwrapRows } from "@/lib/db";
 import { aiPicks } from "@/lib/db/schema";
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { getInsiderNetBySymbols } from "@/lib/insider/queries";
+import { getEmpiricalPriors } from "@/lib/signals/priors";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
 
 // AI Picks v2 — "qué stocks están CONSTRUYENDO momentum en el tape".
@@ -321,9 +322,22 @@ export async function generatePicks(): Promise<PicksRow> {
     ...blocks,
   ].join("\n");
 
+  // Priors del Signal Lab: cómo le ha ido HISTÓRICAMENTE a cada tipo de
+  // señal de Catalyst. No es predicción, es calibración de exigencia — y si
+  // aún no hay muestra suficiente, el prompt sale exactamente como antes.
+  const priors = await getEmpiricalPriors([
+    "ai_pick",
+    "cluster_buy",
+    "insider_net_buy",
+    "analyst_upgrade",
+  ]);
+
   const result = await proseCompletion({
     messages: [
-      { role: "system", content: PICKS_SYSTEM_PROMPT },
+      {
+        role: "system",
+        content: priors ? PICKS_SYSTEM_PROMPT + "\n" + priors : PICKS_SYSTEM_PROMPT,
+      },
       { role: "user", content: userPrompt },
     ],
     temperature: 0.3,

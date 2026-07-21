@@ -423,7 +423,93 @@ export const insiderDigests = pgTable("insider_digests", {
     .defaultNow(),
 });
 
+// ─── Signal Lab ──────────────────────────────────────────────────────────
+// Cada señal que Catalyst emite queda registrada AL NACER, y un job nocturno
+// la mide sola contra los precios posteriores. El registro es PROSPECTIVO
+// (se escribe en el momento de la detección, nunca reconstruido a posteriori
+// salvo el backfill explícito de mayo) — eso es lo que lo hace limpio de
+// lookahead bias, a diferencia de un backtest.
+//
+// `kind` es TEXT, no enum: la fase 3 añade kinds nuevos (short_squeeze_setup,
+// fund_new_position) y un pgEnum obligaría a una migración por cada uno.
+// La lista viva está en lib/signals/kinds.ts.
+export const signalEvents = pgTable(
+  "signal_events",
+  {
+    id: serial("id").primaryKey(),
+    kind: text("kind").notNull(),
+    symbol: text("symbol")
+      .notNull()
+      .references(() => tickers.symbol, { onDelete: "cascade" }),
+    // Identidad de la señal DENTRO de su kind — lo que hace el insert
+    // idempotente frente a los ticks de 10min. Por kind: ai_pick → id de la
+    // fila ai_picks; analyst_upgrade → newsId; stake_13d → filingUrl;
+    // author_call → briefId; kinds de ventana rodante → symbol:fecha.
+    refId: text("ref_id").notNull(),
+    detectedAt: timestamp("detected_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // Precio intradía en el momento de detectar. INFORMATIVO — el retorno
+    // SIEMPRE se calcula close-to-close ajustado (ver signal_outcomes), no
+    // desde aquí: un precio intradía mezcla el timing con la señal.
+    priceAtDetection: doublePrecision("price_at_detection"),
+    meta: text("meta"), // JSON libre por kind (nº de compradores, %, tesis…)
+    // Control del job de outcomes: cuántas pasadas lo han intentado y cuándo
+    // fue la última. Sin esto, un símbolo deslistado (sin barras en Yahoo
+    // jamás) se re-intentaría en cada tick para siempre.
+    outcomeAttempts: smallint("outcome_attempts").notNull().default(0),
+    lastOutcomeAt: timestamp("last_outcome_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("signal_events_kind_symbol_ref_unique").on(
+      t.kind,
+      t.symbol,
+      t.refId,
+    ),
+    index("signal_events_kind_detected_idx").on(t.kind, t.detectedAt),
+    index("signal_events_detected_idx").on(t.detectedAt),
+  ],
+);
+
+// Retorno realizado de una señal a un horizonte. Semántica FIJA (cambiarla
+// invalida las comparaciones históricas):
+//   - baselineDate = día de detección si la señal nació ANTES del cierre y
+//     ese día hubo sesión; si nació tras las 16:00 ET o en festivo/finde →
+//     la siguiente sesión.
+//   - horizon = nº de DÍAS HÁBILES (sesiones reales, tomadas de la propia
+//     serie de Yahoo — así los festivos salen gratis y siempre bien).
+//   - returnPct = adjclose(target)/adjclose(baseline) - 1. SIEMPRE adjclose:
+//     con `close` crudo, un split 2:1 se leería como -50%.
+//   - benchmarkReturnPct = lo mismo para SPY entre las MISMAS dos fechas.
+export const signalOutcomes = pgTable(
+  "signal_outcomes",
+  {
+    eventId: integer("event_id")
+      .notNull()
+      .references(() => signalEvents.id, { onDelete: "cascade" }),
+    horizon: smallint("horizon").notNull(), // días hábiles: 1 | 7 | 30
+    baselineDate: text("baseline_date").notNull(), // yyyy-mm-dd (ET)
+    targetDate: text("target_date").notNull(), // yyyy-mm-dd (ET)
+    baselineClose: doublePrecision("baseline_close").notNull(),
+    targetClose: doublePrecision("target_close").notNull(),
+    returnPct: doublePrecision("return_pct").notNull(),
+    benchmarkReturnPct: doublePrecision("benchmark_return_pct"),
+    filledAt: timestamp("filled_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.eventId, t.horizon] }),
+    index("signal_outcomes_filled_idx").on(t.filledAt),
+  ],
+);
+
 export type Ticker = typeof tickers.$inferSelect;
+export type SignalEventRow = typeof signalEvents.$inferSelect;
+export type SignalOutcomeRow = typeof signalOutcomes.$inferSelect;
 export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;
 export type NewsScore = typeof newsScores.$inferSelect;

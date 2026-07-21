@@ -150,6 +150,9 @@ export function Header() {
           >
             Insider
           </NavTab>
+          <NavTab href="/lab" active={pathname?.startsWith("/lab") ?? false}>
+            Lab
+          </NavTab>
         </nav>
       </div>
 

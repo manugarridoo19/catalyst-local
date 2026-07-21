@@ -34,6 +34,14 @@ function readKey(): string {
   return "";
 }
 
+// Misma key para cualquier otro consumidor de FMP (el fallback de precios
+// del Signal Lab). Exportada para que la lógica de "env → archivo off-repo"
+// viva en UN solo sitio: los settings del usuario deniegan leer .env*, así
+// que ~/.catalyst-fmp-key (mode 600) es la fuente real en local.
+export function getFmpKey(): string {
+  return readKey();
+}
+
 export type FmpPeer = { symbol: string; name: string | null };
 
 export type FmpFundamentals = {

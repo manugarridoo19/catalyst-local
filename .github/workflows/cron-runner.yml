@@ -43,6 +43,13 @@ jobs:
           # duerme. 120/tick (12 llamadas batch) compensa la cadencia; el
           # scorer local de cada 15min mantiene su default de 60.
           ORPHAN_BATCH: "120"
+          # Signal Lab: símbolos por pasada del job de outcomes. El runner
+          # tiene IP limpia para Yahoo (desde una residencial castigada por
+          # 429 el job no rellena nada), así que aquí es donde de verdad se
+          # drena el backlog del backfill. Sin FMP_API_KEY en este env a
+          # propósito: el fallback de pago-por-cuota NO debe entrar en un
+          # job que corre 144 veces al día (ver lib/signals/prices.ts).
+          OUTCOMES_MAX_SYMBOLS: "25"
           # Yahoo Finance responde headers >16KB (CSP+cookies) y undici los
           # rechaza con UND_ERR_HEADERS_OVERFLOW — sin esto la extracción de
           # artículos (pre-enrich impact>=4) falla para rss:yahoo-finance.

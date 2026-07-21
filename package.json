@@ -18,6 +18,8 @@
     "backfill": "tsx scripts/backfill-news.ts",
     "cron:local": "tsx scripts/run-cron-local.ts",
     "cron:remote": "tsx scripts/cron-runner.ts",
+    "signals:backfill": "tsx scripts/backfill-signals.ts",
+    "signals:outcomes": "tsx scripts/fill-outcomes.ts",
     "daemon": "bash scripts/local-daemon.sh",
     "daemon:install": "bash scripts/local-daemon.sh install",
     "daemon:status": "bash scripts/local-daemon.sh status",

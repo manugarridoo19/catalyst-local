@@ -110,6 +110,48 @@ async function main() {
     );
   }
 
+  // Signal Lab — registro PROSPECTIVO de señales. Va después de picks e
+  // insider digest a propósito: así los picks recién generados en este mismo
+  // tick ya entran en el registro. Inserts idempotentes, cero LLM.
+  try {
+    const { runDetectSignalsCron } = await import("../lib/signals/detect");
+    const sig = await runDetectSignalsCron();
+    if (sig.inserted > 0) {
+      console.log(
+        `[cron-runner] signals +${sig.inserted}`,
+        JSON.stringify(sig.byKind),
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[cron-runner] signal detection failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Outcomes: mide señales maduras contra los precios posteriores. Chunked +
+  // resumable con presupuesto de tiempo — lo que no entre en esta pasada
+  // sigue en la siguiente. Cada evento se reintenta como mucho 1×/20h, así
+  // que la carga sobre Yahoo es mínima aunque el tick corra cada 10min.
+  try {
+    const { runSignalOutcomesCron } = await import("../lib/signals/outcomes");
+    const out = await runSignalOutcomesCron({
+      maxSymbols: Number(process.env.OUTCOMES_MAX_SYMBOLS ?? 12),
+    });
+    if (out.eventsProcessed > 0) {
+      console.log(
+        `[cron-runner] outcomes filled ${out.outcomesFilled} over ${out.eventsProcessed} events / ${out.symbols} symbols` +
+          (out.abandoned ? ` (${out.abandoned} abandoned)` : "") +
+          ` in ${out.durationMs}ms`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[cron-runner] signal outcomes failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   console.log(`[cron-runner] total ${Date.now() - t0}ms`);
 }
 

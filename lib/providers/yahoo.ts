@@ -119,6 +119,137 @@ async function fetchYahooChart(
   return [];
 }
 
+// ─── Serie diaria de cierres AJUSTADOS (Signal Lab) ──────────────────────
+// El chart v8 acepta period1/period2 (unix segundos) además de `range`, y con
+// interval=1d devuelve `indicators.adjclose` — cierres back-ajustados por
+// splits y dividendos. Es lo que necesita el Lab: con `close` crudo, un split
+// 2:1 se leería como un -50% de retorno.
+
+export type AdjCloseSeries = {
+  // Fechas de SESIÓN REAL en orden ascendente (yyyy-mm-dd, calendario ET).
+  // Son las sesiones que de verdad ocurrieron, así que contar "días hábiles"
+  // sobre este array maneja festivos de mercado sin calendario propio.
+  dates: string[];
+  closes: Map<string, number>;
+};
+
+// Fecha de calendario de Nueva York para un instante dado. Las barras diarias
+// de Yahoo vienen con el timestamp de la APERTURA en ET, así que convertir en
+// UTC desplazaría de día las sesiones (09:30 ET = 14:30 UTC va bien, pero el
+// borde de fin de mes no perdona).
+export function etDateString(ms: number): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(ms));
+}
+
+// Hora ET (0-23) — para saber si una señal nació después del cierre (16:00).
+export function etHour(ms: number): number {
+  return Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "2-digit",
+      hour12: false,
+    }).format(new Date(ms)),
+  );
+}
+
+type YahooAdjResponse = {
+  chart: {
+    result?: Array<{
+      timestamp?: number[];
+      indicators: {
+        quote: Array<{ close: (number | null)[] }>;
+        adjclose?: Array<{ adjclose: (number | null)[] }>;
+      };
+    }>;
+    error?: { code: string; description: string };
+  };
+};
+
+async function fetchAdjClosesFromHost(
+  host: string,
+  symbol: string,
+  fromMs: number,
+): Promise<AdjCloseSeries> {
+  const url = new URL(
+    `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}`,
+  );
+  // Margen hacia atrás: la baseline puede caer en un festivo largo y hay que
+  // tener sesiones anteriores en la serie para localizarla.
+  url.searchParams.set(
+    "period1",
+    String(Math.floor(fromMs / 1000) - 10 * 86_400),
+  );
+  url.searchParams.set("period2", String(Math.floor(Date.now() / 1000)));
+  url.searchParams.set("interval", "1d");
+  url.searchParams.set("events", "div,split");
+  url.searchParams.set("includeAdjustedClose", "true");
+
+  const res = await fetch(url.toString(), {
+    headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
+    signal: AbortSignal.timeout(12_000),
+  });
+  const ct = res.headers.get("content-type") ?? "";
+  if (!res.ok || !ct.includes("json")) {
+    throw new Error(`Yahoo ${host} ${res.status} (ct: ${ct.slice(0, 30)})`);
+  }
+  const json = (await res.json()) as YahooAdjResponse;
+  if (json.chart.error) throw new Error(`Yahoo: ${json.chart.error.description}`);
+  const result = json.chart.result?.[0];
+  if (!result) return { dates: [], closes: new Map() };
+
+  const ts = result.timestamp ?? [];
+  const adj = result.indicators.adjclose?.[0]?.adjclose;
+  const raw = result.indicators.quote[0]?.close;
+  const dates: string[] = [];
+  const closes = new Map<string, number>();
+  for (let i = 0; i < ts.length; i++) {
+    // adjclose es lo correcto; si Yahoo no lo manda (pasa en algún símbolo
+    // exótico) caemos a close crudo — mejor un dato que ninguno, y el
+    // sesgo por split es raro y visible.
+    const c = adj?.[i] ?? raw?.[i];
+    if (c == null || !Number.isFinite(c)) continue;
+    const day = etDateString(ts[i] * 1000);
+    if (!closes.has(day)) dates.push(day);
+    closes.set(day, c);
+  }
+  return { dates, closes };
+}
+
+// Cierres ajustados diarios desde `fromMs` hasta hoy. Devuelve series vacía
+// (no lanza) si el símbolo no existe o Yahoo bloquea — el caller cuenta el
+// intento y reintenta mañana.
+export async function getDailyAdjCloses(
+  symbol: string,
+  fromMs: number,
+): Promise<AdjCloseSeries> {
+  const variants = symbol.includes(".")
+    ? [symbol, symbol.replace(/\./g, "-")]
+    : [symbol];
+  let lastErr: unknown = null;
+  for (const sym of variants) {
+    for (const host of YAHOO_HOSTS) {
+      try {
+        const series = await fetchAdjClosesFromHost(host, sym, fromMs);
+        if (series.dates.length > 0) return series;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+  }
+  if (lastErr) {
+    console.warn(
+      `[yahoo] adjcloses ${symbol} failed:`,
+      lastErr instanceof Error ? lastErr.message : lastErr,
+    );
+  }
+  return { dates: [], closes: new Map() };
+}
+
 export async function getBars(
   symbol: string,
   period: Period,

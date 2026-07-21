@@ -79,6 +79,26 @@ async function main() {
     }
   }
 
+  // Signal Lab — detección (inserts idempotentes, sin LLM ni Yahoo). Corre
+  // también aquí, no solo en el cron GH: si el Mac está despierto, una señal
+  // se registra con hasta 10min menos de retraso. El JOB DE OUTCOMES no —
+  // ése pega a Yahoo y vive solo en el cron-runner (un único escritor basta,
+  // y cada evento ya tiene guard de 20h).
+  try {
+    const { runDetectSignalsCron } = await import("../lib/signals/detect");
+    const sig = await runDetectSignalsCron();
+    if (sig.inserted > 0) {
+      console.log(
+        `[refresh-once] signals +${sig.inserted} ${JSON.stringify(sig.byKind)}`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[refresh-once] signal detection failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   // Smart Money digest (sección /insider): age check 6h dentro.
   if (!skipBriefs) {
     try {
