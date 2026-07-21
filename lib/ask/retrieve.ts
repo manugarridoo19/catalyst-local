@@ -225,20 +225,13 @@ async function lexicalSearch(
   return rowsToCitations(rows, "lexical");
 }
 
-/** Agregados reales por símbolo. Aquí es donde salen los números. */
-async function structuredFacts(symbols: string[]): Promise<StructuredFacts[]> {
-  const out: StructuredFacts[] = [];
-  for (const symbol of symbols.slice(0, 3)) {
-    const [meta] = unwrapRows<{ name: string | null }>(
-      await db.execute(sql`SELECT name FROM tickers WHERE symbol = ${symbol}`),
-    );
-    const [insider] = unwrapRows<{
-      net7: number | null;
-      net30: number | null;
-      buyers: number;
-      sellers: number;
-    }>(
-      await db.execute(sql`
+/** Agregados reales por símbolo. Aquí es donde salen los números.
+ *  Las 6 queries del símbolo (y los hasta 3 símbolos) van en Promise.all:
+ *  el driver HTTP hace un fetch independiente por query, así que en serie
+ *  eran ~18 round-trips encadenados de latencia pura. */
+async function factsForSymbol(symbol: string): Promise<StructuredFacts> {
+  const metaQ = db.execute(sql`SELECT name FROM tickers WHERE symbol = ${symbol}`);
+  const insiderQ = db.execute(sql`
         SELECT
           (COALESCE(SUM(value) FILTER (WHERE tx_code='P' AND filed_at >= now() - interval '7 days'),0)
            - COALESCE(SUM(value) FILTER (WHERE tx_code='S' AND filed_at >= now() - interval '7 days'),0))::float8 AS net7,
@@ -250,61 +243,70 @@ async function structuredFacts(symbols: string[]): Promise<StructuredFacts[]> {
         WHERE symbol = ${symbol}
           AND tx_code IN ('P','S')
           AND filed_at >= now() - interval '30 days'
-      `),
-    );
-    const stakes = unwrapRows<{ filer: string | null; pct: number | null; filedAt: string }>(
-      await db.execute(sql`
+      `);
+  const stakesQ = db.execute(sql`
         SELECT filer_name AS filer, percent_of_class::float8 AS pct,
                to_char(filed_at at time zone 'UTC','YYYY-MM-DD') AS "filedAt"
         FROM fund_stakes WHERE symbol = ${symbol}
         ORDER BY filed_at DESC LIMIT 4
-      `),
-    );
-    // earnings_events.date es TEXT yyyy-mm-dd (sortable) — se compara como
-    // texto contra la fecha de hoy, no con operadores de fecha.
-    const [earn] = unwrapRows<{ d: string | null }>(
-      await db.execute(sql`
+      `);
+  // earnings_events.date es TEXT yyyy-mm-dd (sortable) — se compara como
+  // texto contra la fecha de hoy, no con operadores de fecha.
+  const earnQ = db.execute(sql`
         SELECT date AS d FROM earnings_events
         WHERE symbol = ${symbol} AND date >= to_char(current_date, 'YYYY-MM-DD')
         ORDER BY date ASC LIMIT 1
-      `),
-    );
-    // ai_picks guarda UN JSON array por generación, no una fila por
-    // símbolo: hay que desplegarlo para encontrar la tesis de este ticker.
-    const [pick] = unwrapRows<{ thesis: string; generatedAt: string }>(
-      await db.execute(sql`
+      `);
+  // ai_picks guarda UN JSON array por generación, no una fila por
+  // símbolo: hay que desplegarlo para encontrar la tesis de este ticker.
+  const pickQ = db.execute(sql`
         SELECT e.elem->>'thesis' AS thesis,
                to_char(p.generated_at at time zone 'UTC','YYYY-MM-DD') AS "generatedAt"
         FROM ai_picks p,
              LATERAL jsonb_array_elements(p.content::jsonb) AS e(elem)
         WHERE e.elem->>'symbol' = ${symbol}
         ORDER BY p.generated_at DESC LIMIT 1
-      `),
-    );
-    const [cov] = unwrapRows<{ n: number; avg: number | null }>(
-      await db.execute(sql`
+      `);
+  const covQ = db.execute(sql`
         SELECT COUNT(*)::int AS n, AVG(s.sentiment)::float8 AS avg
         FROM news_tickers nt
         JOIN news n ON n.id = nt.news_id
         JOIN news_scores s ON s.news_id = n.id
         WHERE nt.ticker = ${symbol} AND n.published_at >= now() - interval '7 days'
-      `),
-    );
-    out.push({
-      symbol,
-      name: meta?.name ?? null,
-      insiderNet7d: insider?.net7 ?? null,
-      insiderNet30d: insider?.net30 ?? null,
-      insiderBuyers30d: insider?.buyers ?? 0,
-      insiderSellers30d: insider?.sellers ?? 0,
-      stakes,
-      nextEarnings: earn?.d ?? null,
-      lastPick: pick ?? null,
-      newsCount7d: cov?.n ?? 0,
-      avgSentiment7d: cov?.avg ?? null,
-    });
-  }
-  return out;
+      `);
+
+  const [metaR, insiderR, stakesR, earnR, pickR, covR] = await Promise.all([
+    metaQ, insiderQ, stakesQ, earnQ, pickQ, covQ,
+  ]);
+  const [meta] = unwrapRows<{ name: string | null }>(metaR);
+  const [insider] = unwrapRows<{
+    net7: number | null;
+    net30: number | null;
+    buyers: number;
+    sellers: number;
+  }>(insiderR);
+  const stakes = unwrapRows<{ filer: string | null; pct: number | null; filedAt: string }>(stakesR);
+  const [earn] = unwrapRows<{ d: string | null }>(earnR);
+  const [pick] = unwrapRows<{ thesis: string; generatedAt: string }>(pickR);
+  const [cov] = unwrapRows<{ n: number; avg: number | null }>(covR);
+
+  return {
+    symbol,
+    name: meta?.name ?? null,
+    insiderNet7d: insider?.net7 ?? null,
+    insiderNet30d: insider?.net30 ?? null,
+    insiderBuyers30d: insider?.buyers ?? 0,
+    insiderSellers30d: insider?.sellers ?? 0,
+    stakes,
+    nextEarnings: earn?.d ?? null,
+    lastPick: pick ?? null,
+    newsCount7d: cov?.n ?? 0,
+    avgSentiment7d: cov?.avg ?? null,
+  };
+}
+
+async function structuredFacts(symbols: string[]): Promise<StructuredFacts[]> {
+  return Promise.all(symbols.slice(0, 3).map(factsForSymbol));
 }
 
 /**
