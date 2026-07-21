@@ -52,6 +52,11 @@ jobs:
           # llamadas contra la cuota free de 250/día que comparte con los
           # fundamentales. Si Yahoo vuelve, este gasto cae solo a ~0.
           OUTCOMES_MAX_SYMBOLS: "40"
+          # Yahoo limita por IP y el reparto es asimétrico: 429 desde este
+          # runner, pero responde normal desde nuestro Worker de Cloudflare.
+          # El proxy convierte el bloqueo en una llamada más — gratis y sin
+          # key nueva — y deja el fallback FMP (cuota 250/día) como 3ª opción.
+          LAB_PRICE_PROXY_URL: "https://catalyst-local.manubisbal19.workers.dev"
           LAB_FMP_MAX_CALLS: "45"
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           # Yahoo Finance responde headers >16KB (CSP+cookies) y undici los

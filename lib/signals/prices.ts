@@ -70,12 +70,51 @@ async function fetchFmpAdjCloses(
   return { dates, closes };
 }
 
+// Proxy a través de nuestro propio Worker de Cloudflare. El límite de Yahoo
+// es POR IP y resultó asimétrico (2026-07-21): 429 desde la IP del usuario y
+// desde los runners de GitHub, pero responde normal desde Cloudflare. Como el
+// job corre en GitHub Actions, pedirle los precios a nuestro Worker convierte
+// un bloqueo duro en una llamada más — gratis, sin cuenta ni key nuevas.
+async function fetchViaProxy(
+  symbol: string,
+  fromMs: number,
+): Promise<AdjCloseSeries> {
+  const base = process.env.LAB_PRICE_PROXY_URL;
+  if (!base) return { dates: [], closes: new Map() };
+  // Nunca desde dentro del propio Worker: sería una llamada a sí mismo.
+  if (typeof (globalThis as { WebSocketPair?: unknown }).WebSocketPair !== "undefined") {
+    return { dates: [], closes: new Map() };
+  }
+  const url = `${base.replace(/\/$/, "")}/api/adj-closes?symbol=${encodeURIComponent(symbol)}&from=${Math.floor(fromMs)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`proxy ${res.status}`);
+  const json = (await res.json()) as {
+    dates?: string[];
+    closes?: Record<string, number>;
+  };
+  return {
+    dates: json.dates ?? [],
+    closes: new Map(Object.entries(json.closes ?? {})),
+  };
+}
+
 export async function getAdjCloseSeries(
   symbol: string,
   fromMs: number,
 ): Promise<AdjCloseSeries> {
   const yahoo = await getDailyAdjCloses(symbol, fromMs);
   if (yahoo.dates.length > 0) return yahoo;
+
+  // 2º: el mismo Yahoo, pero desde una IP que no está limitada.
+  try {
+    const viaProxy = await fetchViaProxy(symbol, fromMs);
+    if (viaProxy.dates.length > 0) return viaProxy;
+  } catch (err) {
+    console.warn(
+      `[prices] ${symbol}: proxy falló:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   if (FMP_BUDGET <= 0 || fmpCallsUsed >= FMP_BUDGET) {
     console.warn(
