@@ -9,6 +9,7 @@ import {
 import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 import { UNSCORED_RETENTION_DAYS } from "@/lib/time-windows";
 import { enrichTopStories } from "@/lib/articles/enrich";
+import { runEmbedIngest } from "@/lib/embeddings/ingest";
 
 // v4 (2026-07): scoring por LOTES. Antes: 1 noticia = 1 llamada LLM, o sea
 // 10 llamadas/tick y un techo de ~3.000 news/día con el pool entero — por
@@ -243,6 +244,28 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
         err instanceof Error ? err.message.slice(0, 140) : err,
       );
     }
+  }
+
+  // Embeddings del archivo (Ask Catalyst). Va aquí y no en un job aparte
+  // para que lo recién puntuado con impact>=3 entre en el índice en la
+  // MISMA pasada: el archivo consultable queda a minutos del feed. Es una
+  // sola llamada HTTP por tick y no gasta cuota LLM (métrica distinta), así
+  // que no compite con el scoring. Best-effort: si falla, el siguiente tick
+  // recoge lo mismo (la selección es "lo que no tiene embedding").
+  try {
+    const emb = await runEmbedIngest();
+    if (emb.embedded || emb.purged || emb.skipped) {
+      console.log(
+        `[score-orphans] embeddings: +${emb.embedded} -${emb.purged}` +
+          (emb.skipped ? ` (skipped: ${emb.skipped})` : "") +
+          ` db=${emb.dbMb.toFixed(0)}MB`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[score-orphans] embed ingest failed:",
+      err instanceof Error ? err.message.slice(0, 140) : err,
+    );
   }
 
   return {

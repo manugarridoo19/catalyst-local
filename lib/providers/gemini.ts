@@ -344,6 +344,29 @@ export async function geminiChatCompletion(opts: {
       );
 }
 
+/** Las keys del pool, para proveedores hermanos que hablan con otra API de
+ *  Google con su PROPIA cuota (gemini-embed.ts). Comparten cuenta y por
+ *  tanto keys, pero NO estado de cooldown: un 429 de embeddings no dice
+ *  nada sobre la cuota de generateContent y enfriarla aquí dejaría al
+ *  scorer sin esa key gratis. Nunca se serializa fuera del proceso. */
+export function listGeminiKeys(): Array<{
+  key: string;
+  label: string;
+  reserve: boolean;
+}> {
+  return KEY_POOL.map((k) => ({
+    key: k.key,
+    label: k.label,
+    reserve: k.reserve,
+  }));
+}
+
+/** Medianoche Pacific siguiente, en ms — el reset de las cuotas diarias de
+ *  Google (no es medianoche UTC). Compartido con gemini-embed.ts. */
+export function geminiDailyResetMs(): number {
+  return nextPacificMidnightMs();
+}
+
 export function getGeminiPoolStatus(): {
   total: number;
   available: number;

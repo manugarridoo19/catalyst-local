@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
+  customType,
   pgTable,
   text,
   integer,
@@ -507,7 +509,72 @@ export const signalOutcomes = pgTable(
   ],
 );
 
+// Embeddings del archivo para Ask Catalyst (RAG, 2026-07-21).
+//
+// Por qué NO cuelga de `news` con CASCADE (a diferencia de news_scores):
+// las noticias se purgan a los 20 días y las CITAS de una respuesta tienen
+// que seguir siendo verificables después. Por eso la fila lleva un
+// SNAPSHOT desnormalizado (headline, summary, url, símbolos, fecha) y el
+// FK es SET NULL — mismo patrón que insider_trades/fund_stakes. Efecto
+// buscado: la ventana consultable del archivo CRECE indefinidamente en lo
+// embebido, aunque la fila original ya no exista.
+//
+// Selectividad (free tier es ley): solo impact>=3, y solo titular+summary,
+// nunca el cuerpo. Chunk = unidad semántica natural, que es justamente lo
+// que el research daba como ~2× mejor que trocear por tamaño fijo.
+//
+// halfvec(768) = 2 bytes/dimensión (vector serían 4). ~1.5KB/fila + ~0.4KB
+// de snapshot. El índice HNSW se crea en la migración a mano: drizzle-kit
+// no sabe emitir opclases sobre tipos custom.
+const halfvec768 = customType<{ data: number[]; driverData: string }>({
+  dataType: () => "halfvec(768)",
+  toDriver: (value) => `[${value.join(",")}]`,
+  fromDriver: (value) =>
+    typeof value === "string"
+      ? value.slice(1, -1).split(",").map(Number)
+      : (value as unknown as number[]),
+});
+
+export const newsEmbeddings = pgTable(
+  "news_embeddings",
+  {
+    id: serial("id").primaryKey(),
+    // SET NULL, no CASCADE: al purgarse la noticia el snapshot sobrevive.
+    newsId: integer("news_id").references(() => news.id, {
+      onDelete: "set null",
+    }),
+    headline: text("headline").notNull(),
+    summary: text("summary"),
+    url: text("url").notNull(),
+    source: text("source").notNull(),
+    // Snapshot de los tickers vinculados EN EL MOMENTO de embeber. Array y
+    // no columna única: una noticia toca varios símbolos y el filtro "¿qué
+    // se dijo de NVDA?" tiene que verlos todos sin news_tickers, que se va
+    // con la purga.
+    symbols: text("symbols").array().notNull().default(sql`'{}'::text[]`),
+    impact: smallint("impact").notNull(),
+    sentiment: smallint("sentiment").notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
+    embedding: halfvec768("embedding").notNull(),
+    // Modelo + dimensión con los que se generó: si algún día cambia, hay
+    // que saber qué filas son comparables entre sí (los vectores de
+    // modelos distintos NO viven en el mismo espacio).
+    model: text("model").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // Una noticia = un embedding. Los NULL (noticias ya purgadas) no chocan
+    // entre sí en Postgres, que es justo lo que queremos.
+    uniqueIndex("news_embeddings_news_unique").on(t.newsId),
+    index("news_embeddings_published_idx").on(t.publishedAt),
+    index("news_embeddings_symbols_idx").using("gin", t.symbols),
+  ],
+);
+
 export type Ticker = typeof tickers.$inferSelect;
+export type NewsEmbeddingRow = typeof newsEmbeddings.$inferSelect;
 export type SignalEventRow = typeof signalEvents.$inferSelect;
 export type SignalOutcomeRow = typeof signalOutcomes.$inferSelect;
 export type NewNews = typeof news.$inferInsert;

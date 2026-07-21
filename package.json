@@ -20,6 +20,7 @@
     "cron:remote": "tsx scripts/cron-runner.ts",
     "signals:backfill": "tsx scripts/backfill-signals.ts",
     "signals:outcomes": "tsx scripts/fill-outcomes.ts",
+    "embed:backfill": "tsx scripts/backfill-embeddings.ts",
     "daemon": "bash scripts/local-daemon.sh",
     "daemon:install": "bash scripts/local-daemon.sh install",
     "daemon:status": "bash scripts/local-daemon.sh status",
