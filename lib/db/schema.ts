@@ -644,6 +644,68 @@ export const earningsReports = pgTable(
   ],
 );
 
+// CUSIP → ticker. Caché PERMANENTE: la correspondencia no cambia (un CUSIP
+// identifica una emisión concreta para siempre), así que una vez resuelto no
+// se vuelve a preguntar a OpenFIGI jamás. Es el "gate" que el design doc
+// exigía resolver antes de tocar 13F: el information table identifica por
+// CUSIP y nosotros indexamos todo por ticker.
+export const cusipMap = pgTable(
+  "cusip_map",
+  {
+    cusip: text("cusip").primaryKey(),
+    // NULL = consultado y SIN equivalencia cotizada en EEUU (bonos, clases
+    // no listadas). Se guarda igual para no re-preguntar en cada trimestre.
+    symbol: text("symbol"),
+    name: text("name"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("cusip_map_symbol_idx").on(t.symbol)],
+);
+
+// Posiciones declaradas en el 13F de los fondos curados.
+export const fundHoldings = pgTable(
+  "fund_holdings",
+  {
+    id: serial("id").primaryKey(),
+    fundCik: text("fund_cik").notNull(),
+    fundName: text("fund_name").notNull(),
+    /** Fin del trimestre declarado (YYYY-MM-DD). La comparación entre
+     *  trimestres es lo que produce la señal de posición nueva. */
+    periodOfReport: text("period_of_report").notNull(),
+    /** Fecha en que se PRESENTÓ (≠ fin de trimestre: el plazo son 45 días).
+     *  La señal se apoya en ésta, no en el trimestre: un 13F es conocible
+     *  desde que se registra, y registrar la señal por el trimestre haría que
+     *  el Lab midiera retornos desde antes de que la información existiera. */
+    filingDate: text("filing_date"),
+    cusip: text("cusip").notNull(),
+    symbol: text("symbol"),
+    issuerName: text("issuer_name").notNull(),
+    /** Valor en DÓLARES (desde la reforma de 2023 ya no son miles).
+     *  Verificado: Ally 12.719.675 acciones → value 498.992.850. */
+    value: bigint("value", { mode: "number" }).notNull(),
+    shares: bigint("shares", { mode: "number" }),
+    accession: text("accession").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // Un fondo declara un CUSIP una vez por trimestre. El information table
+    // PUEDE repetir el mismo CUSIP en varias filas (un manager distinto por
+    // fila), así que la ingesta agrega antes de insertar.
+    uniqueIndex("fund_holdings_fund_period_cusip_unique").on(
+      t.fundCik,
+      t.periodOfReport,
+      t.cusip,
+    ),
+    index("fund_holdings_symbol_idx").on(t.symbol),
+    index("fund_holdings_period_idx").on(t.periodOfReport),
+  ],
+);
+
+export type FundHoldingRow = typeof fundHoldings.$inferSelect;
 export type EarningsReportRow = typeof earningsReports.$inferSelect;
 export type ShortInterestRow = typeof shortInterest.$inferSelect;
 export type Ticker = typeof tickers.$inferSelect;

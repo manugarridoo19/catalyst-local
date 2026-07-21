@@ -45,6 +45,14 @@ const SQUEEZE_NEWS_DAYS = 7;
 // y con la quincena entera cabiendo en una pasada el registro no depende de
 // cuántos ticks hayan corrido.
 const SQUEEZE_MAX_PER_TICK = 200;
+// Sólo se registran aperturas de 13F presentados en los últimos días: ver el
+// comentario de detectFundNewPositions. 21d cubre de sobra el retraso entre
+// que un fondo presenta y nuestro barrido de 12h lo ve.
+const FUND_FRESH_DAYS = 21;
+/** Suelo de tamaño de la posición. 25M$ deja fuera lo testimonial sin exigir
+ *  que sea una apuesta de convicción máxima. */
+const FUND_MIN_POSITION_USD = 25_000_000;
+const FUND_MAX_PER_TICK = 100;
 // Solo pedimos precio intradía a una señal que acaba de nacer: para un evento
 // fechado horas atrás, el precio de AHORA no es "el precio al detectar".
 const PRICE_FRESHNESS_MIN = 30;
@@ -408,6 +416,88 @@ async function detectShortSqueezeSetups(): Promise<SignalCandidate[]> {
   }));
 }
 
+// Posición NUEVA de un fondo curado: el símbolo aparece en el último 13F del
+// fondo y no estaba en el anterior.
+//
+// Dos decisiones que hacen que esto signifique algo en el Lab:
+//  1. **Sólo filings RECIENTES** (`SQUEEZE`-style freshness, ver
+//     FUND_FRESH_DAYS). Un 13F del 1T se presenta el 15 de mayo; registrarlo
+//     en julio con detectedAt=ahora mediría el retorno desde julio para algo
+//     que era público desde mayo, y registrarlo con fecha de mayo sería
+//     lookahead descarado (insertaríamos sabiendo ya qué hizo el precio). La
+//     primera carga de un fondo es BASELINE y no emite señal ninguna.
+//  2. **Suelo de tamaño**: sin él, ARK (182 posiciones) inundaría la muestra
+//     con participaciones testimoniales que no son una convicción de nadie.
+async function detectFundNewPositions(): Promise<SignalCandidate[]> {
+  const rows = unwrapRows<{
+    symbol: string;
+    fund_name: string;
+    fund_cik: string;
+    period_of_report: string;
+    filing_date: string;
+    value: number;
+  }>(
+    await db.execute(sql`
+      WITH ranked AS (
+        SELECT fund_cik, period_of_report, MAX(filing_date) AS filing_date,
+               ROW_NUMBER() OVER (
+                 PARTITION BY fund_cik ORDER BY period_of_report DESC
+               ) AS rn
+        FROM fund_holdings
+        GROUP BY fund_cik, period_of_report
+      )
+      SELECT h.symbol, h.fund_name, h.fund_cik, h.period_of_report,
+             r.filing_date, h.value
+      FROM fund_holdings h
+      JOIN ranked r
+        ON r.fund_cik = h.fund_cik
+       AND r.period_of_report = h.period_of_report
+       AND r.rn = 1
+      WHERE h.symbol IS NOT NULL
+        AND h.value >= ${FUND_MIN_POSITION_USD}
+        AND r.filing_date >= to_char(
+              now() - (${FUND_FRESH_DAYS} || ' days')::interval, 'YYYY-MM-DD')
+        -- Existe un trimestre anterior guardado (si no, es la carga inicial)…
+        AND EXISTS (
+          SELECT 1 FROM ranked r2
+          WHERE r2.fund_cik = h.fund_cik AND r2.rn = 2
+        )
+        -- …y el símbolo NO estaba en él.
+        AND NOT EXISTS (
+          SELECT 1
+          FROM fund_holdings h2
+          JOIN ranked r2
+            ON r2.fund_cik = h2.fund_cik
+           AND r2.period_of_report = h2.period_of_report
+           AND r2.rn = 2
+          WHERE h2.fund_cik = h.fund_cik AND h2.symbol = h.symbol
+        )
+      ORDER BY h.value DESC
+      LIMIT ${FUND_MAX_PER_TICK}
+    `),
+  );
+  if (rows.length === FUND_MAX_PER_TICK) {
+    console.warn(
+      `[signals] fund_new_position tocó el tope de ${FUND_MAX_PER_TICK} — el resto en el siguiente tick`,
+    );
+  }
+  const detectedAt = new Date();
+  return rows.map((r) => ({
+    kind: "fund_new_position" as const,
+    symbol: r.symbol.toUpperCase(),
+    // fondo + trimestre: la misma apertura no se re-registra, pero dos fondos
+    // distintos sobre el mismo valor sí cuentan por separado.
+    refId: `${r.fund_cik}:${r.period_of_report}`,
+    detectedAt,
+    meta: {
+      fund: r.fund_name,
+      period: r.period_of_report,
+      filedAt: r.filing_date,
+      valueUsd: r.value,
+    },
+  }));
+}
+
 export async function runDetectSignalsCron(): Promise<DetectResult> {
   const t0 = Date.now();
   const byKind: Record<string, number> = {};
@@ -422,6 +512,7 @@ export async function runDetectSignalsCron(): Promise<DetectResult> {
     detectInsiderWindows(),
     detectAuthorCalls(),
     detectShortSqueezeSetups(),
+    detectFundNewPositions(),
   ]);
   const candidates: SignalCandidate[] = [];
   for (const s of settled) {

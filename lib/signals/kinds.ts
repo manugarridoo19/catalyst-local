@@ -10,6 +10,7 @@ export const SIGNAL_KINDS = [
   "analyst_upgrade",
   "author_call",
   "short_squeeze_setup",
+  "fund_new_position",
 ] as const;
 
 export type SignalKind = (typeof SIGNAL_KINDS)[number];
@@ -78,6 +79,14 @@ export const KIND_SPECS: Record<SignalKind, KindSpec> = {
     description:
       "Days-to-cover above 5 with 2+ bullish high-impact stories in 7d.",
     cooldownDays: 14,
+  },
+  // Sin cooldown: el refId ya es fondo+trimestre, y que DOS fondos distintos
+  // abran la misma posición el mismo trimestre son dos observaciones de
+  // verdad, no una repetida — justo la señal de convicción que interesa.
+  fund_new_position: {
+    label: "Fund new position",
+    description: "A curated 13F filer opened a position this quarter.",
+    cooldownDays: 0,
   },
 };
 

@@ -110,6 +110,24 @@ async function main() {
     );
   }
 
+  // 13F de los fondos curados. Trimestral: casi todas las pasadas salen por
+  // el guard sin tocar la red. Va antes de la detección para que una apertura
+  // recién publicada entre en el registro en el mismo tick.
+  try {
+    const { runFundHoldingsIngest } = await import("../lib/funds/ingest");
+    const fh = await runFundHoldingsIngest();
+    if (fh.filingsStored > 0) {
+      console.log(
+        `[cron-runner] 13F +${fh.filingsStored} filings, ${fh.holdingsStored} posiciones (${fh.fundsChecked} fondos)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[cron-runner] fund holdings failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   // Comunicados de resultados de la watchlist (8-K item 2.02 → exhibit 99.1).
   // Barrido cada 6h; en régimen hace 0 llamadas LLM (una empresa presenta una
   // vez por trimestre) y sólo gasta el día que aparece un comunicado nuevo.

@@ -1,5 +1,8 @@
 import { Header } from "@/components/header";
 import { InsiderDigestPanel } from "@/components/insider/digest-panel";
+import { FundHoldingsSection } from "@/components/insider/fund-holdings-section";
+import { getFundNewPositions, getFundConviction } from "@/lib/funds/queries";
+import type { FundConviction, FundNewPosition } from "@/lib/funds/queries";
 import {
   InsiderFlowTables,
   ClusterBuysSection,
@@ -35,17 +38,22 @@ async function loadData(): Promise<{
   clusters: ClusterBuyRow[];
   stakes: FundStakeRow[];
   trades: NotableTradeRow[];
+  newPositions: FundNewPosition[];
+  conviction: FundConviction[];
   error?: string;
 }> {
   try {
-    const [digest, flow, clusters, stakes, trades] = await Promise.all([
-      getLatestInsiderDigest().catch(() => null),
-      getInsiderFlow(),
-      getClusterBuys(),
-      getRecentStakes(),
-      getNotableTrades(),
-    ]);
-    return { digest, flow, clusters, stakes, trades };
+    const [digest, flow, clusters, stakes, trades, newPositions, conviction] =
+      await Promise.all([
+        getLatestInsiderDigest().catch(() => null),
+        getInsiderFlow(),
+        getClusterBuys(),
+        getRecentStakes(),
+        getNotableTrades(),
+        getFundNewPositions().catch(() => []),
+        getFundConviction().catch(() => []),
+      ]);
+    return { digest, flow, clusters, stakes, trades, newPositions, conviction };
   } catch (err) {
     return {
       digest: null,
@@ -53,15 +61,19 @@ async function loadData(): Promise<{
       clusters: [],
       stakes: [],
       trades: [],
+      newPositions: [],
+      conviction: [],
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function InsiderPage() {
-  const { digest, flow, clusters, stakes, trades, error } = await loadData();
+  const { digest, flow, clusters, stakes, trades, newPositions, conviction, error } =
+    await loadData();
   const empty =
-    !flow.length && !clusters.length && !stakes.length && !trades.length;
+    !flow.length && !clusters.length && !stakes.length && !trades.length &&
+    !newPositions.length && !conviction.length;
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -101,6 +113,10 @@ export default async function InsiderPage() {
               <ClusterBuysSection clusters={clusters} />
               <FundStakesSection stakes={stakes} />
               <NotableTradesSection trades={trades} />
+              <FundHoldingsSection
+                newPositions={newPositions}
+                conviction={conviction}
+              />
             </>
           )}
         </div>

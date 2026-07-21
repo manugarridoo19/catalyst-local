@@ -1,0 +1,1 @@
+ALTER TABLE "fund_holdings" ADD COLUMN "filing_date" text;
