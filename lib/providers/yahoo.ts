@@ -119,6 +119,73 @@ async function fetchYahooChart(
   return [];
 }
 
+// ─── Quote intradía (fallback de Finnhub) ────────────────────────────────
+// Finnhub responde 429 POR IP a los egress de Cloudflare Workers (verificado
+// 2026-07-21 con wrangler tail: todos los /quote fallaban en el Worker
+// mientras la misma key iba bien desde el Mac). Yahoo es el espejo exacto
+// (429 al Mac/GH, normal desde CF — ver lib/signals/prices.ts), así que el
+// quote del Worker sale del meta del chart v8, misma fuente que las velas.
+
+export type YahooQuote = {
+  price: number;
+  change: number;
+  changePercent: number;
+  prevClose: number;
+  high: number | null;
+  low: number | null;
+  open: number | null;
+};
+
+type YahooQuoteMeta = {
+  regularMarketPrice?: number;
+  chartPreviousClose?: number;
+  previousClose?: number;
+  regularMarketDayHigh?: number;
+  regularMarketDayLow?: number;
+};
+
+export async function getYahooQuote(symbol: string): Promise<YahooQuote | null> {
+  for (const host of YAHOO_HOSTS) {
+    try {
+      const url = new URL(
+        `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}`,
+      );
+      url.searchParams.set("range", "1d");
+      url.searchParams.set("interval", "1d");
+      url.searchParams.set("includePrePost", "false");
+      const res = await fetch(url.toString(), {
+        headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
+      });
+      const ct = res.headers.get("content-type") ?? "";
+      if (!res.ok || !ct.includes("json")) continue;
+      const json = (await res.json()) as YahooChartResponse & {
+        chart: { result?: Array<{ meta?: YahooQuoteMeta }> };
+      };
+      const result = json.chart.result?.[0];
+      const meta = result?.meta;
+      const price = meta?.regularMarketPrice;
+      const prev = meta?.chartPreviousClose ?? meta?.previousClose;
+      if (typeof price !== "number" || typeof prev !== "number" || prev <= 0) {
+        continue;
+      }
+      const day = result?.indicators?.quote?.[0];
+      return {
+        price,
+        change: price - prev,
+        changePercent: ((price - prev) / prev) * 100,
+        prevClose: prev,
+        high: meta?.regularMarketDayHigh ?? day?.high?.[0] ?? null,
+        low: meta?.regularMarketDayLow ?? day?.low?.[0] ?? null,
+        open: day?.open?.[0] ?? null,
+      };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 // ─── Serie diaria de cierres AJUSTADOS (Signal Lab) ──────────────────────
 // El chart v8 acepta period1/period2 (unix segundos) además de `range`, y con
 // interval=1d devuelve `indicators.adjclose` — cierres back-ajustados por

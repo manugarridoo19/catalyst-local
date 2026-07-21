@@ -1,5 +1,6 @@
 import type { NormalizedNewsItem } from "@/lib/types";
 import { hashUrl } from "@/lib/hash";
+import { getYahooQuote } from "@/lib/providers/yahoo";
 
 const BASE = "https://finnhub.io/api/v1";
 
@@ -82,7 +83,7 @@ function maybeLogFinnhubError(symbol: string, err: unknown) {
   if (prev && now - prev < ERROR_LOG_TTL_MS) return;
   lastErrorLog.set(symbol, now);
   const msg = err instanceof Error ? err.message : String(err);
-  console.warn(`[finnhub] company-news ${symbol} failed: ${msg.slice(0, 200)}`);
+  console.warn(`[finnhub] ${symbol} failed: ${msg.slice(0, 200)}`);
 }
 
 // Bulk: noticias para varios tickers a la vez. Respeta el rate-limit de
@@ -103,7 +104,7 @@ export async function fetchCompanyNewsBatch(
         const items = await fetchCompanyNews(sym, days);
         out.push(...items);
       } catch (err) {
-        maybeLogFinnhubError(sym, err);
+        maybeLogFinnhubError(`company-news:${sym}`, err);
       }
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -184,8 +185,27 @@ export type FinnhubQuote = {
 export async function getQuote(symbol: string): Promise<FinnhubQuote | null> {
   try {
     return await fh<FinnhubQuote>("/quote", { symbol });
-  } catch {
-    return null;
+  } catch (err) {
+    // Mismo throttle que company-news: sin esto un fallo de /quote (p.ej.
+    // TODOS los quotes a null en el Worker) era invisible — la watchlist
+    // se quedaba en "—" sin una sola línea de log en ningún sitio.
+    maybeLogFinnhubError(`quote:${symbol}`, err);
+    // Fallback Yahoo: Finnhub responde 429 POR IP a los egress de Cloudflare
+    // (todos los quotes del Worker morían), y Yahoo es su espejo exacto —
+    // funciona desde CF y ratelimita al Mac/GH, donde a cambio Finnhub va
+    // bien. Entre los dos, cada contexto tiene siempre una fuente viva.
+    const y = await getYahooQuote(symbol).catch(() => null);
+    if (!y) return null;
+    return {
+      c: y.price,
+      d: y.change,
+      dp: y.changePercent,
+      h: y.high ?? y.price,
+      l: y.low ?? y.price,
+      o: y.open ?? y.prevClose,
+      pc: y.prevClose,
+      t: Math.floor(Date.now() / 1000),
+    };
   }
 }
 
