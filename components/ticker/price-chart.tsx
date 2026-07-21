@@ -117,11 +117,16 @@ export function PriceChart({
     let cancelled = false;
     if (period === initialPeriod && bars === initial) return;
     fetch(`/api/bars?symbol=${symbol}&period=${period}`)
-      .then((r) => r.json())
+      // Si la respuesta no es OK, vaciamos: dejar las barras del periodo
+      // ANTERIOR bajo la etiqueta del nuevo es mentir con un gráfico. El
+      // estado vacío ("No data for X · Y") ya dice la verdad.
+      .then((r) => (r.ok ? r.json() : { bars: [] }))
       .then((d: { bars: Bar[] }) => {
         if (!cancelled) setBars(d.bars ?? []);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setBars([]);
+      });
     return () => {
       cancelled = true;
     };

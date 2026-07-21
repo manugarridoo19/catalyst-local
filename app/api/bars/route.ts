@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
 import { getBars, type Period } from "@/lib/providers/yahoo";
 
-// Edge runtime: solo fetch a Yahoo + parse JSON. Sin DB.
-export const runtime = "edge";
+// ⚠️ NO volver a poner `runtime = "edge"`. Era una optimización de la era
+// Vercel (esta ruta solo hace fetch + parse, sin DB), pero
+// @opennextjs/cloudflare NO soporta el edge runtime: el Worker devolvía 500
+// ANTES de entrar en el handler — incluso en el camino de símbolo inválido,
+// que responde 400 sin tocar la red. Los gráficos de ticker llevaban rotos en
+// producción desde la migración del 2026-07-15 y el 429 de Yahoo lo tapaba
+// (en local degradaba a `{"bars":[]}`, que parecía el mismo síntoma). Todas
+// las demás rutas ya son "nodejs".
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const VALID: Period[] = ["1d", "1w", "1m", "3m", "1y"];
