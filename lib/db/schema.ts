@@ -610,6 +610,41 @@ export const shortInterest = pgTable(
   ],
 );
 
+// Lectura del comunicado de resultados (8-K item 2.02, exhibit 99.1) de las
+// empresas de la watchlist — Fase 3. Es el FALLBACK pre-comprometido a los
+// transcripts, que tienen copyright y fuente frágil.
+export const earningsReports = pgTable(
+  "earnings_reports",
+  {
+    id: serial("id").primaryKey(),
+    symbol: text("symbol").notNull(),
+    /** Nº de accession del 8-K: identidad estable del filing en EDGAR. */
+    accession: text("accession").notNull(),
+    filingDate: text("filing_date").notNull(),
+    reportDate: text("report_date"),
+    exhibitUrl: text("exhibit_url").notNull(),
+    /** Titular real del comunicado (primera línea con sustancia). */
+    headline: text("headline"),
+    summary: text("summary").notNull(),
+    /** "Lo que el management NO dijo" — la lectura entre líneas. */
+    readBetweenLines: text("read_between_lines"),
+    model: text("model").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // Un filing se lee UNA vez: sin esto el tick de 10min repetiría la
+    // llamada al LLM del mismo comunicado indefinidamente.
+    uniqueIndex("earnings_reports_symbol_accession_unique").on(
+      t.symbol,
+      t.accession,
+    ),
+    index("earnings_reports_symbol_filed_idx").on(t.symbol, t.filingDate),
+  ],
+);
+
+export type EarningsReportRow = typeof earningsReports.$inferSelect;
 export type ShortInterestRow = typeof shortInterest.$inferSelect;
 export type Ticker = typeof tickers.$inferSelect;
 export type NewsEmbeddingRow = typeof newsEmbeddings.$inferSelect;

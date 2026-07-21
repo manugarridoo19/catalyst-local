@@ -110,6 +110,24 @@ async function main() {
     );
   }
 
+  // Comunicados de resultados de la watchlist (8-K item 2.02 → exhibit 99.1).
+  // Barrido cada 6h; en régimen hace 0 llamadas LLM (una empresa presenta una
+  // vez por trimestre) y sólo gasta el día que aparece un comunicado nuevo.
+  try {
+    const { runEarningsReportsIngest } = await import("../lib/earnings/ingest");
+    const er = await runEarningsReportsIngest();
+    if (er.generated > 0) {
+      console.log(
+        `[cron-runner] earnings reports +${er.generated} (${er.checked} símbolos revisados)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[cron-runner] earnings reports failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   // Short interest de FINRA. Va ANTES de la detección de señales para que el
   // squeeze setup vea la quincena nueva en el mismo tick en que llega. Casi
   // siempre sale por el guard sin tocar la red: el dato se publica 2×/mes.

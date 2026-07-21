@@ -7,6 +7,8 @@ import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerFundamentals } from "@/components/ticker/ticker-fundamentals";
 import { getShortInterest } from "@/lib/short-interest/queries";
+import { getLatestEarningsReport } from "@/lib/earnings/queries";
+import { EarningsReportPanel } from "@/components/ticker/earnings-report-panel";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import { WatchlistToggle } from "@/components/ticker/watchlist-toggle";
 import {
@@ -40,8 +42,16 @@ export default async function TickerPage({
   if (!/^[A-Z0-9.\-]{1,10}$/.test(symbol)) notFound();
 
   const session = await getSessionId();
-  const [profile, quote, newsRows, watchlist, metaMap, earnings, shortInterest] =
-    await Promise.all([
+  const [
+    profile,
+    quote,
+    newsRows,
+    watchlist,
+    metaMap,
+    earnings,
+    shortInterest,
+    earningsReport,
+  ] = await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
     // Orden estricto por publishedAt DESC — el tiempo manda, igual que en
@@ -60,6 +70,8 @@ export default async function TickerPage({
     // Short interest: lectura de NUESTRA tabla (FINRA se ingesta en el cron),
     // así que no cuesta llamada externa por pageview.
     getShortInterest(symbol).catch(() => null),
+    // Ya generado por el cron: aquí sólo se lee, no se genera nada al vuelo.
+    getLatestEarningsReport(symbol).catch(() => null),
   ]);
 
   const news: FeedItem[] = newsRows.map((r) => ({
@@ -217,6 +229,7 @@ export default async function TickerPage({
           {/* Cuadro AI del día: se rellena async (la 1ª generación puede
               tardar; el caché BD hace instantáneas las siguientes). */}
           <TickerBrief symbol={symbol} />
+          <EarningsReportPanel report={earningsReport} />
           <div className="min-h-0 flex-1">
             <NewsSidePanel symbol={symbol} items={news} />
           </div>

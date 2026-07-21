@@ -116,6 +116,53 @@ function removeBlocks(html: string, tag: string): string {
   );
 }
 
+/**
+ * Texto de un exhibit de la SEC (comunicado de resultados, EX-99.1).
+ *
+ * Necesita su propio camino porque el extractor genérico devuelve VACÍO con
+ * ellos: los redacta Workiva/Wdesk y el contenido va en
+ * `<div><font style="…">…</font></div>`, sin un solo `<p>`, así que el filtro
+ * "junta los <p> con sustancia" no encuentra nada. Verificado con AAPL, NVDA,
+ * TSLA y JPM: 0 caracteres con el genérico.
+ *
+ * Aquí no se filtra por párrafo: se convierten los límites de bloque en
+ * saltos de línea y se conserva TODO, tablas de resultados incluidas — los
+ * números (ingresos, BPA, márgenes) son justo lo que el resumen necesita, y
+ * en un documento registrado ante el regulador no hay chrome que quitar.
+ */
+export function extractSecExhibitText(
+  html: string,
+  maxChars = 14_000,
+): string | null {
+  let doc = html;
+
+  // 1. Sobre SGML de EDGAR: el documento real va dentro de <TEXT>.
+  const start = doc.search(/<TEXT>/i);
+  if (start >= 0) doc = doc.slice(start + "<TEXT>".length);
+  const end = doc.search(/<\/TEXT>/i);
+  if (end >= 0) doc = doc.slice(0, end);
+
+  for (const tag of ["script", "style", "noscript", "head", "svg", "iframe"]) {
+    doc = removeBlocks(doc, tag);
+  }
+  doc = doc.replace(/<!--[\s\S]*?-->/g, " ");
+
+  // 2. Los límites de bloque son la ÚNICA pista de estructura que queda:
+  // sin esto todo el comunicado colapsa en una línea ilegible.
+  doc = doc
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(div|p|tr|h[1-6]|li|table)\s*>/gi, "\n")
+    .replace(/<\/(td|th)\s*>/gi, " ");
+
+  const lines = decodeEntities(doc.replace(/<[^>]*>/g, ""))
+    .split("\n")
+    .map((l) => l.replace(/[\s ]+/g, " ").trim())
+    .filter(Boolean);
+
+  const text = lines.join("\n").slice(0, maxChars);
+  return text.length >= 200 ? text : null;
+}
+
 // Extractor genérico: prioriza <article>, luego <main>, luego el body
 // entero; junta los <p> con sustancia.
 export function extractFromHtml(

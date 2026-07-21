@@ -127,6 +127,13 @@
       "when": 1784646842977,
       "tag": "0017_massive_senator_kelly",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784649769150,
+      "tag": "0018_shiny_exiles",
+      "breakpoints": true
     }
   ]
 }

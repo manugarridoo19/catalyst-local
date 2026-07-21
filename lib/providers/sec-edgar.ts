@@ -59,6 +59,43 @@ async function getCikMap(): Promise<Map<string, string>> {
   return m;
 }
 
+/** User-Agent obligatorio de la SEC, compartido con los consumidores del
+ *  módulo (earnings 8-K) para no tener dos literales que se desincronicen. */
+export const SEC_USER_AGENT = SEC_UA;
+
+/**
+ * ticker → CIK (10 dígitos con ceros). Reutiliza el MISMO fetch cacheado que
+ * `getCikMap`, sólo que indexado al revés: `company_tickers.json` pesa ~1MB y
+ * bajarlo dos veces por tener dos índices sería absurdo.
+ *
+ * Ojo con las clases múltiples: un CIK puede tener varios tickers (GOOG/GOOGL)
+ * y aquí la clave es el TICKER, así que cada clase apunta a su mismo CIK. Es
+ * lo correcto para "dame los filings de este símbolo".
+ */
+let symbolToCik: Map<string, string> | null = null;
+let symbolToCikAt = 0;
+
+export async function getCikForSymbol(symbol: string): Promise<string | null> {
+  if (!symbolToCik || Date.now() - symbolToCikAt >= CIK_MAP_TTL) {
+    const res = await fetch(TICKERS_MAP_URL, {
+      headers: { "User-Agent": SEC_UA },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) throw new Error(`company_tickers ${res.status}`);
+    const raw = (await res.json()) as Record<
+      string,
+      { cik_str: number; ticker: string; title: string }
+    >;
+    const m = new Map<string, string>();
+    for (const v of Object.values(raw)) {
+      m.set(v.ticker.toUpperCase(), String(v.cik_str).padStart(10, "0"));
+    }
+    symbolToCik = m;
+    symbolToCikAt = Date.now();
+  }
+  return symbolToCik.get(symbol.toUpperCase()) ?? null;
+}
+
 const FILING_TYPES: Array<{ type: string; label: string }> = [
   { type: "8-K", label: "8-K filing" },
   { type: "4", label: "Form 4 (insider)" },
