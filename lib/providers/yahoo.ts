@@ -276,6 +276,39 @@ export async function getBars(
     }
   }
 
-  return [];
+  // 3) El mismo Yahoo, pero desde una IP que no esté limitada. El límite de
+  // Yahoo es POR IP y asimétrico: 429 a todo desde la IP del usuario (chart
+  // Y rss) mientras responde normal desde Cloudflare. Sin esto, el daemon
+  // local —que es el que se usa a diario vía Catalyst.app— pinta los
+  // gráficos vacíos aunque el Worker público los tenga.
+  const bars = await fetchBarsViaProxy(symbol, period);
+  return bars;
+}
+
+// Proxy al /api/bars de nuestro propio Worker. DOBLE guard anti-recursión:
+// la env var no se sube nunca al Worker Y se detecta el runtime workerd —
+// sin esto, el Worker se llamaría a sí mismo en bucle.
+async function fetchBarsViaProxy(
+  symbol: string,
+  period: Period,
+): Promise<DailyBar[]> {
+  const base = process.env.LAB_PRICE_PROXY_URL;
+  if (!base) return [];
+  if (typeof (globalThis as { WebSocketPair?: unknown }).WebSocketPair !== "undefined") {
+    return [];
+  }
+  try {
+    const url = `${base.replace(/\/$/, "")}/api/bars?symbol=${encodeURIComponent(symbol)}&period=${period}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+    if (!res.ok) throw new Error(`proxy ${res.status}`);
+    const json = (await res.json()) as { bars?: DailyBar[] };
+    return json.bars ?? [];
+  } catch (err) {
+    console.warn(
+      `[yahoo] ${symbol}/${period} proxy falló:`,
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
 }
 

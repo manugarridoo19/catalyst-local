@@ -97,6 +97,16 @@
          (2026-07-18). Flag no relacionado con heap-sizing. -->
     <key>NODE_OPTIONS</key>
     <string>--max-http-header-size=65536</string>
+    <!-- Yahoo limita POR IP y de forma asimétrica: desde esta máquina
+         devuelve 429 a toda su API (chart Y rss), mientras responde con
+         normalidad desde Cloudflare. Sin esto el daemon —el que se abre a
+         diario con Catalyst.app— pinta los gráficos de ticker vacíos aunque
+         el Worker público los tenga bien. lib/providers/yahoo.ts cae a este
+         proxy cuando Yahoo directo no devuelve barras.
+         NUNCA subir esta variable al Worker: se llamaría a sí mismo (hay
+         además un guard por runtime en el código). -->
+    <key>LAB_PRICE_PROXY_URL</key>
+    <string>https://catalyst-local.manubisbal19.workers.dev</string>
     <!-- Explicit PATH so pnpm finds node + spawned binaries even though
          we don't go through a login shell.
          IMPORTANT: /opt/homebrew/opt/node@22/bin must precede the default
