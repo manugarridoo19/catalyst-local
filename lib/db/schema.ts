@@ -573,6 +573,44 @@ export const newsEmbeddings = pgTable(
   ],
 );
 
+// Short interest consolidado de FINRA (Fase 3, 2026-07-21). Una fila por
+// símbolo y fecha de liquidación; el histórico se conserva porque la GRACIA
+// del dato es la tendencia entre quincenas, no la foto suelta.
+export const shortInterest = pgTable(
+  "short_interest",
+  {
+    id: serial("id").primaryKey(),
+    symbol: text("symbol").notNull(),
+    // FINRA publica dos liquidaciones al mes (día 15 y fin de mes). Se guarda
+    // como texto YYYY-MM-DD: es la clave de partición del API y así se
+    // compara sin líos de huso horario.
+    settlementDate: text("settlement_date").notNull(),
+    currentShortQty: bigint("current_short_qty", { mode: "number" }).notNull(),
+    previousShortQty: bigint("previous_short_qty", { mode: "number" }),
+    avgDailyVolume: bigint("avg_daily_volume", { mode: "number" }),
+    // Days-to-cover que calcula la propia FINRA (short / volumen medio).
+    // Es el eje del squeeze setup: sin float fiable y gratis, DTC es la
+    // única medida de "cuánto tardarían los cortos en salir" que no nos
+    // obliga a inventar el denominador.
+    daysToCover: doublePrecision("days_to_cover"),
+    changePercent: doublePrecision("change_percent"),
+    marketClass: text("market_class"),
+    issueName: text("issue_name"),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // Idempotencia: el cron reintenta la misma quincena sin duplicar.
+    uniqueIndex("short_interest_symbol_settlement_unique").on(
+      t.symbol,
+      t.settlementDate,
+    ),
+    index("short_interest_settlement_idx").on(t.settlementDate),
+  ],
+);
+
+export type ShortInterestRow = typeof shortInterest.$inferSelect;
 export type Ticker = typeof tickers.$inferSelect;
 export type NewsEmbeddingRow = typeof newsEmbeddings.$inferSelect;
 export type SignalEventRow = typeof signalEvents.$inferSelect;

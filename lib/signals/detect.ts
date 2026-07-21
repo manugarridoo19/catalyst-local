@@ -36,6 +36,15 @@ const NEWS_LOOKBACK_HOURS = 24;
 const STAKE_LOOKBACK_DAYS = 7;
 const INSIDER_WINDOW_DAYS = 7;
 const NET_BUY_MIN_USD = 1_000_000;
+// Umbrales v1 del squeeze setup (el design doc los marca como "tuning TODO":
+// el propio Lab dirá si hay que moverlos).
+const SQUEEZE_MIN_DTC = 5;
+const SQUEEZE_MIN_NEWS = 2;
+const SQUEEZE_NEWS_DAYS = 7;
+// Tope por tick. Holgado a propósito: el 2026-06-30 cualificaban 71 símbolos
+// y con la quincena entera cabiendo en una pasada el registro no depende de
+// cuántos ticks hayan corrido.
+const SQUEEZE_MAX_PER_TICK = 200;
 // Solo pedimos precio intradía a una señal que acaba de nacer: para un evento
 // fechado horas atrás, el precio de AHORA no es "el precio al detectar".
 const PRICE_FRESHNESS_MIN = 30;
@@ -324,6 +333,81 @@ export async function insertSignalEvent(
   return unwrapRows<{ id: number }>(res).length > 0;
 }
 
+// Short squeeze setup: mucha posición corta que tardaría en deshacerse
+// (days-to-cover de FINRA) + catalizadores alcistas recientes en NUESTRO tape.
+//
+// Por qué days-to-cover y no "% del float", que es la métrica de manual: el
+// dataset de FINRA no trae free float y no tenemos fuente gratis fiable para
+// todo el universo, así que el % del float exigiría inventarse el denominador
+// (usar shares outstanding lo subestima y haría saltar la señal menos de lo
+// debido, en silencio). DTC viene calculado por la propia FINRA y responde a
+// la pregunta que importa: cuántas sesiones de volumen medio necesitarían los
+// cortos para salir.
+//
+// detectedAt = ahora, NO la fecha de liquidación: el squeeze setup nace
+// cuando se cumplen las dos patas, y la pata de noticias es de esta semana.
+// Fechar la señal quincenas atrás sería lookahead puro (mediríamos el retorno
+// desde antes de que la señal existiera).
+async function detectShortSqueezeSetups(): Promise<SignalCandidate[]> {
+  const rows = unwrapRows<{
+    symbol: string;
+    settlement_date: string;
+    days_to_cover: number;
+    current_short_qty: number;
+    bullish: number;
+  }>(
+    await db.execute(sql`
+      WITH latest AS (
+        SELECT DISTINCT ON (symbol) symbol, settlement_date, days_to_cover,
+               current_short_qty, market_class
+        FROM short_interest
+        ORDER BY symbol, settlement_date DESC
+      )
+      SELECT l.symbol, l.settlement_date, l.days_to_cover, l.current_short_qty,
+             count(DISTINCT n.id)::int AS bullish
+      FROM latest l
+      JOIN news_tickers nt ON nt.ticker = l.symbol
+      JOIN news n ON n.id = nt.news_id
+      JOIN news_scores s ON s.news_id = n.id
+      WHERE l.days_to_cover >= ${SQUEEZE_MIN_DTC}
+        -- Fuera el OTC: los tickers *F son foreign ordinaries cuya negociación
+        -- ocurre en su bolsa de origen, así que el volumen de aquí es una
+        -- astilla del total y su days-to-cover sale disparado por artefacto,
+        -- no por cortos apretados (IVPAF 146d, PEYUF 88d...). El Lab no
+        -- reescribe nunca lo registrado: si esto entra, contamina para siempre.
+        AND coalesce(l.market_class, '') <> 'OTC'
+        AND s.sentiment >= 2 AND s.impact >= 3
+        AND s.scored_at >= now() - (${SQUEEZE_NEWS_DAYS} || ' days')::interval
+      GROUP BY l.symbol, l.settlement_date, l.days_to_cover, l.current_short_qty
+      HAVING count(DISTINCT n.id) >= ${SQUEEZE_MIN_NEWS}
+      -- ORDER BY explícito: con un LIMIT sin orden, qué símbolos entran es
+      -- indeterminado y el registro del Lab dependería del plan de Postgres.
+      ORDER BY l.days_to_cover DESC
+      LIMIT ${SQUEEZE_MAX_PER_TICK}
+    `),
+  );
+  if (rows.length === SQUEEZE_MAX_PER_TICK) {
+    console.warn(
+      `[signals] short_squeeze_setup tocó el tope de ${SQUEEZE_MAX_PER_TICK} candidatos — el resto entra en el siguiente tick`,
+    );
+  }
+  const detectedAt = new Date();
+  return rows.map((r) => ({
+    kind: "short_squeeze_setup" as const,
+    symbol: r.symbol.toUpperCase(),
+    // refId = símbolo + quincena: dentro de la misma foto de FINRA la señal
+    // es la MISMA observación por mucho que sigan entrando noticias.
+    refId: `${r.symbol}:${r.settlement_date}`,
+    detectedAt,
+    meta: {
+      settlementDate: r.settlement_date,
+      daysToCover: r.days_to_cover,
+      shortQty: r.current_short_qty,
+      bullishStories: r.bullish,
+    },
+  }));
+}
+
 export async function runDetectSignalsCron(): Promise<DetectResult> {
   const t0 = Date.now();
   const byKind: Record<string, number> = {};
@@ -337,6 +421,7 @@ export async function runDetectSignalsCron(): Promise<DetectResult> {
     detectStakes(),
     detectInsiderWindows(),
     detectAuthorCalls(),
+    detectShortSqueezeSetups(),
   ]);
   const candidates: SignalCandidate[] = [];
   for (const s of settled) {

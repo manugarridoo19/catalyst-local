@@ -9,6 +9,7 @@ export const SIGNAL_KINDS = [
   "stake_13d",
   "analyst_upgrade",
   "author_call",
+  "short_squeeze_setup",
 ] as const;
 
 export type SignalKind = (typeof SIGNAL_KINDS)[number];
@@ -68,6 +69,15 @@ export const KIND_SPECS: Record<SignalKind, KindSpec> = {
     label: "Author call",
     description: "Name discussed in the daily Author Watch brief.",
     cooldownDays: 3,
+  },
+  // Cooldown 14d = una quincena de FINRA: el dato sólo cambia dos veces al
+  // mes, así que sin él la misma foto de short interest se re-registraría
+  // cada vez que entra una noticia alcista nueva.
+  short_squeeze_setup: {
+    label: "Short squeeze setup",
+    description:
+      "Days-to-cover above 5 with 2+ bullish high-impact stories in 7d.",
+    cooldownDays: 14,
   },
 };
 

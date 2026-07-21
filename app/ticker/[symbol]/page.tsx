@@ -6,6 +6,7 @@ import { TradingViewChart } from "@/components/ticker/tradingview-chart";
 import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerFundamentals } from "@/components/ticker/ticker-fundamentals";
+import { getShortInterest } from "@/lib/short-interest/queries";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import { WatchlistToggle } from "@/components/ticker/watchlist-toggle";
 import {
@@ -39,7 +40,7 @@ export default async function TickerPage({
   if (!/^[A-Z0-9.\-]{1,10}$/.test(symbol)) notFound();
 
   const session = await getSessionId();
-  const [profile, quote, newsRows, watchlist, metaMap, earnings] =
+  const [profile, quote, newsRows, watchlist, metaMap, earnings, shortInterest] =
     await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
@@ -56,6 +57,9 @@ export default async function TickerPage({
     // Próximo earnings — fetch live (1 call/vista, cap 60/min sobra para
     // uso personal); getEarningsCalendar ya degrada a [] en fallo.
     getEarningsCalendar(symbol),
+    // Short interest: lectura de NUESTRA tabla (FINRA se ingesta en el cron),
+    // así que no cuesta llamada externa por pageview.
+    getShortInterest(symbol).catch(() => null),
   ]);
 
   const news: FeedItem[] = newsRows.map((r) => ({
@@ -197,7 +201,7 @@ export default async function TickerPage({
 
       {/* Fundamentales + peers (FMP, cache 7d) — se rellena async, no ocupa
           espacio hasta tener datos. */}
-      <TickerFundamentals symbol={symbol} />
+      <TickerFundamentals symbol={symbol} shortInterest={shortInterest} />
 
       {/* Chart left, news right.
           Móvil: una columna, chart altura fija razonable y news debajo

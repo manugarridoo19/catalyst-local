@@ -110,6 +110,26 @@ async function main() {
     );
   }
 
+  // Short interest de FINRA. Va ANTES de la detección de señales para que el
+  // squeeze setup vea la quincena nueva en el mismo tick en que llega. Casi
+  // siempre sale por el guard sin tocar la red: el dato se publica 2×/mes.
+  try {
+    const { runShortInterestIngest } = await import(
+      "../lib/short-interest/ingest"
+    );
+    const si = await runShortInterestIngest();
+    if (si.stored > 0) {
+      console.log(
+        `[cron-runner] short interest ${si.settlementDate}: ${si.stored}/${si.fetched} filas en ${si.durationMs}ms`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[cron-runner] short interest failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   // Signal Lab — registro PROSPECTIVO de señales. Va después de picks e
   // insider digest a propósito: así los picks recién generados en este mismo
   // tick ya entran en el registro. Inserts idempotentes, cero LLM.
