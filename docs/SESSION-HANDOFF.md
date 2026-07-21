@@ -53,6 +53,29 @@ exactamente **3.000** ese día (= 3 keys × 1.000) con parón en seco. Ese
 el round-robin sí suma capacidad. Régimen normal ~919 impact≥3/día → cabe con
 holgura; lo que agotó el cupo fue la puesta al día inicial de Fase 2.
 
+### 4. Fase 3, sub-fase 2: comunicados de resultados (commit `c6b0855`, deploy `493d2d1a`)
+
+8-K **item 2.02** → exhibit **99.1** → resumen con cifras + "lo que el
+management no dijo", desplegable en `/ticker/X`. Es el fallback
+pre-comprometido a los transcripts (copyright + fuente frágil).
+
+- **Detección estructural, no por fechas**: el ítem 2.02 es literalmente
+  "Results of Operations and Financial Condition". Comparar por ítem EXACTO
+  tras `split(',')` — un `includes("2.02")` casaría con "12.02".
+- El exhibit se localiza por **TIPO `EX-99.1`** en el índice del filing,
+  nunca por nombre de fichero: cada empresa lo llama a su manera
+  (`q1fy27pr.htm`, `exhibit99111111.htm`, `a2q26erfexhibit991narrative.htm`).
+- ⚠️ **El extractor genérico de artículos devuelve VACÍO con estos exhibits**
+  (0 chars en AAPL/NVDA/TSLA/JPM): los redacta Workiva y el texto va en
+  `<div><font>`, sin un solo `<p>`. Usa `extractSecExhibitText()`.
+- Desviación consciente del doc: **1 llamada LLM**, no 2. Los dos campos
+  salen del mismo texto; una segunda llamada reenviaría el comunicado entero
+  para releerlo.
+- Verificado contra el documento con JPM 2Q26 (no dado por bueno): el 5,6B
+  del resumen = 4,6B de Visa + 1,0B de otras participaciones, tal cual lo
+  desglosa el comunicado; y su "no hay guidance" se confirma con 0 menciones
+  de outlook/guidance en el exhibit.
+
 ### 3. Fase 3, sub-fase 1: short interest (commit `d1aa28a`, deploy `50221fd4`)
 
 `lib/providers/finra.ts` + `lib/short-interest/` + señal `short_squeeze_setup`
@@ -63,7 +86,7 @@ holgura; lo que agotó el cupo fue la puesta al día inicial de Fase 2.
 | Fuente | Veredicto | Lo que hay que saber |
 |---|---|---|
 | FINRA short interest | ✅ | Sin autenticación. `settlementDate` es clave de partición (pedir fecha exacta, no se puede ordenar). Publica con **~2 semanas de retraso**. Fecha no publicada = 200 con **cuerpo vacío**, no `[]`. Máx 5.000 filas/petición. |
-| 8-K exhibit 99.1 | ✅ | El `<TYPE>EX-99.1` sale del `{acc}-index.html` (10 KB). El exhibit es HTML normal → lo lee `lib/articles/extract.ts`. |
+| 8-K exhibit 99.1 | ✅ HECHO | El `<TYPE>EX-99.1` sale del `{acc}-index.html` (10 KB). OJO: **no** lo lee el extractor genérico → `extractSecExhibitText()`. |
 | OpenFIGI CUSIP→ticker | ✅ | Sin key, por lotes. Filtrar `exchCode: "US"`, cachear para siempre. |
 
 ---
@@ -78,8 +101,12 @@ holgura; lo que agotó el cupo fue la puesta al día inicial de Fase 2.
    hace INNER JOIN con `signal_outcomes` (sólo enseña lo YA medido), así que
    aparecerán cuando el job de outcomes mida el horizonte de 1 día. No es un
    fallo; es la semántica que fijó la Fase 1.
-3. **Seguir la Fase 3**: quedan transcripts post-earnings (vía 8-K 99.1) y
-   13F con el gate CUSIP→ticker. Ambos spikes ya validados.
+3. **Seguir la Fase 3**: queda SÓLO el **13F** (fondos curados + gate
+   CUSIP→ticker con OpenFIGI, spike ya validado sin key).
+4. **La watchlist no ha presentado resultados todavía** (META/MSFT/NU/PLTR/
+   RKLB/SOFI/ZETA): el barrido dio 7 revisados y 0 comunicados, correcto para
+   el 21-jul. La temporada de Q2 arranca la última semana de julio, así que
+   ahí se verá el subsistema funcionando solo por primera vez.
 4. La key Gemini de **reserva sigue revocada (401)** por decisión del usuario:
    el tier reserva está muerto a propósito, no "arreglarlo".
 
