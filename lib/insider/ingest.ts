@@ -50,7 +50,8 @@ async function getPendingFilings(
   return unwrapRows<PendingFiling>(
     await db.execute(sql`
       SELECT n.id, n.url, n.headline, n.published_at,
-        (SELECT nt.ticker FROM news_tickers nt WHERE nt.news_id = n.id LIMIT 1) AS symbol
+        (SELECT nt.ticker FROM news_tickers nt WHERE nt.news_id = n.id
+          ORDER BY (nt.extraction_method = 'api') DESC LIMIT 1) AS symbol
       FROM news n
       WHERE n.source = 'sec-edgar'
         AND n.insider_parsed_at IS NULL
@@ -73,13 +74,28 @@ async function markParsed(newsId: number): Promise<void> {
 }
 
 async function ingestForm4(f: PendingFiling): Promise<number> {
-  if (!f.symbol) return 0;
   const parsed = await fetchForm4Structured(f.url);
   if (!parsed || parsed.transactions.length === 0) return 0;
+  // El símbolo AUTORITATIVO es el issuerTradingSymbol del propio XML — la
+  // subquery de news_tickers puede traer un ticker vecino cuando la noticia
+  // tiene varios links (caso real: "Honeywell Aerospace files Form 4" con
+  // HONA api + HON dict → LIMIT 1 devolvía HON y las trades del spinoff se
+  // atribuían a Honeywell International). El fallback al link de la noticia
+  // queda para XMLs sin símbolo.
+  const xmlSymbol = parsed.symbol?.toUpperCase().trim();
+  const symbol =
+    xmlSymbol && /^[A-Z0-9.\-]{1,10}$/.test(xmlSymbol) ? xmlSymbol : f.symbol;
+  if (!symbol) return 0;
+  if (symbol !== f.symbol) {
+    // FK a tickers — el símbolo del XML puede no existir aún en el universo.
+    await db.execute(sql`
+      INSERT INTO tickers (symbol, source) VALUES (${symbol}, 'sec-form4')
+      ON CONFLICT DO NOTHING`);
+  }
   const filedAt = new Date(f.published_at);
   const rows = parsed.transactions.map((t, seq) => ({
     newsId: f.id,
-    symbol: f.symbol!, // ticker del mapa CIK oficial, ya existe en `tickers`
+    symbol,
     filingUrl: f.url,
     seq,
     ownerName: parsed.ownerName,
@@ -95,8 +111,14 @@ async function ingestForm4(f: PendingFiling): Promise<number> {
     sharesAfter: t.sharesAfter,
     filedAt,
   }));
-  await db.insert(insiderTrades).values(rows).onConflictDoNothing();
-  return rows.length;
+  // returning() = filas REALMENTE insertadas (onConflictDoNothing puede
+  // saltarse todas si el filing ya estaba — contar rows.length mentía).
+  const inserted = await db
+    .insert(insiderTrades)
+    .values(rows)
+    .onConflictDoNothing()
+    .returning({ id: insiderTrades.id });
+  return inserted.length;
 }
 
 async function ingestStake(f: PendingFiling): Promise<number> {
