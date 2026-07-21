@@ -53,6 +53,29 @@ exactamente **3.000** ese día (= 3 keys × 1.000) con parón en seco. Ese
 el round-robin sí suma capacidad. Régimen normal ~919 impact≥3/día → cabe con
 holgura; lo que agotó el cupo fue la puesta al día inicial de Fase 2.
 
+### 5. Fase 3, sub-fase 3: 13F de fondos curados (commit `5332223`, deploy `d1a446dd`)
+
+**Cierra la Fase 3.** `lib/funds/` + `lib/providers/openfigi.ts` + sección en
+`/insider` + señal `fund_new_position`.
+
+- **OpenFIGI anónimo: 10 identificadores por petición, no 100.** El spike
+  inicial mandó 2 CUSIPs y por eso no tocó el techo — cuidado con dar por
+  bueno un límite que no se ha llegado a rozar. Caché permanente `cusip_map`.
+- **`fillMissingSymbols()` no es un extra, es imprescindible**: el
+  presupuesto de OpenFIGI no alcanza para un fondo entero de golpe y la
+  ingesta ya marcó el accession como conocido, así que sin esa pasada los
+  tickers se quedarían NULL para siempre. Mismo mecanismo autocurativo para
+  `filing_date`: un accession con columnas incompletas no cuenta como conocido.
+- **Agregar por CUSIP es obligatorio**: el information table repite el valor
+  en una fila por manager. Berkshire declara Apple en 3 filas → sin agregar
+  saldría $20,5B en vez de $57,8B.
+- **Lista curada por criterio, no por fama**: fuera cuantitativos y creadores
+  de mercado (Renaissance 6.398 posiciones, Bridgewater 2.033) porque su 13F
+  es rebalanceo, no convicción. CIKs verificados uno a uno contra EDGAR.
+- La señal sólo mira filings de los últimos 21 días → **la carga inicial da 0
+  y eso es lo correcto** (es línea base; fecharla antes sería lookahead). La
+  oleada del 2T (plazo ~14-ago) será la primera real.
+
 ### 4. Fase 3, sub-fase 2: comunicados de resultados (commit `c6b0855`, deploy `493d2d1a`)
 
 8-K **item 2.02** → exhibit **99.1** → resumen con cifras + "lo que el
@@ -101,8 +124,10 @@ pre-comprometido a los transcripts (copyright + fuente frágil).
    hace INNER JOIN con `signal_outcomes` (sólo enseña lo YA medido), así que
    aparecerán cuando el job de outcomes mida el horizonte de 1 día. No es un
    fallo; es la semántica que fijó la Fase 1.
-3. **Seguir la Fase 3**: queda SÓLO el **13F** (fondos curados + gate
-   CUSIP→ticker con OpenFIGI, spike ya validado sin key).
+3. **La Fase 3 está COMPLETA** y con ella el roadmap Catalyst 2.0, salvo la
+   Fase 4 opcional (research note matinal autocrítico sobre los outcomes).
+   Las dos señales nuevas (`short_squeeze_setup`, `fund_new_position`) hay que
+   verlas madurar antes de fiarse de ellas.
 4. **La watchlist no ha presentado resultados todavía** (META/MSFT/NU/PLTR/
    RKLB/SOFI/ZETA): el barrido dio 7 revisados y 0 comunicados, correcto para
    el 21-jul. La temporada de Q2 arranca la última semana de julio, así que
