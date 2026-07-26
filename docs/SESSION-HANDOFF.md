@@ -1,4 +1,4 @@
-# Traspaso de sesión — 2026-07-21 (tarde)
+# Traspaso de sesión — 2026-07-25
 
 Estado al cerrar. Se **sobrescribe** cada sesión: no acumular ficheros por
 fecha. El histórico vive en el log de git y en la memoria del agente.
@@ -7,184 +7,145 @@ Repo **público**: aquí nunca van keys ni valores de secretos, solo rutas.
 
 ---
 
-## Qué se hizo
+## ⚠️ LO PRIMERO: hay 4 commits SIN PUSHEAR
 
-Tres cosas, en este orden: un arreglo de UI, un bug de producción que apareció
-al mirar la salud del sistema, y la primera sub-fase de la Fase 3.
-
-### 1. Firma del header, en flujo (commit `1774c9c`, deploy `c944bc2e`)
-
-Estaba centrada respecto al **viewport** (`absolute left-1/2`). Al añadir las
-pestañas Lab y Ask la nav creció hasta los 690px y la frase se pintaba encima:
-**158px de solape** sobre Insider/Lab/Ask a 1280px.
-
-Ahora es la columna del medio del header (`flex-1`, en flujo), así que el
-navegador la centra en el hueco QUE QUEDA: simétrica por construcción e
-imposible de solapar por muchas pestañas que se añadan después.
-
-**Dato que condicionó la solución**: la pantalla del usuario son **1440px
-lógicos**, así que macOS recorta a ~1400 los bounds de 1600 que pide el
-launcher por AppleScript. Un gate en `2xl` (1536) habría hecho desaparecer la
-firma justo en su ventana → breakpoint a medida `min-[1380px]`.
-Comprobarlo con `osascript -e 'tell application "Finder" to get bounds of
-window of desktop'` antes de tocar breakpoints del header.
-
-### 2. Embeddings parados 2h en silencio (commit `64fdf4f`, deploy `0b3e6f39`)
-
-`/api/health` mostraba `embedAgeMin: 115` con el cron corriendo cada 10min.
-**Dos fallos que se tapaban entre sí:**
-
-1. El 429 del límite **diario** se clasificaba como ráfaga por minuto. La
-   heurística miraba el TAMAÑO de `retryDelay` y Google manda ~2,35s también
-   en el diario → enfriaba 2s una pared de 24h y el pool se pasó la tarde
-   reintentando y logueando "RPM burst". Ahora se clasifica por
-   `details[].violations[].quotaId`, que es el campo autoritativo.
-2. El lote pedía exactamente **100 textos = el límite por minuto**, así que
-   sólo entraba con el cubo del minuto intacto; una pregunta de `/ask` en esos
-   60s lo tumbaba entero, y como el mismo lote se reenviaba a las 3 keys, las
-   quemaba las tres. Ahora se trocea a `EMBED_CHUNK` (50) insertando por
-   trozo → el tick es resumable.
-
-**Cuota real MEDIDA** (el spike que la Fase 2 dejó a medias, con el
-`EMBED_DAILY_NOTE` colgando sin escribir): **1.000 embeddings/día y key**,
-reset a medianoche Pacific. Se midió contando filas por día Pacific:
-exactamente **3.000** ese día (= 3 keys × 1.000) con parón en seco. Ese
-3×1.000 confirma además que las 3 keys están en **proyectos distintos** y que
-el round-robin sí suma capacidad. Régimen normal ~919 impact≥3/día → cabe con
-holgura; lo que agotó el cupo fue la puesta al día inicial de Fase 2.
-
-### 5. Fase 3, sub-fase 3: 13F de fondos curados (commit `5332223`, deploy `d1a446dd`)
-
-**Cierra la Fase 3.** `lib/funds/` + `lib/providers/openfigi.ts` + sección en
-`/insider` + señal `fund_new_position`.
-
-- **OpenFIGI anónimo: 10 identificadores por petición, no 100.** El spike
-  inicial mandó 2 CUSIPs y por eso no tocó el techo — cuidado con dar por
-  bueno un límite que no se ha llegado a rozar. Caché permanente `cusip_map`.
-- **`fillMissingSymbols()` no es un extra, es imprescindible**: el
-  presupuesto de OpenFIGI no alcanza para un fondo entero de golpe y la
-  ingesta ya marcó el accession como conocido, así que sin esa pasada los
-  tickers se quedarían NULL para siempre. Mismo mecanismo autocurativo para
-  `filing_date`: un accession con columnas incompletas no cuenta como conocido.
-- **Agregar por CUSIP es obligatorio**: el information table repite el valor
-  en una fila por manager. Berkshire declara Apple en 3 filas → sin agregar
-  saldría $20,5B en vez de $57,8B.
-- **Lista curada por criterio, no por fama**: fuera cuantitativos y creadores
-  de mercado (Renaissance 6.398 posiciones, Bridgewater 2.033) porque su 13F
-  es rebalanceo, no convicción. CIKs verificados uno a uno contra EDGAR.
-- La señal sólo mira filings de los últimos 21 días → **la carga inicial da 0
-  y eso es lo correcto** (es línea base; fecharla antes sería lookahead). La
-  oleada del 2T (plazo ~14-ago) será la primera real.
-
-### 4. Fase 3, sub-fase 2: comunicados de resultados (commit `c6b0855`, deploy `493d2d1a`)
-
-8-K **item 2.02** → exhibit **99.1** → resumen con cifras + "lo que el
-management no dijo", desplegable en `/ticker/X`. Es el fallback
-pre-comprometido a los transcripts (copyright + fuente frágil).
-
-- **Detección estructural, no por fechas**: el ítem 2.02 es literalmente
-  "Results of Operations and Financial Condition". Comparar por ítem EXACTO
-  tras `split(',')` — un `includes("2.02")` casaría con "12.02".
-- El exhibit se localiza por **TIPO `EX-99.1`** en el índice del filing,
-  nunca por nombre de fichero: cada empresa lo llama a su manera
-  (`q1fy27pr.htm`, `exhibit99111111.htm`, `a2q26erfexhibit991narrative.htm`).
-- ⚠️ **El extractor genérico de artículos devuelve VACÍO con estos exhibits**
-  (0 chars en AAPL/NVDA/TSLA/JPM): los redacta Workiva y el texto va en
-  `<div><font>`, sin un solo `<p>`. Usa `extractSecExhibitText()`.
-- Desviación consciente del doc: **1 llamada LLM**, no 2. Los dos campos
-  salen del mismo texto; una segunda llamada reenviaría el comunicado entero
-  para releerlo.
-- Verificado contra el documento con JPM 2Q26 (no dado por bueno): el 5,6B
-  del resumen = 4,6B de Visa + 1,0B de otras participaciones, tal cual lo
-  desglosa el comunicado; y su "no hay guidance" se confirma con 0 menciones
-  de outlook/guidance en el exhibit.
-
-### 3. Fase 3, sub-fase 1: short interest (commit `d1aa28a`, deploy `50221fd4`)
-
-`lib/providers/finra.ts` + `lib/short-interest/` + señal `short_squeeze_setup`
-+ el dato en `/ticker/X`. Convenciones y gotchas → `CLAUDE.md`.
-
-**Los tres spikes de la Fase 3 están hechos. No repetirlos:**
-
-| Fuente | Veredicto | Lo que hay que saber |
-|---|---|---|
-| FINRA short interest | ✅ | Sin autenticación. `settlementDate` es clave de partición (pedir fecha exacta, no se puede ordenar). Publica con **~2 semanas de retraso**. Fecha no publicada = 200 con **cuerpo vacío**, no `[]`. Máx 5.000 filas/petición. |
-| 8-K exhibit 99.1 | ✅ HECHO | El `<TYPE>EX-99.1` sale del `{acc}-index.html` (10 KB). OJO: **no** lo lee el extractor genérico → `extractSecExhibitText()`. |
-| OpenFIGI CUSIP→ticker | ✅ | Sin key, por lotes. Filtrar `exchCode: "US"`, cachear para siempre. |
-
-### 6. Gemini 3.1 → 3.5 flash-lite, y un fallback que envenenaba el pool (COMMITEADO + cooldown por (key, modelo) en la sesión siguiente)
-
-Petición: "sustituye quirúrgicamente el modelo por `gemini-3.5-flash-lite`".
-Cambiar sólo el string **habría tumbado el tier entero de Gemini**.
-
-**Gemini 3.x cambió el dialecto del control de razonamiento**: `thinkingBudget`
-(numérico) es de 2.x; 3.x exige el enum `thinkingLevel`. Medido contra la API:
-3.5 con `thinkingBudget:0` → **400 INVALID_ARGUMENT**; con
-`thinkingLevel:"minimal"` → 200 (`"none"` no existe en el enum). Y **400 no
-está en la lista de retriables**, así que habría fallado en las 4 keys, en la
-de reserva, y sin reintento.
-
-Por eso el payload ahora se construye **por modelo dentro del bucle**
-(`thinkingConfigFor()`), no una vez para toda la cadena: el fallback mezcla
-familias y cada una habla su dialecto.
-
-**Hallazgo gordo, aparte del swap**: `gemini-2.0-flash-lite` tiene el free tier
-**a cero** — una sola request viola a la vez las cuotas por-día Y las
-por-minuto, en las 4 keys (un límite por minuto no se agota con 1 request salvo
-que valga 0). Y ese fallback muerto no era neutro: su 429 lleva quotaId
-`GenerateRequestsPerDayPerProjectPerModel`, que el regex de `applyRateLimit`
-(`gemini.ts:147`) lee como cuota diaria y **enfría la KEY ENTERA hasta
-medianoche Pacific**, por una cuota que era sólo de ESE modelo. Como el bucle de
-modelos es el externo, un bache pasajero en el modelo de cabeza barría los 2.0
-de detrás y dejaba las 4 primarias + la reserva muertas 24h. Cadena nueva:
-**`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`** (ambos verificados vivos y
-ambos aceptan `thinkingLevel:"minimal"`).
-
-Verificado: llamada real end-to-end por el provider, cadena completa con stub de
-`fetch` confirmando el dialecto de cada modelo, las 4 keys medidas una a una,
-`typecheck` + `lint` limpios. **Sin commit ni deploy**: quedan modificados
-`lib/providers/gemini.ts` y `CLAUDE.md` en el working tree.
-
----
-
-## Lo que hay que mirar en la próxima sesión
-
-0. ~~Commitear/desplegar el swap de Gemini~~ **HECHO (sesión 2026-07-21 noche)**:
-   swap auditado (dialecto por familia OK, payload por modelo OK, cadena
-   3.5→3.1 verificada en vivo con las keys reales) e implementado el pendiente:
-   **cooldown por `(key, modelo)`** en `applyRateLimit` — clasifica por
-   `quotaId` (autoritativo, mismo patrón que gemini-embed.ts) y solo un quotaId
-   explícito SIN `PerModel` enfría la key completa. Verificado con fetch
-   stubeado: 429 diario PerModel en 3.5 → cae a 3.1 en la MISMA key y la key
-   sigue disponible; `/api/health` ahora expone `cooledModels` por key.
-1. **Mañana (tras las 07:05Z) confirmar que los embeddings se reanudan solos**
-   y drenan las ~1.900 pendientes. `curl .../api/health | grep embed`. Si
-   `embedAgeMin` vuelve a dispararse, mirar el `quotaId` del 429 en el log del
-   cron antes de tocar nada.
-2. **Las 50 señales `short_squeeze_setup` aún no salen en `/lab`**: la página
-   hace INNER JOIN con `signal_outcomes` (sólo enseña lo YA medido), así que
-   aparecerán cuando el job de outcomes mida el horizonte de 1 día. No es un
-   fallo; es la semántica que fijó la Fase 1.
-3. **La Fase 3 está COMPLETA** y con ella el roadmap Catalyst 2.0, salvo la
-   Fase 4 opcional (research note matinal autocrítico sobre los outcomes).
-   Las dos señales nuevas (`short_squeeze_setup`, `fund_new_position`) hay que
-   verlas madurar antes de fiarse de ellas.
-4. **La watchlist no ha presentado resultados todavía** (META/MSFT/NU/PLTR/
-   RKLB/SOFI/ZETA): el barrido dio 7 revisados y 0 comunicados, correcto para
-   el 21-jul. La temporada de Q2 arranca la última semana de julio, así que
-   ahí se verá el subsistema funcionando solo por primera vez.
-4. La key Gemini de **reserva sigue revocada (401)** por decisión del usuario:
-   el tier reserva está muerto a propósito, no "arreglarlo".
-
----
-
-## Comandos del subsistema nuevo
-
-```bash
-# La ingesta corre sola en el cron (guard: 1×/20h, y el dato es 2×/mes).
-# Para forzarla a mano, p.ej. tras cambiar el parseo:
-pnpm exec tsx -e 'import("./lib/short-interest/ingest").then(m=>m.runShortInterestIngest({force:true}).then(r=>console.log(r)))'
+```
+57ae66a  Vista /portfolio: entrada por importe y rendimiento del día
+9157178  Umbrales de concentración, vitest y precalentado de la cosecha
+febf29d  Revisión de cartera: eje prospectivo en vez de crónica
+266e6aa  Revisión de cartera en /ask: watchlist con posiciones reales
 ```
 
-`force: true` re-descarga también la quincena que ya tenemos — es la vía para
-re-normalizar filas viejas (así se limpiaron los 33 centinelas de 999.99).
+**Importa porque el cron de GitHub Actions corre desde el repo pusheado.**
+`score-orphans.ts` ahora llama a `prewarmPortfolioBodies()`, así que hasta
+que se haga `git push` el runner sigue ejecutando el código viejo y el
+precalentado de cuerpos **no ocurre en el cron** (sí en el scorer local,
+que corre desde el working dir). El Worker ya está desplegado — el deploy
+sale del build local, no de git, así que la web va con el código nuevo.
+
+El resto está cerrado: migración aplicada en Neon, Worker desplegado
+(`c1321ef0`), daemon local reiniciado, árbol limpio, 53 tests en verde.
+
+---
+
+## Qué se hizo
+
+Una sola línea de trabajo: **convertir la watchlist en una cartera y hacer
+que `/ask` la revise mirando hacia adelante**.
+
+### 1. La watchlist es también la cartera (`266e6aa`)
+
+Migración 0022: `watchlist.shares` y `avg_cost`, ambas NULLABLE, con tres
+estados semánticos — `NULL` = solo seguimiento · `0` = cerrada · `>0` =
+viva. Se amplió esa tabla en vez de crear `positions` porque ~8 consumidores
+ya leen de ella (feed, brief, earnings, universo de tickers) y con dos
+tablas cada uno tendría que decidir cuál manda.
+
+`lib/portfolio.ts` es TS puro (sin BD) porque lo comparten el rail —
+componente cliente— y el retrieval del servidor. **Es la única fuente de
+estas cuentas para las tres superficies** (tabla, rail, prompt de la
+revisión): si alguna hiciera las suyas, la pantalla y el modelo acabarían
+diciendo pesos distintos del mismo valor.
+
+Decisión que hay que preservar: los pesos excluyen del **denominador** las
+posiciones que no se pudieron valorar, en vez de contarlas como 0. Contar
+un 429 de Finnhub como valor cero reparte ese peso entre las demás e infla
+una concentración que no existe; por eso `unpricedSymbols` está en el tipo
+de retorno, para obligar a declarar sobre cuánto se calculó.
+
+### 2. La revisión leía lo obvio — y no era el prompt (`febf29d`)
+
+La v1 respondía "la acción cae un 8%". Dos causas **medidas**, no supuestas:
+
+1. Las citas se ordenaban por `impact DESC`, y el scoring de impacto premia
+   por definición lo que YA movió el precio → la cita `[1]` de una posición
+   que cae es la caída. Ahora se ordena por **peso de categoría** (`MA` 10 >
+   `GUIDANCE` 9 > `REGULATORY` 8 > … > `OTHER` 1), recencia después, e
+   impacto como último desempate.
+2. **El 97% de las noticias no tenía cuerpo extraído** (META 26 de 785 en
+   14d; PLTR 1 de 258), porque `article_extracts` sólo se rellena al hacer
+   clic o a `ENRICH_BATCH`=4 por tick. El modelo redactaba desde titulares,
+   y un titular es lo obvio. La revisión ahora **paga por extraer** con
+   `getArticleDetail(id, {allowLlm:false})` — fetch + caché, cero LLM, 20 s
+   de presupuesto de pared. Resultado: 22/28 candidatos con cuerpo.
+
+**Dos llamadas LLM encadenadas, no una.** La primera (`forward-ledger`)
+sólo EXTRAE compromisos sin resolver a un esquema donde "la acción cayó" no
+cabe en ningún campo; la segunda redacta ya sin los artículos delante. Con
+una sola llamada el modelo resume por gradiente natural y ninguna
+instrucción del prompt lo evitaba de forma fiable — se intentó primero.
+
+Datos prospectivos que llevaban meses en la BD sin leerse:
+`earnings_events.eps_estimate`/`revenue_estimate` (la vara a batir, no el
+resultado) y **vendedores sistemáticos** (≥2 ventas del mismo directivo en
+90 d + `shares_after` = oferta futura ya conocida; Form 4 no guarda la nota
+al pie del 10b5-1, el patrón repetido es su firma observable).
+
+**Ningún número sale del LLM**: beta ponderada y % de cartera que reporta
+el mismo día se precalculan en `deriveAggregates` y el prompt prohíbe la
+aritmética. En la primera prueba real el modelo los estimaba a ojo y
+acertaba por poco — el modo de fallo que nadie audita.
+
+**El gate de evidencia vive en código** (`applyEvidenceGate`), no en el
+prompt: una postura sin cita válida ni hecho duro declarado ante la SEC se
+degrada a `none` y se marca. La cita además tiene que mencionar ESE
+símbolo — sin esa comprobación el modelo colgó de META la cita del Iridium
+de RKLB, que existía y por tanto pasaba un filtro de "número válido".
+
+### 3. Umbrales, tests y precalentado (`9157178`)
+
+- `concentrationFlags()`: regla de fondo **no gritar por lo inevitable**.
+  Con <5 posiciones la concentración por posición es aritmética, así que se
+  avisa del RECUENTO; "las 3 mayores" sólo salta si ninguna disparó warn
+  sola; `Unknown` no es sector concentrado sino calidad de dato. Umbrales
+  en la constante `CONCENTRATION` — son preferencia, no definición.
+- **El repo ya tiene vitest**: `pnpm test`, 53 tests en `tests/`. La config
+  pone un `DATABASE_URL` sintético porque `lib/db` lanza al cargarse y la
+  cadena de imports lo arrastra; el driver HTTP de Neon no conecta hasta
+  ejecutar una query, y ningún test ejecuta ninguna.
+- `lib/cron/prewarm-portfolio.ts`: el cron extrae por adelantado los
+  cuerpos de las **posiciones vivas** (guard 1 h vía `job_state`, techo 10
+  fetches, `PORTFOLIO_PREWARM=0` lo apaga). No sustituye a la cosecha bajo
+  demanda, la deja sin trabajo: la primera revisión del día pagaba ~40 s.
+
+### 4. Vista `/portfolio` (`57ae66a`)
+
+Pestaña propia. Tabla ordenable con acciones, precio de entrada, precio
+actual, % y **$ de hoy**, invertido, valor, P&L y peso, más totales, alta
+de valores y sección aparte de "solo seguimiento".
+
+- **Editor con dos modos**: acciones o **importe invertido**. Se convierte
+  al guardar (`sharesFromAmount`) porque el esquema guarda `shares` +
+  `avg_cost` como forma canónica — un importe suelto no permite recalcular
+  valor ni P&L cuando el precio se mueve.
+- `dayChangeAbs` usa el `prevClose` **declarado** por la fuente y sólo lo
+  deriva del porcentaje si falta: Finnhub redondea `dp` a 2 decimales y ese
+  error se multiplica por el nº de acciones. El total en dinero es suma
+  directa (el peso ya está dentro del importe); el porcentual va ponderado.
+
+---
+
+## Estado operativo
+
+- Migración 0022 **aplicada** en Neon.
+- Worker desplegado: version `c1321ef0`. Verificado `/`, `/portfolio`,
+  `/ask`, `/lab`, `/insider` → 200.
+- Daemon local reiniciado con `launchctl kickstart` tras el build (gotcha
+  conocido: `cf:build` invalida los chunks del `next start` en marcha).
+- `pnpm typecheck`, `pnpm lint`, `pnpm test` (53) y `pnpm build` en verde.
+
+## Lo que falta
+
+1. **`git push`** — ver el aviso de arriba. Es lo único que bloquea que el
+   precalentado corra en el cron de GitHub.
+2. **El usuario no ha registrado posiciones todavía.** Las 7 filas tienen
+   `shares` NULL, así que `/portfolio` muestra el estado vacío, la revisión
+   responde "aún no has registrado ninguna posición" y el prewarm devuelve
+   `skipped: "sin posiciones"`. Todo correcto, pero nada de esto se ejercita
+   de verdad hasta que haya una posición viva.
+3. **Sin divisa.** El coste medio se guarda en la moneda de cotización. Con
+   universo US no hay problema; si entra algo europeo, el total sumaría
+   peras con manzanas. Haría falta una columna de divisa y FX antes de
+   fiarse del agregado.
+4. **Seguimiento multi-turno en `/ask`** ("¿y si quito NVDA?") sigue sin
+   hacerse: necesita estado de conversación que hoy no existe en la ruta.
