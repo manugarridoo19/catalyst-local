@@ -187,23 +187,112 @@ export type ConcentrationFlag = {
 };
 
 /**
+ * Umbrales de concentración. Están AQUÍ arriba y con nombre porque son la
+ * única parte de este módulo que es una preferencia y no una definición:
+ * cambiar 30 por 25 cambia de qué habla la revisión, y es una decisión de
+ * tolerancia al riesgo, no un hecho.
+ */
+export const CONCENTRATION = {
+  /** Una posición por encima de esto domina el resultado de la cartera. */
+  positionWarn: 30,
+  positionInfo: 20,
+  /** Un sector por encima de esto convierte la cartera en una apuesta
+   *  sectorial, tenga los nombres que tenga. */
+  sectorWarn: 50,
+  sectorInfo: 35,
+  /** Las tres mayores juntas. Captura la concentración repartida entre
+   *  varias posiciones que individualmente no llegan al umbral. */
+  topThreeWarn: 70,
+  /** Por debajo de esto, la concentración por posición es ARITMÉTICA y no
+   *  una decisión: con 4 nombres equiponderados cada uno pesa 25%. Avisar
+   *  de cada posición sería ruido, así que se avisa del recuento. */
+  minPositionsForPositionFlags: 5,
+  /** Peso sin clasificar a partir del cual los pesos sectoriales dejan de
+   *  ser fiables. No es riesgo de mercado: es calidad del dato. */
+  unclassifiedInfo: 25,
+} as const;
+
+/**
  * Riesgos de concentración de la cartera.
  *
- * ⚠️ PENDIENTE — los umbrales los decides tú (ver mensaje del agente).
- * Esto no es un detalle de implementación: define qué se le presenta al
- * modelo como "riesgo" y, por tanto, de qué va a hablar la revisión.
- * Devolver [] deja la revisión sin capa de concentración, no la rompe.
+ * Lo que se devuelve aquí es lo que la revisión presenta como "riesgo", así
+ * que la regla de fondo es no gritar por lo inevitable: una cartera de tres
+ * nombres está concentrada por definición y decirlo tres veces (una por
+ * posición) no informa de nada. Por eso las banderas por posición se
+ * silencian en carteras pequeñas y se sustituyen por una sola sobre el
+ * recuento.
  */
 export function concentrationFlags(p: Portfolio): ConcentrationFlag[] {
   const flags: ConcentrationFlag[] = [];
   // Una cartera vacía no tiene concentración que declarar.
   if (!p.positions.length) return flags;
 
-  // TODO(usuario): reglas de concentración. Materia prima disponible:
-  //   p.positions[i].weightPct  — peso de cada posición (ya ordenado desc)
-  //   p.sectors[i].weightPct    — peso por sector, con sus símbolos
-  //   p.positions.length        — nº de posiciones vivas
-  // Empuja un ConcentrationFlag por cada regla que se dispare.
+  const n = p.positions.length;
 
-  return flags;
+  if (n < CONCENTRATION.minPositionsForPositionFlags) {
+    flags.push({
+      kind: "position",
+      label: `${n} ${n === 1 ? "posición" : "posiciones"}`,
+      weightPct: n ? 100 / n : 0,
+      level: n <= 2 ? "warn" : "info",
+    });
+  } else {
+    for (const pos of p.positions) {
+      const w = pos.weightPct;
+      if (w === null) continue;
+      if (w >= CONCENTRATION.positionWarn) {
+        flags.push({ kind: "position", label: pos.symbol, weightPct: w, level: "warn" });
+      } else if (w >= CONCENTRATION.positionInfo) {
+        flags.push({ kind: "position", label: pos.symbol, weightPct: w, level: "info" });
+      }
+    }
+
+    // Sólo tiene sentido como bandera aparte si NINGUNA posición suelta ya
+    // disparó un warn: si una pesa el 40%, decir además que las tres
+    // mayores suman el 72% es la misma noticia contada dos veces.
+    const top3 = p.positions
+      .slice(0, 3)
+      .reduce((acc, x) => acc + (x.weightPct ?? 0), 0);
+    const yaHayWarnDePosicion = flags.some(
+      (f) => f.kind === "position" && f.level === "warn",
+    );
+    if (top3 >= CONCENTRATION.topThreeWarn && !yaHayWarnDePosicion) {
+      flags.push({
+        kind: "position",
+        label: "las 3 mayores",
+        weightPct: top3,
+        level: "warn",
+      });
+    }
+  }
+
+  for (const s of p.sectors) {
+    // "Unknown" no es un sector: es dato que falta, y va como bandera
+    // propia más abajo. Contarlo como concentración sectorial diría que
+    // una cartera sin clasificar está concentrada en nada.
+    if (s.sector === "Unknown") continue;
+    if (s.weightPct >= CONCENTRATION.sectorWarn) {
+      flags.push({ kind: "sector", label: s.sector, weightPct: s.weightPct, level: "warn" });
+    } else if (s.weightPct >= CONCENTRATION.sectorInfo) {
+      flags.push({ kind: "sector", label: s.sector, weightPct: s.weightPct, level: "info" });
+    }
+  }
+
+  const unknown = p.sectors.find((s) => s.sector === "Unknown");
+  if (unknown && unknown.weightPct >= CONCENTRATION.unclassifiedInfo) {
+    flags.push({
+      kind: "unclassified",
+      label: "sin sector",
+      weightPct: unknown.weightPct,
+      level: "info",
+    });
+  }
+
+  // Los warn primero y, dentro de cada nivel, lo más pesado antes: es el
+  // orden en que se pintan y en que los lee el modelo.
+  return flags.sort(
+    (a, b) =>
+      (a.level === b.level ? 0 : a.level === "warn" ? -1 : 1) ||
+      b.weightPct - a.weightPct,
+  );
 }

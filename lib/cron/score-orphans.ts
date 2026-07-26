@@ -10,6 +10,7 @@ import { broadcastNews, type FeedNewsPayload } from "@/lib/pusher/server";
 import { UNSCORED_RETENTION_DAYS } from "@/lib/time-windows";
 import { enrichTopStories } from "@/lib/articles/enrich";
 import { runEmbedIngest } from "@/lib/embeddings/ingest";
+import { prewarmPortfolioBodies } from "@/lib/cron/prewarm-portfolio";
 
 // v4 (2026-07): scoring por LOTES. Antes: 1 noticia = 1 llamada LLM, o sea
 // 10 llamadas/tick y un techo de ~3.000 news/día con el pool entero — por
@@ -244,6 +245,25 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
         err instanceof Error ? err.message.slice(0, 140) : err,
       );
     }
+  }
+
+  // Precalentado de la revisión de cartera: extrae los cuerpos de los
+  // artículos prospectivos de las posiciones vivas para que la revisión
+  // bajo demanda no tenga que pagarlos (la primera del día tardaba ~40s).
+  // Guard propio de 1h dentro de la función, así que llamarla en cada tick
+  // es barato. Best-effort, nunca tumba el tick.
+  try {
+    const pre = await prewarmPortfolioBodies();
+    if (pre.harvested) {
+      console.log(
+        `[score-orphans] portfolio prewarm: ${pre.harvested}/${pre.attempted} cuerpos (${pre.symbols} posiciones)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[score-orphans] portfolio prewarm failed:",
+      err instanceof Error ? err.message.slice(0, 140) : err,
+    );
   }
 
   // Embeddings del archivo (Ask Catalyst). Va aquí y no en un job aparte

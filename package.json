@@ -37,7 +37,9 @@
     "refresher:status": "bash scripts/local-daemon.sh status",
     "refresher:stop": "bash scripts/local-daemon.sh refresher-stop",
     "refresher:logs": "bash scripts/local-daemon.sh refresher-logs",
-    "refresher:run": "bash scripts/local-daemon.sh refresher-run"
+    "refresher:run": "bash scripts/local-daemon.sh refresher-run",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
@@ -79,6 +81,7 @@
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5",
+    "vitest": "^4.1.10",
     "wrangler": "^4.111.0"
   }
 }
