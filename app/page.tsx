@@ -117,6 +117,8 @@ async function loadInitial(): Promise<{
       name: w.name,
       sector: w.sector,
       logoUrl: meta.get(w.symbol)?.logoUrl ?? null,
+      shares: w.shares,
+      avgCost: w.avgCost,
     }));
 
     // Quotes iniciales para watchlist + AI Picks (una sola pasada) — evita

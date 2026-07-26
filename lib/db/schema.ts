@@ -143,6 +143,23 @@ export const newsScores = pgTable("news_scores", {
 ]);
 
 // Watchlist single-user en v1 — userSession es una cookie.
+//
+// Desde 2026-07-25 es TAMBIÉN la cartera: `shares`/`avgCost` convierten una
+// fila de seguimiento en una posición real. Se amplió esta tabla en vez de
+// crear `positions` aparte porque ~8 sitios ya leen de aquí (feed, brief,
+// earnings, universo de tickers) y una tabla paralela habría obligado a
+// decidir en cada uno cuál de las dos listas manda.
+//
+// Ambas columnas son NULLABLE y esa es la distinción de producto:
+//   shares NULL → sigo este nombre, no lo tengo.
+//   shares > 0  → posición; entra en pesos, P&L y revisión de cartera.
+// Un 0 explícito NO es lo mismo que NULL: es una posición cerrada que se
+// quiere seguir vigilando (y así el histórico de `addedAt` no se pierde).
+//
+// doublePrecision y no text (el criterio de quotes_cache/earnings_events):
+// aquí se hace ARITMÉTICA — peso, valor de mercado, P&L. Los text de esas
+// otras tablas sólo se pintan. Fraccionario porque los brokers europeos
+// venden fracciones de acción.
 export const watchlist = pgTable(
   "watchlist",
   {
@@ -151,6 +168,13 @@ export const watchlist = pgTable(
       .notNull()
       .references(() => tickers.symbol, { onDelete: "cascade" }),
     userSession: text("user_session").notNull(),
+    /** Nº de acciones. NULL = solo seguimiento, 0 = posición cerrada. */
+    shares: doublePrecision("shares"),
+    /** Coste medio POR ACCIÓN, en la moneda de cotización del valor.
+     *  Sin FX: una cartera que mezcle USD y EUR sumaría peras con manzanas
+     *  en el total — el universo de Catalyst es US, y si algún día entra
+     *  algo europeo hay que añadir divisa antes de fiarse del agregado. */
+    avgCost: doublePrecision("avg_cost"),
     addedAt: timestamp("added_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

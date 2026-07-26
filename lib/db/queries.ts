@@ -406,11 +406,43 @@ export async function getWatchlist(session: string) {
       addedAt: watchlist.addedAt,
       name: tickers.name,
       sector: tickers.sector,
+      shares: watchlist.shares,
+      avgCost: watchlist.avgCost,
     })
     .from(watchlist)
     .leftJoin(tickers, eq(tickers.symbol, watchlist.symbol))
     .where(eq(watchlist.userSession, session))
     .orderBy(desc(watchlist.addedAt));
+}
+
+export type WatchlistRow = Awaited<ReturnType<typeof getWatchlist>>[number];
+
+/**
+ * Fija (o limpia) la posición de un símbolo YA presente en la watchlist.
+ *
+ * No hace upsert a propósito: añadir un ticker es `addToWatchlist` y pasa
+ * por el `insert` en `tickers`, que es lo que mantiene la integridad de la
+ * FK y del universo. Si esto insertara por su cuenta, una llamada con un
+ * símbolo inventado crearía una posición sobre un ticker que Catalyst no
+ * sigue — sin noticias, sin fundamentals y sin forma de valorarlo.
+ *
+ * `null` en cualquiera de los dos campos es un borrado explícito: devuelve
+ * la fila a "solo seguimiento".
+ */
+export async function setPosition(
+  session: string,
+  symbol: string,
+  shares: number | null,
+  avgCost: number | null,
+): Promise<boolean> {
+  const res = await db
+    .update(watchlist)
+    .set({ shares, avgCost })
+    .where(
+      and(eq(watchlist.userSession, session), eq(watchlist.symbol, symbol)),
+    )
+    .returning({ symbol: watchlist.symbol });
+  return res.length > 0;
 }
 
 export async function addToWatchlist(session: string, symbol: string) {

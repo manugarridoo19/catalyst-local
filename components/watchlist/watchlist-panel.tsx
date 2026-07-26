@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { Pencil } from "lucide-react";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
+import { buildPortfolio, type PricedPosition } from "@/lib/portfolio";
 import { cn } from "@/lib/utils";
 
 export type WatchlistItem = {
@@ -10,6 +12,9 @@ export type WatchlistItem = {
   name: string | null;
   sector: string | null;
   logoUrl: string | null;
+  /** NULL = solo seguimiento · 0 = cerrada · >0 = posición viva. */
+  shares?: number | null;
+  avgCost?: number | null;
 };
 
 export type Quote = {
@@ -31,8 +36,29 @@ type Props = {
 // Refresh cadence. 60s — UX original.
 const REFRESH_MS = 60_000;
 
-export function WatchlistPanel({ items, initialQuotes = {}, footer }: Props) {
+export function WatchlistPanel({ items: initialItems, initialQuotes = {}, footer }: Props) {
   const [quotes, setQuotes] = useState<QuotesMap>(initialQuotes);
+  // Las filas son estado local porque el PATCH de una posición devuelve la
+  // lista entera: así el peso de TODAS las demás se recalcula al instante
+  // (cambiar una posición cambia el denominador) sin recargar la página.
+  const [items, setItems] = useState<WatchlistItem[]>(initialItems);
+  const [editing, setEditing] = useState<string | null>(null);
+
+  // Sincronizar con el servidor SÓLO cuando cambia el CONJUNTO de símbolos
+  // (alta o baja desde ⌘K). Si dependiera del array entero, un re-render
+  // del padre con el payload original revertiría la posición recién
+  // guardada.
+  //
+  // Ajuste en fase de render y no en un efecto: es el patrón que React
+  // documenta para "resetear estado cuando cambia una prop". Con useEffect
+  // habría un frame pintado con la lista vieja y una cascada de renders
+  // (que es justo lo que marca react-hooks/set-state-in-effect).
+  const serverKey = initialItems.map((i) => i.symbol).join(",");
+  const [syncedKey, setSyncedKey] = useState(serverKey);
+  if (syncedKey !== serverKey) {
+    setSyncedKey(serverKey);
+    setItems(initialItems);
+  }
   // null hasta el primer fetch del cliente — Date.now() en el initializer
   // sería una llamada impura durante render (regla del compilador de React).
   const [lastTick, setLastTick] = useState<number | null>(null);
@@ -98,6 +124,28 @@ export function WatchlistPanel({ items, initialQuotes = {}, footer }: Props) {
   // Derivado: sin items no se muestra tick aunque quede estado stale.
   const shownTick = items.length ? lastTick : null;
 
+  // MISMA función que usa la revisión de cartera del /ask. Si el rail
+  // calculara sus pesos por su cuenta, tarde o temprano la pantalla y la
+  // revisión dirían cosas distintas sobre la misma posición.
+  const portfolio = useMemo(
+    () =>
+      buildPortfolio(
+        items.map((i) => ({
+          symbol: i.symbol,
+          name: i.name,
+          sector: i.sector,
+          shares: i.shares ?? null,
+          avgCost: i.avgCost ?? null,
+        })),
+        quotes,
+      ),
+    [items, quotes],
+  );
+  const bySymbol = useMemo(
+    () => new Map(portfolio.positions.map((p) => [p.symbol, p])),
+    [portfolio],
+  );
+
   return (
     <aside className="flex w-72 flex-col border-l border-border/60 bg-card/30">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/60 bg-card/55 px-5 py-2.5 backdrop-blur-md">
@@ -112,6 +160,28 @@ export function WatchlistPanel({ items, initialQuotes = {}, footer }: Props) {
           </span>
         </div>
       </div>
+      {portfolio.positions.length ? (
+        <div className="flex items-baseline justify-between border-b border-border/40 px-5 py-1.5 font-mono text-[10.5px]">
+          <span className="tabular-nums text-foreground/80">
+            {formatPrice(portfolio.totalValue)}
+          </span>
+          <div className="flex items-center gap-2 tabular-nums">
+            {portfolio.totalUnrealizedPct !== null ? (
+              <span className={pnlTone(portfolio.totalUnrealizedPct)}>
+                {signed(portfolio.totalUnrealizedPct)}
+              </span>
+            ) : null}
+            {portfolio.dayChangePct !== null ? (
+              <span
+                className={cn("text-[10px]", pnlTone(portfolio.dayChangePct))}
+                title="Movimiento de hoy ponderado por peso"
+              >
+                hoy {signed(portfolio.dayChangePct)}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <div className="cat-scroll flex-1 overflow-y-auto">
         {items.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
@@ -131,6 +201,15 @@ export function WatchlistPanel({ items, initialQuotes = {}, footer }: Props) {
                 key={it.symbol}
                 item={it}
                 quote={quotes[it.symbol] ?? null}
+                position={bySymbol.get(it.symbol) ?? null}
+                editing={editing === it.symbol}
+                onToggleEdit={() =>
+                  setEditing((cur) => (cur === it.symbol ? null : it.symbol))
+                }
+                onSaved={(next) => {
+                  setItems(next);
+                  setEditing(null);
+                }}
               />
             ))}
           </ul>
@@ -144,9 +223,17 @@ export function WatchlistPanel({ items, initialQuotes = {}, footer }: Props) {
 function WatchlistRow({
   item,
   quote,
+  position,
+  editing,
+  onToggleEdit,
+  onSaved,
 }: {
   item: WatchlistItem;
   quote: Quote | null;
+  position: PricedPosition | null;
+  editing: boolean;
+  onToggleEdit: () => void;
+  onSaved: (items: WatchlistItem[]) => void;
 }) {
   // Track previous price so we can flash the row briefly when it moves.
   // The flash is on the row background, not the digits, so the number
@@ -183,7 +270,7 @@ function WatchlistRow({
   return (
     <li
       className={cn(
-        "border-b border-border/30 transition-colors duration-200 hover:bg-foreground/[0.025]",
+        "group relative border-b border-border/30 transition-colors duration-200 hover:bg-foreground/[0.025]",
         flash === "up" && "flash-up",
         flash === "down" && "flash-down",
       )}
@@ -200,6 +287,23 @@ function WatchlistRow({
           <div className="font-editorial truncate text-[12px] leading-tight text-muted-foreground/85">
             {item.name ?? "—"}
           </div>
+          {/* Peso y P&L sólo cuando hay posición. Una watchlist de puro
+              seguimiento debe seguir viéndose exactamente igual que antes
+              de que existiera la cartera. */}
+          {position ? (
+            <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] tabular-nums">
+              <span className="text-muted-foreground/70">
+                {position.weightPct?.toFixed(1) ?? "—"}%
+              </span>
+              {position.unrealizedPct !== null ? (
+                <span className={pnlTone(position.unrealizedPct)}>
+                  {signed(position.unrealizedPct)}
+                </span>
+              ) : (
+                <span className="text-muted-foreground/40">sin coste</span>
+              )}
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-col items-end gap-0.5 font-mono">
           <span className="tick text-[13px] font-semibold tabular-nums text-foreground">
@@ -215,8 +319,135 @@ function WatchlistRow({
           </span>
         </div>
       </Link>
+
+      {/* Fuera del <Link>: un botón anidado dentro de un ancla es inválido
+          y el clic navegaría en vez de abrir el editor. */}
+      <button
+        type="button"
+        onClick={onToggleEdit}
+        aria-label={`Editar posición de ${item.symbol}`}
+        className={cn(
+          "absolute right-1 top-1 rounded-sm p-1 text-muted-foreground/40 opacity-0 transition-opacity hover:text-primary focus-visible:opacity-100 group-hover:opacity-100",
+          editing && "opacity-100 text-primary",
+        )}
+      >
+        <Pencil className="h-3 w-3" />
+      </button>
+
+      {editing ? (
+        <PositionEditor item={item} onSaved={onSaved} onCancel={onToggleEdit} />
+      ) : null}
     </li>
   );
+}
+
+/** Editor inline de una posición. Guarda con PATCH /api/watchlist, que
+ *  devuelve la watchlist entera — necesario porque tocar una posición
+ *  recalcula el peso de todas las demás. */
+function PositionEditor({
+  item,
+  onSaved,
+  onCancel,
+}: {
+  item: WatchlistItem;
+  onSaved: (items: WatchlistItem[]) => void;
+  onCancel: () => void;
+}) {
+  const [shares, setShares] = useState(item.shares?.toString() ?? "");
+  const [cost, setCost] = useState(item.avgCost?.toString() ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    if (saving) return;
+    // Campo vacío = borrar el dato, no cero. Es la diferencia entre "ya no
+    // registro esta posición" y "tengo 0 acciones", que el esquema
+    // distingue a propósito.
+    const s = shares.trim() === "" ? null : Number(shares.replace(",", "."));
+    const c = cost.trim() === "" ? null : Number(cost.replace(",", "."));
+    if ((s !== null && !Number.isFinite(s)) || (c !== null && !Number.isFinite(c))) {
+      setErr("Números no válidos");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/watchlist", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: item.symbol, shares: s, avgCost: c }),
+      });
+      if (!r.ok) {
+        setErr("No se pudo guardar");
+        return;
+      }
+      const data = (await r.json()) as { items: WatchlistItem[] };
+      onSaved(data.items);
+    } catch {
+      setErr("Error de red");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-border/30 bg-background/40 px-5 py-2">
+      <div className="flex items-center gap-1.5">
+        <input
+          value={shares}
+          onChange={(e) => setShares(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void save();
+            if (e.key === "Escape") onCancel();
+          }}
+          inputMode="decimal"
+          placeholder="acciones"
+          aria-label="Número de acciones"
+          autoFocus
+          className="w-full min-w-0 rounded-sm border border-border/60 bg-transparent px-1.5 py-1 font-mono text-[11px] tabular-nums outline-none focus:border-primary/50"
+        />
+        <input
+          value={cost}
+          onChange={(e) => setCost(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void save();
+            if (e.key === "Escape") onCancel();
+          }}
+          inputMode="decimal"
+          placeholder="coste medio"
+          aria-label="Coste medio por acción"
+          className="w-full min-w-0 rounded-sm border border-border/60 bg-transparent px-1.5 py-1 font-mono text-[11px] tabular-nums outline-none focus:border-primary/50"
+        />
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving}
+          className="shrink-0 rounded-sm border border-border/60 px-1.5 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground hover:border-primary/50 hover:text-primary disabled:opacity-40"
+        >
+          {saving ? "…" : "OK"}
+        </button>
+      </div>
+      {err ? (
+        <p className="mt-1 font-mono text-[9.5px] text-rose-700 dark:text-rose-300">
+          {err}
+        </p>
+      ) : (
+        <p className="mt-1 font-mono text-[9px] text-muted-foreground/45">
+          vacío = quitar · Esc cancela
+        </p>
+      )}
+    </div>
+  );
+}
+
+function pnlTone(n: number): string {
+  if (n > 0) return "text-emerald-700 dark:text-emerald-300";
+  if (n < 0) return "text-rose-700 dark:text-rose-300";
+  return "text-muted-foreground";
+}
+
+function signed(n: number): string {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
 }
 
 // Locale-aware price formatter. Intl gives us proper thousands separators

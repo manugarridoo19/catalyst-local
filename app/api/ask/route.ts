@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { retrieve, type Citation, type StructuredFacts } from "@/lib/ask/retrieve";
 import { askArchive, hasCoverage } from "@/lib/ai/ask";
 import { embedBatch, EmbedQuotaError } from "@/lib/providers/gemini-embed";
-import { SESSION_COOKIE, claimableSessionIds } from "@/lib/session";
-import { isWorkersRuntime } from "@/lib/articles/enrich";
+import { isWorkersRuntime, llmAllowed, rateLimited } from "@/lib/ask/gate";
 
 // POST /api/ask { question } → respuesta con citas sobre el archivo.
 //
@@ -21,39 +19,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_QUESTION_CHARS = 300;
-
-// Rate limit en el propio Worker. El sitio vive en *.workers.dev — no hay
-// zona propia donde colgar una regla WAF de Cloudflare, así que el freno va
-// en código. Estado por isolate en un Map PLANO (el veto de Workers es a
-// objetos con I/O compartidos entre requests, no a datos): no es perfecto
-// (cada isolate cuenta por su cuenta) pero contra un bot desde pocas IPs
-// basta, y una request anónima dispara ~20 queries a Neon — el mismo tipo
-// de gasto sin techo que acabó en la suspensión de Vercel.
-const RL_WINDOW_MS = 60_000;
-const RL_MAX = 8;
-const rlHits = new Map<string, { n: number; t: number }>();
-
-function rateLimited(req: Request): boolean {
-  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
-  const now = Date.now();
-  const h = rlHits.get(ip);
-  if (!h || now - h.t > RL_WINDOW_MS) {
-    // Poda tosca pero suficiente: el Map no puede crecer sin límite en un
-    // isolate de larga vida.
-    if (rlHits.size > 2000) rlHits.clear();
-    rlHits.set(ip, { n: 1, t: now });
-    return false;
-  }
-  h.n++;
-  return h.n > RL_MAX;
-}
-
-async function llmAllowed(): Promise<boolean> {
-  if (!isWorkersRuntime) return true;
-  const jar = await cookies();
-  const sid = jar.get(SESSION_COOKIE)?.value?.trim().toLowerCase() ?? "";
-  return sid !== "" && claimableSessionIds().has(sid);
-}
 
 export type AskResponse = {
   mode: "answer" | "search";

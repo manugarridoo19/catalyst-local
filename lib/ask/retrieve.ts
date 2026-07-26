@@ -364,7 +364,7 @@ const EXTRACT_MAX_CHARS = 700;
  * estuviera cacheado en la BD. Best-effort: extracts cascadean con la purga
  * de news a 20d, así que citas viejas van sin body (el snapshot sobrevive).
  */
-async function attachExtracts(citations: Citation[]): Promise<void> {
+export async function attachExtracts(citations: Citation[]): Promise<void> {
   const ids = citations
     .slice(0, EXTRACT_MAX_CITATIONS)
     .map((c) => c.newsId)

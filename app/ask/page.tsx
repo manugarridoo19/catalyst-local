@@ -1,5 +1,6 @@
 import { Header } from "@/components/header";
 import { AskPanel } from "@/components/ask/ask-panel";
+import { PortfolioReviewPanel } from "@/components/ask/portfolio-review-panel";
 import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 
@@ -52,6 +53,7 @@ export default async function AskPage() {
           </div>
 
           <AskPanel />
+          <PortfolioReviewPanel />
         </div>
       </main>
     </div>
