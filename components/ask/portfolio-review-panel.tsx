@@ -33,6 +33,16 @@ const STANCE_TONE: Record<Stance, string> = {
   none: "border-border/40 text-muted-foreground/50",
 };
 
+const LEDGER_KIND: Record<string, string> = {
+  deal: "operación",
+  guidance: "guía",
+  regulatory: "regulatorio",
+  legal: "judicial",
+  product: "producto",
+  capacity: "capacidad",
+  other: "otro",
+};
+
 function pct(n: number): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
 }
@@ -198,6 +208,21 @@ function Board({ res }: { res: PortfolioReviewResponse }) {
         </p>
       ) : null}
 
+      {/* Sin esto no hay forma de distinguir "no hay nada pendiente" de
+          "las fuentes bloquearon la extracción y trabajé a ciegas". */}
+      {res.harvest.candidates > 0 ? (
+        <p className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground/45">
+          {res.harvest.bodiesAvailable}/{res.harvest.candidates} artículos leídos
+          en profundidad
+          {res.harvest.attempted > 0
+            ? ` · ${res.harvest.harvested} extraídos ahora de ${res.harvest.attempted} intentos`
+            : ""}
+          {res.harvest.bodiesAvailable === 0
+            ? " · sin cuerpos: la revisión sólo pudo usar titulares y datos estructurados"
+            : ""}
+        </p>
+      ) : null}
+
       {res.review?.verdict ? (
         <div className="rounded-sm border border-border/60 bg-card/40 px-4 py-3">
           <div className="mb-2 flex items-baseline gap-2">
@@ -223,6 +248,61 @@ function Board({ res }: { res: PortfolioReviewResponse }) {
             {res.review.model}
           </p>
         </div>
+      ) : null}
+
+      {/* El libro de futuros va INMEDIATAMENTE tras el veredicto y se
+          pinta aunque el redactor haya fallado: es el dato con más valor
+          de toda la respuesta y no debe depender de que la prosa salga. */}
+      {res.ledger.length ? (
+        <section>
+          <div className="mb-2 flex items-baseline gap-2.5">
+            <h3 className="eyebrow text-[10px] text-foreground">
+              Compromisos pendientes
+            </h3>
+            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50">
+              extraído de los cuerpos · aún sin resolver
+            </span>
+          </div>
+          <ul className="flex flex-col gap-1.5">
+            {res.ledger.map((it, i) => (
+              <li
+                key={`${it.symbol}-${i}`}
+                className="rounded-sm border border-primary/25 bg-primary/[0.03] px-3 py-2"
+              >
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <Link
+                    href={`/ticker/${it.symbol}`}
+                    className="font-mono text-[11.5px] font-bold text-foreground hover:text-primary"
+                  >
+                    {it.symbol}
+                  </Link>
+                  <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50">
+                    {LEDGER_KIND[it.kind] ?? it.kind}
+                  </span>
+                  <a
+                    href={byNum.get(it.source)?.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono text-[10px] text-primary/70 hover:text-primary"
+                  >
+                    [{it.source}]
+                  </a>
+                </div>
+                <p className="mt-0.5 font-editorial text-[12.5px] leading-relaxed text-foreground/90">
+                  {it.event}
+                </p>
+                {it.when || it.whenDate || it.condition ? (
+                  <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                    {it.whenDate ?? it.when ? `plazo: ${it.whenDate ?? it.when}` : ""}
+                    {it.condition
+                      ? `${it.whenDate ?? it.when ? " · " : ""}condición: ${it.condition}`
+                      : ""}
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
 
       {res.review?.positions.length ? (

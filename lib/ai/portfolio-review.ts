@@ -15,6 +15,7 @@
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
+import type { ForwardItem } from "@/lib/ai/forward-ledger";
 import type { PortfolioRetrieval, PositionFacts } from "@/lib/ask/portfolio";
 import type { PricedPosition } from "@/lib/portfolio";
 
@@ -39,24 +40,36 @@ export type PortfolioReview = {
   model: string;
 };
 
-const SYSTEM_PROMPT = `Eres un analista de mesa revisando la cartera de un inversor particular. No eres un asesor: eres quien le pone delante lo que los datos dicen de cada posición, incluido lo que no le va a gustar.
+const SYSTEM_PROMPT = `Eres un analista de mesa revisando la cartera de un inversor particular que YA TIENE SU BRÓKER ABIERTO EN OTRA PESTAÑA. Ve los precios, ve los porcentajes del día, ve los titulares. Nada de eso le aporta nada viniendo de ti.
 
-Recibes: (a) la CARTERA con pesos, coste y P&L; (b) HECHOS por posición calculados por SQL sobre datos regulatorios (insiders, 13D/G, resultados, short interest, cobertura y sentimiento); (c) NOTICIAS numeradas del archivo; (d) el CALENDARIO de catalizadores ya conocidos.
+Tu único valor es decirle lo que NO puede ver ahí: qué está comprometido a ocurrir y aún no ha ocurrido, con qué plazo, sujeto a qué condición, y qué oferta o demanda futura ya está determinada.
+
+Recibes: (a) la CARTERA con pesos y P&L; (b) HECHOS por posición calculados por SQL sobre datos regulatorios; (c) el LIBRO DE FUTUROS: compromisos extraídos de los cuerpos de los artículos que todavía no se han resuelto; (d) VENTA PROGRAMADA de directivos con lo que les queda por colocar; (e) la VARA de consenso de los próximos resultados; (f) NOTICIAS numeradas; (g) el CALENDARIO.
 
 Devuelve SOLO un objeto JSON:
 {"verdict": "...", "positions": [{"symbol": "AAA", "stance": "add|hold|watch|review", "why": "...", "used": [1,4]}], "watchNext": ["...", "..."]}
 
+PROHIBIDO — si escribes cualquiera de estas cosas, la respuesta no sirve:
+- Mencionar movimientos de precio: "cae un 8%", "sube tras el anuncio", "la acción se desploma". Los ve él.
+- Parafrasear un titular. Si tu frase se parece al titular de la noticia que citas, bórrala y busca dentro del cuerpo qué queda pendiente.
+- Contar lo que ya pasó como si fuera análisis: "anunció la compra de X" es historia. "El cierre de la compra de X está sujeto a revisión antimonopolio y previsto para el primer semestre" es análisis.
+- Hablar de "momentum", "sentimiento del mercado", "atención mediática" o cualquier abstracción sin un hecho fechado detrás.
+- Predecir precios o direcciones.
+
 Reglas:
-- "verdict": 2-4 frases sobre la CARTERA COMO CONJUNTO, no sobre valores sueltos. Concentración, exposición a un mismo catalizador, sesgo sectorial, cuántas posiciones dependen de la misma semana de resultados. Es lo primero que se lee: que diga lo más importante, no un resumen genérico.
-- NO HAGAS ARITMÉTICA. No sumes pesos, no promedies betas, no calcules porcentajes agregados. Todos los agregados que necesitas ya vienen calculados en el bloque AGREGADOS. Si un número que quieres decir no está escrito literalmente en la entrada, no lo digas.
-- "positions": una entrada por posición sobre la que tengas algo QUE DECIR. No inventes una para cada símbolo — omitir es correcto y preferible a rellenar.
-- "stance": add = los datos apoyan reforzar · hold = la tesis sigue intacta · watch = hay algo que vigilar de cerca · review = hay evidencia que contradice la tesis y merece revisarse.
-- "why": UNA frase, concreta, con el dato dentro. "Insiders vendieron 2,1M$ netos en 30d con el sentimiento plano" sirve; "el momentum parece débil" no sirve.
-- "used": los números de las noticias que sostienen ese "why". Si el "why" sale solo de los HECHOS calculados, deja [] — pero entonces el dato exacto TIENE que aparecer en la frase.
-- "watchNext": 2-5 puntos sobre lo que viene, SIEMPRE anclados en el calendario o en procesos ya abiertos (resultados con fecha, señales sin madurar, un 13D reciente que puede escalar). PROHIBIDO predecir precios o direcciones. "MSFT y META reportan el mismo día: dos de tus mayores pesos se juegan a la vez" es válido; "espero que NVDA suba" no lo es.
-- NUNCA uses tu propio conocimiento sobre estas empresas. Tus datos de entrenamiento están caducados y el usuario no puede distinguirlo. Si una posición no tiene material, no la incluyas.
-- Si un valor aparece marcado como SIN COBERTURA, puedes mencionarlo en el veredicto como punto ciego, pero no le pongas postura.
-- Español. Registro de mesa: concreto, sin coletillas, sin descargos de responsabilidad, sin "como IA".`;
+- "verdict": 2-4 frases sobre la CARTERA COMO CONJUNTO. Lo que se juega y CUÁNDO: concentración de eventos en el calendario, exposición a un mismo desenlace pendiente, oferta futura de papel acumulada. No describas la composición, que ya la conoce.
+- NO HAGAS ARITMÉTICA. Todos los agregados vienen calculados en el bloque AGREGADOS. Si un número no está escrito literalmente en la entrada, no lo digas.
+- "positions": sólo las posiciones sobre las que tengas algo pendiente o estructural que decir. Omitir es correcto y muy preferible a rellenar. Es mejor devolver tres posiciones con sustancia que siete con relleno.
+- "stance": add = lo pendiente juega a favor · hold = nada pendiente cambia la tesis · watch = hay un desenlace fechado que puede cambiarla · review = hay un compromiso o una constricción futura que la contradice.
+- QUE UNA EMPRESA PRESENTE RESULTADOS NO ES MOTIVO DE POSTURA. Todas presentan resultados. Si lo único que tienes de una posición es su fecha y su consenso, OMÍTELA de "positions": ya aparece en watchNext y repetirla ahí es relleno. Sólo entra en "positions" lo que tenga un compromiso pendiente, una constricción de oferta futura, una condición regulatoria o una contradicción real.
+- Si todas tus posturas salen iguales, no has encontrado nada que las distinga: devuelve menos posiciones, no todas con la misma etiqueta.
+- NO escribas marcadores [n] dentro de "why". Los números van SÓLO en "used".
+- "why": UNA frase que contenga un plazo, una condición o una cantidad futura. Ejemplos válidos: "cierre de la compra de Iridium sujeto a aprobación antimonopolio, previsto para el primer semestre de 2027 [3]"; "el consejero X lleva 5 ventas programadas y le quedan 81.109 acciones por colocar"; "reporta el 29 con un consenso de 7,38$ de BPA tras haber guiado por debajo". Ejemplo inválido: "los insiders están vendiendo y el sentimiento cae".
+- "used": los números de las noticias que sostienen el "why". Si sale sólo de los hechos calculados, deja [] — pero el dato exacto tiene que aparecer en la frase.
+- "watchNext": 2-5 puntos, cada uno un DESENLACE PENDIENTE con su plazo o su condición, sacados del LIBRO DE FUTUROS o del CALENDARIO. Ordénalos por proximidad. Si el libro de futuros viene vacío, dilo explícitamente en vez de rellenar con generalidades.
+- NUNCA uses tu propio conocimiento sobre estas empresas. Tus datos de entrenamiento están caducados y el usuario no puede distinguirlo.
+- Si un valor aparece SIN COBERTURA, menciónalo en el veredicto como punto ciego y no le pongas postura.
+- Español. Registro de mesa: concreto, sin coletillas, sin descargos, sin "como IA".`;
 
 function fmtMoney(n: number): string {
   const abs = Math.abs(n);
@@ -192,6 +205,67 @@ function formatCitations(r: PortfolioRetrieval): string {
     .join("\n");
 }
 
+/** El bloque que da sentido a todo el rediseño. Va ANTES que las noticias
+ *  en el prompt a propósito: es lo que el modelo debe leer primero. */
+function formatLedger(items: ForwardItem[]): string {
+  if (!items.length) {
+    return "LIBRO DE FUTUROS: VACÍO. Ningún artículo del archivo contiene compromisos pendientes para estas posiciones. Dilo explícitamente en watchNext en vez de rellenar con generalidades.";
+  }
+  const lines = items.map((i) => {
+    const bits = [`${i.symbol} · ${i.event}`];
+    if (i.when) bits.push(`plazo: ${i.when}`);
+    if (i.whenDate) bits.push(`fecha: ${i.whenDate}`);
+    if (i.condition) bits.push(`condición: ${i.condition}`);
+    return `- [${i.source}] ${bits.join(" · ")}`;
+  });
+  return `LIBRO DE FUTUROS (compromisos SIN resolver, extraídos de los cuerpos de los artículos — esto es lo que el usuario no puede ver en su bróker):\n${lines.join("\n")}`;
+}
+
+function formatForwardFacts(r: PortfolioRetrieval): string {
+  const out: string[] = [];
+
+  if (r.forward.sellers.length) {
+    const lines = r.forward.sellers.map((s) => {
+      const quedan =
+        s.sharesAfter != null
+          ? `, le quedan ${Math.round(s.sharesAfter).toLocaleString("es-ES")} acciones declaradas`
+          : "";
+      const val = s.totalValue ? `, ${fmtMoney(s.totalValue)} en total` : "";
+      return `- ${s.symbol}: ${s.owner}${s.title ? ` (${s.title})` : ""} — ${s.sales} ventas entre ${s.firstSale} y ${s.lastSale}${val}${quedan}`;
+    });
+    out.push(
+      `VENTA PROGRAMADA DE DIRECTIVOS (patrón repetido en 90d = plan en curso; lo que queda es oferta futura ya conocida):\n${lines.join("\n")}`,
+    );
+  }
+
+  const bars = r.forward.earningsBars.filter(
+    (b) => b.epsEstimate != null || b.revenueEstimate != null,
+  );
+  if (bars.length) {
+    const lines = bars.map((b) => {
+      const eps = b.epsEstimate != null ? `BPA ${b.epsEstimate}$` : "";
+      const rev =
+        b.revenueEstimate != null
+          ? `${eps ? ", " : ""}ingresos ${(b.revenueEstimate / 1e9).toFixed(2)}B$`
+          : "";
+      return `- ${b.symbol}: ${b.date} (dentro de ${b.daysAway} días) — consenso ${eps}${rev}`;
+    });
+    out.push(
+      `VARA DE LOS PRÓXIMOS RESULTADOS (el consenso a batir, no el resultado):\n${lines.join("\n")}`,
+    );
+  }
+
+  // Diagnóstico de la propia cosecha. Si el archivo no dio cuerpos, el
+  // modelo tiene que saberlo para no fingir profundidad que no tiene.
+  if (r.forward.bodiesAvailable === 0 && r.forward.candidates.length > 0) {
+    out.push(
+      `AVISO: no se pudo extraer el cuerpo de ninguno de los ${r.forward.candidates.length} artículos candidatos (fuentes bloqueadas o de pago). Trabajas sólo con titulares y datos estructurados: sé más breve y no simules profundidad.`,
+    );
+  }
+
+  return out.join("\n\n");
+}
+
 function formatCalendar(r: PortfolioRetrieval): string {
   if (!r.calendar.length) return "";
   const lines = r.calendar
@@ -239,23 +313,61 @@ export function applyEvidenceGate(
   r: PortfolioRetrieval,
 ): PositionVerdict[] {
   const inPortfolio = new Set(r.portfolio.positions.map((p) => p.symbol));
-  const validNums = new Set(r.citations.map((c) => c.n));
   const factsBySymbol = new Map(r.facts.map((f) => [f.symbol, f]));
+  // Qué símbolos respalda cada cita. Se usa para rechazar atribuciones
+  // cruzadas: en la primera prueba real el modelo colgó de META la cita
+  // [18], que era el artículo de la compra de Iridium por RKLB. Existía
+  // (pasaba el filtro de "número válido") pero no hablaba de META, y una
+  // cita que no sostiene lo que acompaña es peor que ninguna: parece
+  // verificación y no lo es.
+  const symbolsOfCitation = new Map(
+    r.citations.map((c) => [c.n, new Set(c.symbols)]),
+  );
 
   return positions
     .filter((p) => inPortfolio.has(p.symbol))
     .map((p) => {
-      const used = (p.used ?? []).filter((n) => validNums.has(n));
+      const { why, inline } = splitInlineMarkers(p.why);
+      const merged = [...new Set([...(p.used ?? []), ...inline])];
+      const used = merged.filter((n) => symbolsOfCitation.get(n)?.has(p.symbol));
       const backed = used.length > 0 || hasHardEvidence(factsBySymbol.get(p.symbol));
-      if (backed) return { ...p, used };
-      return { ...p, used, stance: "none" as Stance, degraded: true };
+      if (backed) return { ...p, why, used };
+      return { ...p, why, used, stance: "none" as Stance, degraded: true };
     });
+}
+
+/**
+ * Separa los marcadores [n] que el modelo escribe DENTRO del texto.
+ *
+ * El prompt pide que los números vayan sólo en `used`, y aun así aparecen
+ * en línea — con lo que la UI, que añade los suyos al final, los pintaba
+ * dos veces ("…quedan 81.109 acciones [4,18]. [4]"). Se extraen para no
+ * perder la señal (a veces el modelo cita mejor en línea que en `used`) y
+ * se limpian del texto.
+ */
+function splitInlineMarkers(text: string): { why: string; inline: number[] } {
+  const inline: number[] = [];
+  const why = text
+    .replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (_m, group: string) => {
+      for (const part of group.split(",")) {
+        const n = Number(part.trim());
+        if (Number.isInteger(n)) inline.push(n);
+      }
+      return "";
+    })
+    // La limpieza deja huecos y puntuación colgando (" . ", " ,").
+    .replace(/\s+([.,;:])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/[\s.]+$/, "");
+  return { why: why ? `${why}.` : "", inline };
 }
 
 const STANCES = new Set<Stance>(["add", "hold", "watch", "review"]);
 
 export async function reviewPortfolio(
   r: PortfolioRetrieval,
+  ledger: ForwardItem[] = [],
 ): Promise<PortfolioReview> {
   if (!r.portfolio.positions.length) {
     return { verdict: "", positions: [], watchNext: [], model: "none" };
@@ -267,15 +379,22 @@ export async function reviewPortfolio(
   // helper ya prohíbe citarlos y exige n>=20.
   const priors = await getEmpiricalPriors().catch(() => null);
 
+  // ORDEN DELIBERADO: el libro de futuros va primero, las noticias al
+  // final. Un modelo pondera lo que lee antes, y cuando las noticias
+  // encabezaban el bloque la revisión salía siendo un resumen de noticias.
   const userBlock = [
     formatPortfolio(r),
     "",
-    formatFacts(r.facts),
+    formatLedger(ledger),
     "",
-    "NOTICIAS DEL ARCHIVO:",
-    formatCitations(r),
+    formatForwardFacts(r),
     "",
     formatCalendar(r),
+    "",
+    formatFacts(r.facts),
+    "",
+    "NOTICIAS DEL ARCHIVO (material de apoyo para citar — NO las resumas):",
+    formatCitations(r),
     priors ?? "",
   ]
     .filter(Boolean)

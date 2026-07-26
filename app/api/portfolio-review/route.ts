@@ -2,8 +2,13 @@ import { NextResponse } from "next/server";
 import { getWatchlist } from "@/lib/db/queries";
 import { ensureSessionCookie } from "@/lib/session";
 import { getQuotesMap } from "@/lib/providers/finnhub";
-import { retrievePortfolio, type PortfolioRetrieval } from "@/lib/ask/portfolio";
+import {
+  citationNumberFor,
+  retrievePortfolio,
+  type PortfolioRetrieval,
+} from "@/lib/ask/portfolio";
 import { reviewPortfolio, type PortfolioReview } from "@/lib/ai/portfolio-review";
+import { extractForwardLedger, type ForwardItem } from "@/lib/ai/forward-ledger";
 import { isWorkersRuntime, llmAllowed, rateLimited } from "@/lib/ask/gate";
 
 // POST /api/portfolio-review → revisión de la cartera del usuario.
@@ -28,6 +33,18 @@ export type PortfolioReviewResponse = {
   derived: PortfolioRetrieval["derived"];
   concentration: PortfolioRetrieval["concentration"];
   blindSpots: string[];
+  /** Compromisos pendientes extraídos de los cuerpos. Se devuelve aparte
+   *  de la reseña para poder pintarlo aunque el redactor falle: es el dato
+   *  más valioso de toda la respuesta y no debe depender de la prosa. */
+  ledger: ForwardItem[];
+  /** Diagnóstico de la cosecha de cuerpos — hace visible si la revisión
+   *  trabajó con documentos o sólo con titulares. */
+  harvest: {
+    harvested: number;
+    attempted: number;
+    bodiesAvailable: number;
+    candidates: number;
+  };
   review: PortfolioReview | null;
   note?: string;
 };
@@ -56,7 +73,9 @@ export async function POST(req: Request) {
         },
         facts: [], citations: [], calendar: [], concentration: [],
         derived: { weightedBeta: null, betaCoveragePct: 0, earningsClusters: [] },
-        blindSpots: [], review: null,
+        blindSpots: [], ledger: [],
+        harvest: { harvested: 0, attempted: 0, bodiesAvailable: 0, candidates: 0 },
+        review: null,
         note: "Aún no has registrado ninguna posición. Añade acciones y coste medio en el rail de la watchlist.",
       } satisfies PortfolioReviewResponse,
       { headers: { "Cache-Control": "no-store" } },
@@ -74,9 +93,22 @@ export async function POST(req: Request) {
     const r = await retrievePortfolio(rows.map(toPosition), quotes);
 
     let review: PortfolioReview | null = null;
+    let ledger: ForwardItem[] = [];
     let note: string | undefined;
     if (allowLlm) {
-      review = await reviewPortfolio(r);
+      // DOS llamadas encadenadas y no una. La primera sólo extrae
+      // compromisos pendientes de los cuerpos; la segunda redacta ya sin
+      // los artículos delante. Ver la cabecera de lib/ai/forward-ledger.ts:
+      // con una sola llamada el modelo resume titulares por gradiente
+      // natural, y ninguna instrucción del prompt lo evitaba de forma
+      // fiable. Si la primera falla, la segunda sigue con los hechos
+      // estructurales — degrada, no revienta.
+      const extracted = await extractForwardLedger(
+        r.forward.candidates,
+        citationNumberFor(r),
+      ).catch(() => null);
+      ledger = extracted?.items ?? [];
+      review = await reviewPortfolio(r, ledger);
     } else {
       note = "La revisión con IA es sólo para la sesión del dueño. Debajo tienes los datos calculados.";
     }
@@ -90,6 +122,13 @@ export async function POST(req: Request) {
         derived: r.derived,
         concentration: r.concentration,
         blindSpots: r.blindSpots,
+        ledger,
+        harvest: {
+          harvested: r.forward.harvested,
+          attempted: r.forward.attempted,
+          bodiesAvailable: r.forward.bodiesAvailable,
+          candidates: r.forward.candidates.length,
+        },
         review,
         note,
       } satisfies PortfolioReviewResponse,

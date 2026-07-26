@@ -27,6 +27,18 @@ import { db, unwrapRows } from "@/lib/db";
 import { attachExtracts, type Citation } from "@/lib/ask/retrieve";
 import { kindLabel } from "@/lib/signals/kinds";
 import {
+  earningsBars,
+  harvestBodies,
+  pendingDeals,
+  reloadBodies,
+  selectForwardCandidates,
+  systematicSellers,
+  type EarningsBar,
+  type ForwardCandidate,
+  type PendingDeal,
+  type SystematicSeller,
+} from "@/lib/ask/forward";
+import {
   buildPortfolio,
   concentrationFlags,
   type ConcentrationFlag,
@@ -105,12 +117,31 @@ export type DerivedAggregates = {
   earningsClusters: EarningsCluster[];
 };
 
+/** Todo lo que mira hacia adelante. Ver lib/ask/forward.ts para el porqué
+ *  de cada pieza — resumen: la revisión leía lo obvio porque el retrieval
+ *  ordenaba por impacto (que premia lo ya ocurrido) sobre titulares (que
+ *  SON lo obvio), y esto lo corrige por los dos lados. */
+export type ForwardLayer = {
+  /** Candidatos elegidos por categoría prospectiva, con cuerpo si se pudo. */
+  candidates: ForwardCandidate[];
+  earningsBars: EarningsBar[];
+  sellers: SystematicSeller[];
+  deals: PendingDeal[];
+  /** Cuántos cuerpos se extrajeron en esta pasada y cuántos se intentaron:
+   *  si es 0/20 el archivo no dio material y la revisión debe decirlo en
+   *  vez de fingir profundidad. */
+  harvested: number;
+  attempted: number;
+  bodiesAvailable: number;
+};
+
 export type PortfolioRetrieval = {
   portfolio: Portfolio;
   facts: PositionFacts[];
   citations: Citation[];
   calendar: CalendarItem[];
   derived: DerivedAggregates;
+  forward: ForwardLayer;
   concentration: ConcentrationFlag[];
   /** Posiciones vivas sin UNA sola noticia en la ventana. El archivo no
    *  sabe nada de ellas y la revisión está obligada a decirlo. */
@@ -319,9 +350,28 @@ function groupBy<T extends { symbol: string }>(rows: T[]): Map<string, T[]> {
  * siendo solo-BD: quien llama ya tiene `getQuotesMap` (lo usa la home) y
  * así la revisión no añade una ronda de red propia contra Finnhub.
  */
+export type RetrieveOptions = {
+  /** false = no salir a la red a extraer cuerpos. Sólo para pruebas y para
+   *  un modo rápido: sin cosecha la revisión vuelve a leer titulares. */
+  harvest?: boolean;
+  harvestBudgetMs?: number;
+  forwardPerSymbol?: number;
+};
+
+const EMPTY_FORWARD: ForwardLayer = {
+  candidates: [],
+  earningsBars: [],
+  sellers: [],
+  deals: [],
+  harvested: 0,
+  attempted: 0,
+  bodiesAvailable: 0,
+};
+
 export async function retrievePortfolio(
   rows: Position[],
   quotes: Record<string, QuoteLike>,
+  opts?: RetrieveOptions,
 ): Promise<PortfolioRetrieval> {
   const portfolio = buildPortfolio(rows, quotes);
 
@@ -336,22 +386,41 @@ export async function retrievePortfolio(
       citations: [],
       calendar: [],
       derived: { weightedBeta: null, betaCoveragePct: 0, earningsClusters: [] },
+      forward: EMPTY_FORWARD,
       concentration: concentrationFlags(portfolio),
       blindSpots: [],
     };
   }
 
   const syms = symbolList(symbols);
-  const [insR, stkR, earnR, sigR, fndR, covR, shrR, newsR] = await Promise.all([
-    insiderQuery(syms),
-    stakesQuery(syms),
-    earningsQuery(syms),
-    signalsQuery(syms),
-    fundamentalsQuery(syms),
-    coverageQuery(syms),
-    shortQuery(syms),
-    newsQuery(syms),
-  ]);
+  const [insR, stkR, earnR, sigR, fndR, covR, shrR, newsR, fwdCandidates, bars, sellers, deals] =
+    await Promise.all([
+      insiderQuery(syms),
+      stakesQuery(syms),
+      earningsQuery(syms),
+      signalsQuery(syms),
+      fundamentalsQuery(syms),
+      coverageQuery(syms),
+      shortQuery(syms),
+      newsQuery(syms),
+      selectForwardCandidates(symbols, opts?.forwardPerSymbol ?? 4),
+      earningsBars(symbols),
+      systematicSellers(symbols),
+      pendingDeals(symbols),
+    ]);
+
+  // LA operación que cambia el resultado: ir a buscar los cuerpos que
+  // faltan. Medido el 2026-07-25, sólo el 3% de las noticias tenía cuerpo
+  // extraído, así que sin esto el modelo redacta desde titulares y un
+  // titular es, literalmente, lo obvio. Coste: N fetches con presupuesto
+  // de pared y CERO llamadas LLM (allowLlm:false). Queda cacheado en
+  // article_extracts, así que la segunda revisión ya casi no paga.
+  const harvest = opts?.harvest === false
+    ? { harvested: 0, attempted: 0 }
+    : await harvestBodies(fwdCandidates, { budgetMs: opts?.harvestBudgetMs ?? 20_000 });
+  const candidates = harvest.harvested > 0
+    ? await reloadBodies(fwdCandidates)
+    : fwdCandidates;
 
   const insider = new Map(
     unwrapRows<InsiderRow>(insR).map((r) => [r.symbol, r]),
@@ -375,6 +444,38 @@ export async function retrievePortfolio(
   const citations: Citation[] = [];
   const byUrl = new Map<string, number>();
   const citationsBySymbol = new Map<string, number[]>();
+
+  // Los candidatos prospectivos se numeran PRIMERO. No es cosmética: el
+  // orden de las citas es el orden en que el modelo las lee, y quien
+  // ocupaba el [1] era la noticia de mayor impacto, es decir, la caída del
+  // día. Ahora el [1] es la operación pendiente de cerrar.
+  const numByNewsId = new Map<number, number>();
+  for (const c of candidates) {
+    const key = `n${c.newsId}`;
+    if (byUrl.has(key)) continue;
+    const n = citations.length + 1;
+    byUrl.set(key, n);
+    numByNewsId.set(c.newsId, n);
+    citations.push({
+      n,
+      via: "forward",
+      category: c.category,
+      newsId: c.newsId,
+      headline: c.headline,
+      summary: null,
+      url: c.url,
+      source: c.source,
+      symbols: [c.symbol],
+      publishedAt: c.publishedAt,
+      impact: c.impact,
+      sentiment: c.sentiment,
+      body: c.body ? c.body.slice(0, 700) : null,
+    });
+    const list = citationsBySymbol.get(c.symbol) ?? [];
+    if (!list.includes(n)) list.push(n);
+    citationsBySymbol.set(c.symbol, list);
+  }
+
   for (const row of unwrapRows<NewsRow>(newsR)) {
     const key = row.newsId !== null ? `n${row.newsId}` : row.url;
     let n = byUrl.get(key);
@@ -437,15 +538,37 @@ export async function retrievePortfolio(
     };
   });
 
+  const forward: ForwardLayer = {
+    candidates,
+    earningsBars: bars,
+    sellers,
+    deals,
+    harvested: harvest.harvested,
+    attempted: harvest.attempted,
+    bodiesAvailable: candidates.filter((c) => c.body && c.body.length >= 200).length,
+  };
+
   return {
     portfolio,
     facts,
     citations,
-    calendar: buildCalendar(facts),
+    calendar: buildCalendar(facts, forward),
     derived: deriveAggregates(facts, portfolio),
+    forward,
     concentration: concentrationFlags(portfolio),
     blindSpots: facts.filter((f) => f.news7d === 0 && !f.citationNums.length).map((f) => f.symbol),
   };
+}
+
+/** Mapa newsId → número de cita, para que el extractor del libro de
+ *  futuros pueda referenciar las mismas citas que verá el lector. */
+export function citationNumberFor(r: PortfolioRetrieval): (newsId: number) => number | undefined {
+  const m = new Map(
+    r.citations
+      .filter((c) => c.newsId !== null)
+      .map((c) => [c.newsId as number, c.n]),
+  );
+  return (newsId: number) => m.get(newsId);
 }
 
 /**
@@ -505,15 +628,30 @@ function deriveAggregates(
  * precisamente porque medir a posteriori es lo único que no se puede
  * falsear, y una revisión que "anticipe" inventando rompería esa cadena.
  */
-function buildCalendar(facts: PositionFacts[]): CalendarItem[] {
+function buildCalendar(facts: PositionFacts[], forward: ForwardLayer): CalendarItem[] {
   const items: CalendarItem[] = [];
+  const barBySymbol = new Map(forward.earningsBars.map((b) => [b.symbol, b]));
+
   for (const f of facts) {
     if (f.nextEarnings) {
       const hour = f.earningsHour ? ` (${f.earningsHour})` : "";
+      // La VARA, no sólo la fecha. "Reporta el 29" ya está en pantalla;
+      // "reporta el 29 con un consenso de 7,38$" es lo que dice si la
+      // noticia va a ser buena o mala. El dato estaba en la tabla desde el
+      // principio y no lo leía nadie.
+      const bar = barBySymbol.get(f.symbol);
+      const est =
+        bar?.epsEstimate != null
+          ? ` · consenso BPA ${bar.epsEstimate.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}$${
+              bar.revenueEstimate != null
+                ? ` e ingresos ${(bar.revenueEstimate / 1e9).toFixed(2)}B$`
+                : ""
+            }`
+          : "";
       items.push({
         date: f.nextEarnings,
         symbol: f.symbol,
-        what: `Resultados${hour}`,
+        what: `Resultados${hour}${est}`,
       });
     }
     // Señales aún sin medir = proceso abierto, no historia cerrada.
@@ -542,6 +680,21 @@ function buildCalendar(facts: PositionFacts[]): CalendarItem[] {
         what: `Days-to-cover ${f.daysToCover.toFixed(1)} — el dato de FINRA se refresca dos veces al mes`,
       });
     }
+  }
+
+  // Vendedores sistemáticos: oferta futura conocida. Una venta suelta es
+  // ruido; dos o más del mismo directivo en 90d con acciones aún por
+  // colocar dice que viene más papel, y eso es anticipación, no crónica.
+  for (const s of forward.sellers) {
+    const quedan =
+      s.sharesAfter != null
+        ? ` y le quedan ${Math.round(s.sharesAfter).toLocaleString("es-ES")} acciones`
+        : "";
+    items.push({
+      date: null,
+      symbol: s.symbol,
+      what: `${s.owner}${s.title ? ` (${s.title})` : ""} lleva ${s.sales} ventas desde ${s.firstSale}${quedan} — venta programada en curso`,
+    });
   }
   // Lo fechado primero y en orden; lo indefinido detrás, en el orden de la
   // cartera (que ya viene por peso).

@@ -27,8 +27,13 @@ export type Citation = {
   publishedAt: string;
   impact: number;
   sentiment: number;
-  /** Cómo llegó aquí — se pinta en la UI y ayuda a depurar el retrieval. */
-  via: "vector" | "lexical";
+  /** Cómo llegó aquí — se pinta en la UI y ayuda a depurar el retrieval.
+   *  "forward" = entró por peso de CATEGORÍA prospectiva, no por impacto
+   *  ni por semejanza (ver lib/ask/forward.ts). */
+  via: "vector" | "lexical" | "forward";
+  /** Categoría editorial, cuando se conoce (sólo canal forward: el
+   *  snapshot de news_embeddings no la guarda). */
+  category?: string | null;
   /** Distancia coseno al query (solo canal vectorial). La lee hasCoverage. */
   dist?: number;
   /** Sustancia del artículo YA extraída (article_extracts): resumen IA o
