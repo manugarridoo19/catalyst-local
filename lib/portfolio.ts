@@ -21,9 +21,14 @@ export type PricedPosition = Position & {
   shares: number;
   price: number | null;
   dayChangePct: number | null;
+  /** Dinero ganado o perdido HOY en esta posición: shares × (precio −
+   *  cierre anterior). El porcentaje solo no responde a "¿cuánto llevo
+   *  hoy?" cuando los pesos son dispares: un +5% en el 3% de la cartera
+   *  pesa mucho menos que un −1% en el 40%. */
+  dayChangeAbs: number | null;
   /** shares × price. NULL si no hay precio. */
   marketValue: number | null;
-  /** shares × avgCost. NULL si no registraste coste. */
+  /** shares × avgCost — el dinero que pusiste. NULL si no hay coste. */
   costBasis: number | null;
   unrealizedAbs: number | null;
   unrealizedPct: number | null;
@@ -51,6 +56,8 @@ export type Portfolio = {
   totalUnrealizedPct: number | null;
   /** Movimiento de hoy de la cartera, ponderado por peso. */
   dayChangePct: number | null;
+  /** Dinero ganado o perdido hoy en total. Suma directa, no ponderada. */
+  dayChangeAbs: number | null;
   sectors: SectorWeight[];
   /** Posiciones vivas sin precio: los pesos NO las incluyen. */
   unpricedSymbols: string[];
@@ -58,7 +65,46 @@ export type Portfolio = {
   noCostSymbols: string[];
 };
 
-export type QuoteLike = { price: number; changePercent: number } | null;
+export type QuoteLike = {
+  price: number;
+  changePercent: number;
+  /** Cierre de la sesión anterior. Opcional porque no todas las fuentes lo
+   *  traen; sin él se deriva del porcentaje (ver `prevCloseOf`). */
+  prevClose?: number;
+} | null;
+
+/**
+ * Cierre anterior, medido o derivado.
+ *
+ * Se prefiere SIEMPRE el valor declarado por la fuente. La derivación
+ * `price / (1 + dp/100)` es aritméticamente equivalente pero arrastra el
+ * redondeo del porcentaje (Finnhub lo da con 2 decimales), y ese error se
+ * multiplica por el nº de acciones: en una posición de 10.000$ un dp
+ * redondeado en la segunda cifra ya mueve el "ganado hoy" varios euros.
+ */
+function prevCloseOf(q: NonNullable<QuoteLike>): number | null {
+  if (q.prevClose !== undefined && q.prevClose > 0) return q.prevClose;
+  const factor = 1 + q.changePercent / 100;
+  if (!Number.isFinite(factor) || factor <= 0) return null;
+  return q.price / factor;
+}
+
+/**
+ * Acciones equivalentes a un importe invertido a un precio dado.
+ *
+ * Existe porque casi nadie recuerda su posición en número de acciones —
+ * se recuerda como "metí 500 en NVDA a 120". El esquema sigue guardando
+ * `shares` + `avg_cost` como forma canónica (de ahí salen valor de mercado
+ * y P&L); esto es sólo la conversión de entrada.
+ */
+export function sharesFromAmount(
+  amount: number,
+  pricePerShare: number,
+): number | null {
+  if (!Number.isFinite(amount) || !Number.isFinite(pricePerShare)) return null;
+  if (amount < 0 || pricePerShare <= 0) return null;
+  return amount / pricePerShare;
+}
 
 function isLive(p: Position): p is Position & { shares: number } {
   return p.shares !== null && p.shares > 0;
@@ -96,10 +142,14 @@ export function buildPortfolio(
       unrealizedAbs !== null && costBasis !== null && costBasis > 0
         ? (unrealizedAbs / costBasis) * 100
         : null;
+    const prev = q ? prevCloseOf(q) : null;
+    const dayChangeAbs =
+      price !== null && prev !== null ? p.shares * (price - prev) : null;
     return {
       ...p,
       price,
       dayChangePct: q?.changePercent ?? null,
+      dayChangeAbs,
       marketValue,
       costBasis,
       unrealizedAbs,
@@ -145,6 +195,14 @@ export function buildPortfolio(
       )
     : null;
 
+  // El total en dinero SÍ es suma directa: cada posición aporta sus euros y
+  // el peso ya está dentro del propio importe. Ponderarlo otra vez sería
+  // contar el peso dos veces.
+  const withDay = priced.filter((p) => p.dayChangeAbs !== null);
+  const dayChangeAbs = withDay.length
+    ? withDay.reduce((acc, p) => acc + (p.dayChangeAbs ?? 0), 0)
+    : null;
+
   return {
     positions: priced,
     watchOnly,
@@ -154,6 +212,7 @@ export function buildPortfolio(
     totalUnrealizedAbs,
     totalUnrealizedPct,
     dayChangePct,
+    dayChangeAbs,
     sectors: sectorWeights(priced),
     unpricedSymbols: priced.filter((p) => p.price === null).map((p) => p.symbol),
     noCostSymbols: priced.filter((p) => p.avgCost === null).map((p) => p.symbol),

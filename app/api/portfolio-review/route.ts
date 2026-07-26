@@ -68,7 +68,8 @@ export async function POST(req: Request) {
         portfolio: {
           positions: [], watchOnly: rows.map(toPosition), closed: [],
           totalValue: 0, totalCost: 0, totalUnrealizedAbs: null,
-          totalUnrealizedPct: null, dayChangePct: null, sectors: [],
+          totalUnrealizedPct: null, dayChangePct: null, dayChangeAbs: null,
+          sectors: [],
           unpricedSymbols: [], noCostSymbols: [],
         },
         facts: [], citations: [], calendar: [], concentration: [],

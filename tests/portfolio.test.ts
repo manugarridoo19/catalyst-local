@@ -4,6 +4,7 @@ import {
   buildPortfolio,
   concentrationFlags,
   sectorWeights,
+  sharesFromAmount,
   type Position,
   type QuoteLike,
 } from "@/lib/portfolio";
@@ -129,6 +130,84 @@ describe("buildPortfolio — movimiento del día", () => {
   it("es null cuando ningún quote trae variación", () => {
     const p = buildPortfolio([pos("A", 1, 1)], { A: null });
     expect(p.dayChangePct).toBeNull();
+  });
+});
+
+describe("dinero ganado o perdido hoy", () => {
+  it("usa el cierre anterior declarado por la fuente", () => {
+    // 10 acciones de 100 a 110 = +100 hoy.
+    const p = buildPortfolio([pos("A", 10, 50)], {
+      A: { price: 110, changePercent: 10, prevClose: 100 },
+    });
+    expect(p.positions[0].dayChangeAbs).toBeCloseTo(100, 6);
+    expect(p.dayChangeAbs).toBeCloseTo(100, 6);
+  });
+
+  // Sin prevClose el resultado tiene que seguir siendo correcto, sólo que
+  // arrastrando el redondeo del porcentaje — de ahí que se prefiera el
+  // valor declarado cuando existe.
+  it("lo deriva del porcentaje cuando la fuente no lo trae", () => {
+    const p = buildPortfolio([pos("A", 10, 50)], {
+      A: { price: 110, changePercent: 10 },
+    });
+    expect(p.positions[0].dayChangeAbs).toBeCloseTo(100, 6);
+  });
+
+  it("el total en dinero es suma directa, no ponderada", () => {
+    // A: 10×(110-100) = +100. B: 5×(90-100) = -50. Total +50.
+    const p = buildPortfolio([pos("A", 10, 1), pos("B", 5, 1)], {
+      A: { price: 110, changePercent: 10, prevClose: 100 },
+      B: { price: 90, changePercent: -10, prevClose: 100 },
+    });
+    expect(p.dayChangeAbs).toBeCloseTo(50, 6);
+  });
+
+  it("una posición sin precio no aporta ni rompe el total", () => {
+    const p = buildPortfolio([pos("A", 10, 1), pos("B", 5, 1)], {
+      A: { price: 110, changePercent: 10, prevClose: 100 },
+      B: null,
+    });
+    expect(p.positions.find((x) => x.symbol === "B")?.dayChangeAbs).toBeNull();
+    expect(p.dayChangeAbs).toBeCloseTo(100, 6);
+  });
+
+  it("es null si ninguna posición se pudo valorar", () => {
+    expect(buildPortfolio([pos("A", 10, 1)], { A: null }).dayChangeAbs).toBeNull();
+  });
+
+  it("un cierre anterior de 0 no genera un infinito", () => {
+    const p = buildPortfolio([pos("A", 10, 1)], {
+      A: { price: 110, changePercent: -100 },
+    });
+    expect(p.positions[0].dayChangeAbs).toBeNull();
+  });
+});
+
+describe("sharesFromAmount", () => {
+  it("convierte importe invertido en acciones", () => {
+    expect(sharesFromAmount(500, 125)).toBe(4);
+  });
+
+  it("admite fracciones", () => {
+    expect(sharesFromAmount(500, 120)).toBeCloseTo(4.1667, 4);
+  });
+
+  it("rechaza precio 0 o negativo en vez de devolver infinito", () => {
+    expect(sharesFromAmount(500, 0)).toBeNull();
+    expect(sharesFromAmount(500, -10)).toBeNull();
+  });
+
+  it("rechaza importes negativos y valores no numéricos", () => {
+    expect(sharesFromAmount(-500, 120)).toBeNull();
+    expect(sharesFromAmount(Number.NaN, 120)).toBeNull();
+  });
+
+  // La conversión tiene que cerrar el círculo: si se guarda lo derivado, el
+  // coste que la tabla vuelve a mostrar debe ser el importe original.
+  it("va y vuelve: importe → acciones → costBasis", () => {
+    const shares = sharesFromAmount(750, 37.5)!;
+    const p = buildPortfolio([pos("A", shares, 37.5)], { A: quote(40) });
+    expect(p.positions[0].costBasis).toBeCloseTo(750, 6);
   });
 });
 

@@ -153,6 +153,12 @@ export function Header() {
           <NavTab href="/lab" active={pathname?.startsWith("/lab") ?? false}>
             Lab
           </NavTab>
+          <NavTab
+            href="/portfolio"
+            active={pathname?.startsWith("/portfolio") ?? false}
+          >
+            Portfolio
+          </NavTab>
           <NavTab href="/ask" active={pathname?.startsWith("/ask") ?? false}>
             Ask
           </NavTab>
