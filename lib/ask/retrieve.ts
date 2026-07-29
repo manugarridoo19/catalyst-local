@@ -91,7 +91,56 @@ export type EarningsRead = {
    *  contra earnings_events). Sin él no se puede decir si batió o falló. */
   epsEstimate: number | null;
   revenueEstimate: number | null;
+  /** La sorpresa, YA CALCULADA. Ver `surprisePct`. */
+  surprises: EarningsSurprise[];
 };
+
+/** Real contra consenso de una métrica, con la base contable declarada.
+ *  `pct` sale de `surprisePct`, nunca de un modelo. */
+export type EarningsSurprise = {
+  metric: "revenue" | "eps";
+  label: string;
+  actual: number;
+  estimate: number;
+  basis: string;
+  pct: number;
+};
+
+/**
+ * Desviación porcentual de lo reportado contra el consenso.
+ *
+ * Existe en CÓDIGO por la regla dura del proyecto: si el número va a salir en
+ * pantalla, no lo calcula el LLM. En la primera prueba de la revisión de
+ * cartera el modelo estimaba a ojo y acertaba por poco — el modo de fallo que
+ * nadie audita porque el resultado parece razonable.
+ *
+ * Devuelve null —y esto es la mitad del valor de la función— cuando comparar
+ * sería mentir:
+ *
+ *  1. **Sin base contable declarada.** Una empresa publica ingresos GAAP Y
+ *     ajustados con puntos de diferencia (SoFi Q2-26: 1,22B GAAP vs 1,2B
+ *     ajustado). Comparar la base equivocada da un beat con pinta de exacto.
+ *  2. **Desajuste de ESCALA.** El extractor puede devolver 1,22 en vez de
+ *     1.220.000.000 (el comunicado imprime "$1.2 billion" y las tablas van
+ *     "in thousands"), y 1,22 es un número perfectamente válido que ningún
+ *     saneado local puede rechazar. Aquí sí se ve: si real y consenso no
+ *     están en el mismo orden de magnitud, uno de los dos tiene otra unidad.
+ *     Un factor 10 de tolerancia deja pasar cualquier sorpresa real —nadie
+ *     bate el consenso por 10×— y ataja los errores de unidad, que son de
+ *     1.000× para arriba.
+ *  3. **Consenso cero o ausente**, que no admite división.
+ */
+export function surprisePct(
+  actual: number | null,
+  estimate: number | null,
+  basis: string | null,
+): number | null {
+  if (actual === null || estimate === null || !basis) return null;
+  if (!Number.isFinite(actual) || !Number.isFinite(estimate) || estimate === 0) return null;
+  const ratio = Math.abs(actual) / Math.abs(estimate);
+  if (ratio === 0 || Math.abs(Math.log10(ratio)) > 1) return null;
+  return ((actual - estimate) / Math.abs(estimate)) * 100;
+}
 
 export type Retrieval = {
   symbols: string[];
@@ -429,11 +478,17 @@ async function earningsReads(symbols: string[]): Promise<EarningsRead[]> {
     exhibitUrl: string;
     eps: number | null;
     revenue: number | null;
+    revenueActual: number | null;
+    revenueBasis: string | null;
+    epsActual: number | null;
+    epsBasis: string | null;
   }>(
     await db.execute(sql`
       SELECT r.symbol, r.filing_date AS "filingDate", r.report_date AS "reportDate",
              r.headline, r.summary, r.read_between_lines AS "readBetweenLines",
-             r.exhibit_url AS "exhibitUrl", e.eps, e.revenue
+             r.exhibit_url AS "exhibitUrl", e.eps, e.revenue,
+             r.revenue_actual AS "revenueActual", r.revenue_basis AS "revenueBasis",
+             r.eps_actual AS "epsActual", r.eps_basis AS "epsBasis"
       FROM (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY filing_date DESC) AS rn
         FROM earnings_reports
@@ -452,19 +507,45 @@ async function earningsReads(symbols: string[]): Promise<EarningsRead[]> {
       WHERE r.rn = 1
     `),
   );
-  return rows.map((r) => ({
-    symbol: r.symbol,
-    filingDate: r.filingDate,
-    reportDate: r.reportDate,
-    headline: r.headline,
-    // `summary` se guarda como JSON string (array de bullets). Un fallo de
-    // parseo no debe tumbar la pregunta entera: degrada a texto plano.
-    summary: parseSummary(r.summary),
-    readBetweenLines: r.readBetweenLines,
-    exhibitUrl: r.exhibitUrl,
-    epsEstimate: r.eps,
-    revenueEstimate: r.revenue,
-  }));
+  return rows.map((r) => {
+    const surprises: EarningsSurprise[] = [];
+    const rev = surprisePct(r.revenueActual, r.revenue, r.revenueBasis);
+    if (rev !== null && r.revenueActual !== null && r.revenue !== null) {
+      surprises.push({
+        metric: "revenue",
+        label: "ingresos",
+        actual: r.revenueActual,
+        estimate: r.revenue,
+        basis: r.revenueBasis as string,
+        pct: rev,
+      });
+    }
+    const eps = surprisePct(r.epsActual, r.eps, r.epsBasis);
+    if (eps !== null && r.epsActual !== null && r.eps !== null) {
+      surprises.push({
+        metric: "eps",
+        label: "BPA",
+        actual: r.epsActual,
+        estimate: r.eps,
+        basis: r.epsBasis as string,
+        pct: eps,
+      });
+    }
+    return {
+      symbol: r.symbol,
+      filingDate: r.filingDate,
+      reportDate: r.reportDate,
+      headline: r.headline,
+      // `summary` se guarda como JSON string (array de bullets). Un fallo de
+      // parseo no debe tumbar la pregunta entera: degrada a texto plano.
+      summary: parseSummary(r.summary),
+      readBetweenLines: r.readBetweenLines,
+      exhibitUrl: r.exhibitUrl,
+      epsEstimate: r.eps,
+      revenueEstimate: r.revenue,
+      surprises,
+    };
+  });
 }
 
 function parseSummary(raw: string): string[] {

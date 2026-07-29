@@ -652,6 +652,25 @@ export const earningsReports = pgTable(
     summary: text("summary").notNull(),
     /** "Lo que el management NO dijo" — la lectura entre líneas. */
     readBetweenLines: text("read_between_lines"),
+    /**
+     * Las dos cifras de cabecera EN UNIDADES ABSOLUTAS (1.220.000.000, no
+     * "1,22B"), extraídas en la MISMA llamada que ya lee el comunicado — así
+     * que su coste marginal es cero.
+     *
+     * `doublePrecision` y no text porque aquí SÍ se hace aritmética: la
+     * sorpresa contra el consenso de `earnings_events`. Es el criterio de
+     * `watchlist` — text sólo para lo que únicamente se pinta.
+     *
+     * `*_basis` NO es decorativo y no puede ser NULL sin consecuencia: una
+     * empresa publica ingresos GAAP **y** ajustados con varios puntos de
+     * diferencia (SoFi Q2-26: 1,22B GAAP vs 1,2B ajustado). Comparar la base
+     * equivocada contra el consenso da un beat que parece exacto y no lo es,
+     * que es la peor clase de número. Sin base declarada no se calcula nada.
+     */
+    revenueActual: doublePrecision("revenue_actual"),
+    revenueBasis: text("revenue_basis"),
+    epsActual: doublePrecision("eps_actual"),
+    epsBasis: text("eps_basis"),
     model: text("model").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

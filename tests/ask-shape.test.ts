@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { answerShape, inlineMarkers, normalizeSections } from "@/lib/ai/ask";
-import { normalizeHeadline } from "@/lib/ask/retrieve";
+import { normalizeHeadline, surprisePct } from "@/lib/ask/retrieve";
 import type { Citation, Retrieval } from "@/lib/ask/retrieve";
 
 // La forma de la respuesta la decide el MATERIAL, no el modelo. Estos tests
@@ -55,6 +55,7 @@ describe("answerShape", () => {
           exhibitUrl: "https://sec.gov/x",
           epsEstimate: 0.11,
           revenueEstimate: 1_143_134_910,
+          surprises: [],
         },
       ],
     });
@@ -139,6 +140,55 @@ describe("inlineMarkers", () => {
 
   it("ignora corchetes que no son citas", () => {
     expect(inlineMarkers("el rango [alto] no es una cita")).toEqual([]);
+  });
+});
+
+describe("surprisePct", () => {
+  it("calcula el beat real de SOFI Q2-26", () => {
+    // 1,22B GAAP contra 1,143B de consenso.
+    const pct = surprisePct(1_220_000_000, 1_143_134_910, "GAAP");
+    expect(pct).not.toBeNull();
+    expect(pct!).toBeCloseTo(6.72, 1);
+  });
+
+  it("calcula el miss con signo negativo", () => {
+    expect(surprisePct(0.1, 0.12, "GAAP")!).toBeCloseTo(-16.67, 1);
+  });
+
+  it("NO calcula nada sin base contable declarada", () => {
+    // Una empresa publica ingresos GAAP Y ajustados con puntos de diferencia
+    // (SoFi: 1,22B vs 1,2B). Sin saber cuál es, el porcentaje sería un número
+    // con pinta de exacto y base desconocida — peor que no darlo.
+    expect(surprisePct(1_220_000_000, 1_143_134_910, null)).toBeNull();
+    expect(surprisePct(1_220_000_000, 1_143_134_910, "")).toBeNull();
+  });
+
+  it("caza el desajuste de ESCALA que el saneado no puede ver", () => {
+    // El extractor devolvió 1.22 en vez de 1.220.000.000 — un número
+    // perfectamente válido en sí mismo. Sólo se detecta comparando órdenes
+    // de magnitud contra el consenso.
+    expect(surprisePct(1.22, 1_143_134_910, "GAAP")).toBeNull();
+    // Y al revés: consenso en millones contra real en unidades.
+    expect(surprisePct(1_220_000_000, 1143, "GAAP")).toBeNull();
+  });
+
+  it("deja pasar cualquier sorpresa plausible, por grande que sea", () => {
+    // El guard de escala es un factor 10: nadie bate el consenso por 10×,
+    // pero un +180% tiene que poder contarse.
+    expect(surprisePct(0.28, 0.1, "adjusted")!).toBeCloseTo(180, 0);
+  });
+
+  it("no divide por un consenso cero ni ausente", () => {
+    expect(surprisePct(1.5, 0, "GAAP")).toBeNull();
+    expect(surprisePct(1.5, null, "GAAP")).toBeNull();
+    expect(surprisePct(null, 1.5, "GAAP")).toBeNull();
+  });
+
+  it("maneja un consenso NEGATIVO sin invertir el signo del beat", () => {
+    // Empresa en pérdidas: consenso -0,20$, reporta -0,10$. Eso es MEJOR de
+    // lo esperado y tiene que salir positivo. Dividir por el estimado con su
+    // signo daría -50% y contaría una pérdida como si fuera un desplome.
+    expect(surprisePct(-0.1, -0.2, "GAAP")!).toBeCloseTo(50, 1);
   });
 });
 

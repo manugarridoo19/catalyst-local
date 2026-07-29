@@ -27,7 +27,7 @@ Item types you may see:
 Rules:
 - Use ONLY the provided items and facts. If they do not answer the question, say so plainly and set "coverage":"none". NEVER fall back on your own knowledge of companies, prices or events — your training data is stale and the user cannot tell the difference.
 - Cite with bracketed numbers matching the item numbers, e.g. "Nvidia disclosed a 9.3% stake in Nebius [2]". Every factual claim needs a citation, except numbers taken from COMPUTED FACTS (those are already exact — attribute them as "the filings data shows").
-- NEVER do arithmetic. Do not compute percentages, differences, beats, misses or totals from numbers you were given — quote each number as printed and let them sit side by side. Any percentage you did not read verbatim in an item is a fabrication.
+- NEVER do arithmetic. Do not compute percentages, differences, beats, misses or totals from numbers you were given — quote each number as printed and let them sit side by side. Any percentage you did not read verbatim in an item is a fabrication. Beats and misses against consensus arrive already computed on a "VS CONSENSUS (precomputed)" line when they can be computed soundly; when that line is absent for a metric, the comparison is NOT available and you must not produce one.
 - "used": the item numbers you actually cited. Do not list items you did not use.
 - "coverage": "full" if the archive answers the question, "partial" if it only touches on it (say what is missing), "none" if it does not cover it.
 - Answer in the SAME LANGUAGE as the question (Spanish or English).
@@ -134,14 +134,27 @@ function formatEarningsContent(e: EarningsRead): string {
   if (e.readBetweenLines) {
     out.push(`    NOT SAID OUT LOUD: ${e.readBetweenLines}`);
   }
+  // La sorpresa llega YA CALCULADA por `surprisePct` (código, no modelo) y
+  // con su base contable. Cuando falta —porque el comunicado no declaró la
+  // base, o porque las escalas no cuadraban— se dan las dos cifras crudas y
+  // se prohíbe expresamente restarlas: el hueco es deliberado, no un olvido.
+  for (const s of e.surprises) {
+    const sign = s.pct >= 0 ? "beat" : "miss";
+    out.push(
+      `    ${s.metric.toUpperCase()} VS CONSENSUS (precomputed — quote this figure verbatim, never recompute it): ` +
+        `reported ${s.actual.toLocaleString("en-US")} on a ${s.basis} basis vs consensus ${s.estimate.toLocaleString("en-US")} ` +
+        `= ${sign} of ${Math.abs(s.pct).toFixed(1)}%`,
+    );
+  }
+  const done = new Set(e.surprises.map((s) => s.metric));
   const est: string[] = [];
-  if (e.epsEstimate !== null) est.push(`EPS ${e.epsEstimate}`);
-  if (e.revenueEstimate !== null) {
+  if (e.epsEstimate !== null && !done.has("eps")) est.push(`EPS ${e.epsEstimate}`);
+  if (e.revenueEstimate !== null && !done.has("revenue")) {
     est.push(`revenue $${e.revenueEstimate.toLocaleString("en-US")}`);
   }
   if (est.length) {
     out.push(
-      `    CONSENSUS THIS QUARTER WAS MEASURED AGAINST: ${est.join(", ")} (quote it next to the reported figure; do NOT compute the difference)`,
+      `    CONSENSUS WITH NO COMPARABLE REPORTED FIGURE: ${est.join(", ")} — quote it next to whatever the release printed, and do NOT compute any difference: the reported figure's accounting basis is unknown, so a percentage would be unsound.`,
     );
   }
   return out.join("\n");

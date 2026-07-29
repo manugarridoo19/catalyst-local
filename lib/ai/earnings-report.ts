@@ -23,8 +23,26 @@ Return STRICT JSON:
 {
   "headline": "the release's own headline, verbatim, max 140 chars",
   "summary": ["3 to 5 bullets"],
-  "readBetweenLines": "2-3 sentences"
+  "readBetweenLines": "2-3 sentences",
+  "revenueActual": 1220000000,
+  "revenueBasis": "GAAP",
+  "epsActual": 0.12,
+  "epsBasis": "GAAP"
 }
+
+"revenueActual" / "epsActual": the headline top-line and bottom-line figures for
+THIS quarter, as ABSOLUTE NUMBERS — write 1220000000, never 1.22, "1.22B" or
+"$1.22 billion". Releases print "$1.2 billion" or "in thousands" tables; convert
+to units. Quarterly figures only, never full-year or cumulative.
+
+"revenueBasis" / "epsBasis": exactly one of "GAAP", "adjusted" or "other",
+saying which measure the number you reported IS. Companies print several
+(GAAP net revenue, adjusted net revenue, diluted EPS, adjusted EPS) and they
+differ. If a release gives both, prefer GAAP and say so.
+
+Use null for any of these four when the release does not state it plainly, and
+null for a basis you cannot determine. Never guess a basis to fill the field:
+a number whose basis is wrong is worse than no number.
 
 "summary": what the quarter actually says. EVERY bullet must carry a concrete
 number from the release (revenue, EPS, margin, growth %, guidance, buyback).
@@ -42,11 +60,40 @@ HARD RULES:
 - If something looks bad, say it plainly. This is a reading aid, not PR.
 - No investment advice, no price targets.`;
 
+export type EarningsBasis = "GAAP" | "adjusted" | "other";
+
 export type EarningsReportContent = {
   headline: string | null;
   summary: string[];
   readBetweenLines: string | null;
+  revenueActual: number | null;
+  revenueBasis: EarningsBasis | null;
+  epsActual: number | null;
+  epsBasis: EarningsBasis | null;
 };
+
+const BASES: EarningsBasis[] = ["GAAP", "adjusted", "other"];
+
+function basis(v: unknown): EarningsBasis | null {
+  if (typeof v !== "string") return null;
+  const hit = BASES.find((b) => b.toLowerCase() === v.trim().toLowerCase());
+  return hit ?? null;
+}
+
+/**
+ * Una cifra del comunicado sólo se acepta si es un número finito y REAL.
+ *
+ * El modelo puede devolver `"1.22B"`, `1.22` (olvidando la escala) o el
+ * acumulado del año. Aquí sólo se ataja lo que es comprobable sin contexto:
+ * que sea numérico y finito. El error de ESCALA no se puede ver desde aquí
+ * —1,22 es un número perfectamente válido para un EPS— así que se caza más
+ * abajo, comparando órdenes de magnitud contra el consenso (ver
+ * `surprisePct` en lib/ask/retrieve.ts). Dos redes, no una.
+ */
+function figure(v: unknown): number | null {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.replace(/[^0-9.\-]/g, "")) : NaN;
+  return Number.isFinite(n) && n !== 0 ? n : null;
+}
 
 function sanitize(parsed: unknown): EarningsReportContent | null {
   if (!parsed || typeof parsed !== "object") return null;
@@ -66,7 +113,23 @@ function sanitize(parsed: unknown): EarningsReportContent | null {
     typeof o.readBetweenLines === "string" && o.readBetweenLines.trim()
       ? o.readBetweenLines.trim().slice(0, 900)
       : null;
-  return { headline, summary, readBetweenLines };
+  // Una cifra sin base declarada se DESCARTA junto con su base: sin saber si
+  // es GAAP o ajustada no se puede comparar contra el consenso sin arriesgar
+  // un porcentaje falso con pinta de exacto.
+  const revenueBasis = basis(o.revenueBasis);
+  const epsBasis = basis(o.epsBasis);
+  const revenueActual = revenueBasis ? figure(o.revenueActual) : null;
+  const epsActual = epsBasis ? figure(o.epsActual) : null;
+
+  return {
+    headline,
+    summary,
+    readBetweenLines,
+    revenueActual,
+    revenueBasis: revenueActual === null ? null : revenueBasis,
+    epsActual,
+    epsBasis: epsActual === null ? null : epsBasis,
+  };
 }
 
 /**
@@ -76,6 +139,12 @@ function sanitize(parsed: unknown): EarningsReportContent | null {
  */
 export async function generateEarningsReport(
   filing: EarningsFiling,
+  /** `overwrite` reescribe un comunicado ya leído en vez de no hacer nada.
+   *  Sólo para rellenar campos nuevos sobre filings antiguos (los actuals y
+   *  su base llegaron en la migración 0023): el camino normal del barrido
+   *  NUNCA debe pasarlo, o cada tick volvería a pagar la llamada LLM del
+   *  mismo comunicado — que es justo lo que evita el índice único. */
+  opts?: { overwrite?: boolean },
 ): Promise<EarningsReportContent | null> {
   const res = await fetch(filing.exhibitUrl, {
     headers: { "User-Agent": SEC_USER_AGENT },
@@ -94,7 +163,10 @@ export async function generateEarningsReport(
       },
     ],
     temperature: 0.3,
-    maxTokens: 900,
+    // 900 con cuatro campos más se acercaba al techo, y un JSON truncado no
+    // degrada: se pierde el comunicado entero (el repo ya se comió esto con
+    // "batch unparseable"). El cap es un tope, no un gasto.
+    maxTokens: 1100,
     jsonMode: true,
     tag: "earnings",
   });
@@ -112,21 +184,29 @@ export async function generateEarningsReport(
   const content = sanitize(parsed);
   if (!content) throw new Error("earnings report output invalid — discarded");
 
-  await db
-    .insert(earningsReports)
-    .values({
-      symbol: filing.symbol,
-      accession: filing.accession,
-      filingDate: filing.filingDate,
-      reportDate: filing.reportDate,
-      exhibitUrl: filing.exhibitUrl,
-      headline: content.headline,
-      summary: JSON.stringify(content.summary),
-      readBetweenLines: content.readBetweenLines,
-      model: result.model,
-    })
-    // Dos escritores (cron y refresher) pueden cruzarse en el mismo filing.
-    .onConflictDoNothing();
+  const row = {
+    symbol: filing.symbol,
+    accession: filing.accession,
+    filingDate: filing.filingDate,
+    reportDate: filing.reportDate,
+    exhibitUrl: filing.exhibitUrl,
+    headline: content.headline,
+    summary: JSON.stringify(content.summary),
+    readBetweenLines: content.readBetweenLines,
+    revenueActual: content.revenueActual,
+    revenueBasis: content.revenueBasis,
+    epsActual: content.epsActual,
+    epsBasis: content.epsBasis,
+    model: result.model,
+  };
+  const insert = db.insert(earningsReports).values(row);
+  await (opts?.overwrite
+    ? insert.onConflictDoUpdate({
+        target: [earningsReports.symbol, earningsReports.accession],
+        set: row,
+      })
+    : // Dos escritores (cron y refresher) pueden cruzarse en el mismo filing.
+      insert.onConflictDoNothing());
 
   return content;
 }
