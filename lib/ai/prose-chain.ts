@@ -32,6 +32,15 @@ export async function proseCompletion(opts: {
   /** Salida JSON estructurada (AI Picks). Los tres proveedores lo soportan
    *  (response_format / responseMimeType). */
   jsonMode?: boolean;
+  /** Timeout por intento contra Gemini. Los 25s por defecto se calibraron
+   *  para prosa corta (briefs); una tarea con prompt grande y respuesta
+   *  larga los roza y entonces pasa lo peor: el modelo de CABEZA se queda
+   *  a medias, aborta, y responde el de reserva — mucho más rápido y
+   *  bastante peor. Quien pida más tokens debe pedir también más reloj.
+   *  Medido en /ask el 2026-07-29: 23,5s de respuesta contra 25s de techo. */
+  geminiTimeoutMs?: number;
+  /** Techo de pared del barrido completo de Gemini. */
+  geminiOverallTimeoutMs?: number;
 }): Promise<ChatCompletionResult> {
   const { messages, temperature, maxTokens, tag, jsonMode } = opts;
 
@@ -61,7 +70,8 @@ export async function proseCompletion(opts: {
         temperature,
         maxTokens,
         jsonMode,
-        timeoutMs: 25_000,
+        timeoutMs: opts.geminiTimeoutMs ?? 25_000,
+        overallTimeoutMs: opts.geminiOverallTimeoutMs,
       });
     } catch (err) {
       warn("gemini", err);

@@ -354,7 +354,17 @@ export async function geminiChatCompletion(opts: {
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
+  /** Timeout de UN intento (una key, un modelo). */
   timeoutMs?: number;
+  /** Techo de PARED para el barrido entero (todos los modelos × todas las
+   *  keys). Sin él, el peor caso es `timeoutMs × modelos × keys`: con 25s,
+   *  2 modelos y 4 keys son 200 segundos de espera para el que preguntó.
+   *  Y el caso malo no es raro — un modelo que tarda un pelo más que el
+   *  timeout lo AGOTA en todas las keys, porque la latencia es propiedad
+   *  del modelo, no de la key. Medido el 2026-07-29 en /ask: 106s de
+   *  espera y respuesta firmada por el modelo de reserva. Sin valor, se
+   *  mantiene el comportamiento de siempre (barrido sin techo). */
+  overallTimeoutMs?: number;
 }): Promise<ChatCompletionResult> {
   if (KEY_POOL.length === 0) {
     throw new Error(
@@ -373,6 +383,10 @@ export async function geminiChatCompletion(opts: {
   const reserve = KEY_POOL.filter((k) => k.reserve);
 
   let lastErr: unknown = null;
+  const deadline =
+    opts.overallTimeoutMs !== undefined
+      ? Date.now() + opts.overallTimeoutMs
+      : Infinity;
 
   // El round-robin (rrCursor) solo rota sobre las primarias; la reserva se
   // recorre en orden fijo y sin avanzar el cursor (queremos que su uso sea
@@ -390,6 +404,12 @@ export async function geminiChatCompletion(opts: {
       // Por modelo, no por request: cada familia quiere su thinkingConfig.
       const payload = toGeminiPayload(opts.messages, opts, model);
       for (let i = 0; i < keys.length; i++) {
+        if (Date.now() >= deadline) {
+          console.warn(
+            `[gemini] presupuesto de pared agotado — se abandona el barrido en [${model}]`,
+          );
+          return null;
+        }
         const idx = rotate ? (base + i) % keys.length : i;
         const state = keys[idx];
         if (!keyUsableFor(state, model, Date.now())) continue;
@@ -404,7 +424,29 @@ export async function geminiChatCompletion(opts: {
           // tier de reserva — si de verdad es fatal para todas, sale por el
           // throw final. Antes, un error no-listado con el cursor parado en
           // una key mala dejaba todo el proveedor muerto hasta reinicio.
+          //
+          // Y SE LOGUEA. Este catch era mudo, y esa mudez es la razón de que
+          // "¿por qué me ha respondido el modelo de reserva y no el de
+          // cabeza?" no tuviera respuesta posible: un fallo de 3.5 en las 4
+          // keys degradaba a 3.1 sin dejar una sola línea (los 429 al menos
+          // los apunta applyRateLimit; todo lo demás — timeouts, contenido
+          // vacío, 500 de Google — desaparecía). Sin este log la degradación
+          // silenciosa es indistinguible de que no haya ocurrido.
           lastErr = err;
+          console.warn(
+            `[gemini] ${state.label} [${model}] falló, siguiente: ` +
+              (err instanceof Error ? err.message.slice(0, 140) : String(err)),
+          );
+          // Un TIMEOUT no se reintenta en las demás keys: lo que se ha
+          // agotado es el reloj contra ESTE modelo, y la latencia es
+          // propiedad del modelo, no de la key. Barrer las 4 keys con el
+          // modelo lento cuesta `timeoutMs × keys` para acabar exactamente
+          // igual — es lo que convertía una pregunta de /ask en 106s de
+          // espera antes de degradar. Se pasa YA al siguiente modelo, que es
+          // la única jugada con alguna probabilidad de responder.
+          // Cualquier otro fallo (429, 500, red, body malformado) SÍ puede
+          // ser cosa de esa key concreta y sigue barriendo.
+          if (err instanceof GeminiRetriable && err.status === 408) break;
           continue;
         }
       }

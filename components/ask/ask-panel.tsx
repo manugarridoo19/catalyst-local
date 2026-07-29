@@ -137,9 +137,29 @@ function Answer({ res }: { res: AskResponse }) {
               </span>
             ) : null}
           </div>
-          <p className="font-editorial text-[13.5px] leading-relaxed text-foreground/90">
-            {res.answer}
-          </p>
+          {/* Con epígrafes cuando el material dio para ellos; si no, el
+              párrafo de siempre. La forma la decide el servidor (mirando el
+              retrieval), no esta vista: aquí sólo se pinta lo que vino. */}
+          {res.sections?.length ? (
+            <div className="flex flex-col gap-3">
+              {res.sections.map((s, i) => (
+                <div key={`${s.key}-${i}`}>
+                  {s.title ? (
+                    <h3 className="eyebrow mb-1 text-[9.5px] text-muted-foreground">
+                      {s.title}
+                    </h3>
+                  ) : null}
+                  <p className="font-editorial text-[13.5px] leading-relaxed text-foreground/90">
+                    {s.text}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="font-editorial text-[13.5px] leading-relaxed text-foreground/90">
+              {res.answer}
+            </p>
+          )}
           {res.model ? (
             <p className="mt-2 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/40">
               {res.model}

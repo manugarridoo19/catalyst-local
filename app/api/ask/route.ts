@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { retrieve, type Citation, type StructuredFacts } from "@/lib/ask/retrieve";
-import { askArchive, hasCoverage } from "@/lib/ai/ask";
+import { askArchive, hasCoverage, type AskSection } from "@/lib/ai/ask";
 import { embedBatch, EmbedQuotaError } from "@/lib/providers/gemini-embed";
 import { isWorkersRuntime, llmAllowed, rateLimited } from "@/lib/ask/gate";
 
@@ -24,6 +24,9 @@ export type AskResponse = {
   mode: "answer" | "search";
   question: string;
   answer: string | null;
+  /** Respuesta troceada en epígrafes cuando el material daba para ello.
+   *  Vacío en modo búsqueda y en las respuestas en prosa antiguas. */
+  sections: AskSection[];
   coverage: "full" | "partial" | "none";
   citations: Citation[];
   facts: StructuredFacts[];
@@ -67,7 +70,10 @@ export async function POST(req: Request) {
       }
     }
 
-    const r = await retrieve({ question, queryVec });
+    // La cosecha de cuerpos (N fetches salientes) va gated a la sesión del
+    // dueño, igual que el embedding y el LLM: un endpoint público y
+    // enumerable no puede convertirse en un proxy de descargas para bots.
+    const r = await retrieve({ question, queryVec, harvest: allowLlm });
 
     if (!allowLlm) {
       return NextResponse.json(
@@ -75,6 +81,7 @@ export async function POST(req: Request) {
           mode: "search",
           question,
           answer: null,
+          sections: [],
           coverage: hasCoverage(r) ? "partial" : "none",
           citations: r.citations,
           facts: r.facts,
@@ -91,6 +98,7 @@ export async function POST(req: Request) {
         mode: "answer",
         question,
         answer: a.answer || null,
+        sections: a.sections,
         coverage: a.coverage,
         citations: a.citations,
         facts: r.facts,
@@ -112,6 +120,7 @@ export async function POST(req: Request) {
         mode: "answer",
         question,
         answer: null,
+        sections: [],
         coverage: "none",
         citations: [],
         facts: [],

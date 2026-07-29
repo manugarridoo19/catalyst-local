@@ -102,15 +102,25 @@ need_build() {
     return 0
   fi
   # If any source file is newer than BUILD_ID, rebuild.
-  if find "$REPO_DIR" \
+  #
+  # ⚠️ NO reintroducir `find … | head -1 | grep -q .`. Con `set -o pipefail`
+  # (activo arriba) esa tubería se puntúa AL REVÉS de lo que parece: cuando
+  # find SÍ encuentra algo, head cierra la tubería, find muere con SIGPIPE
+  # (141) y pipefail devuelve ese 141 como estado del pipeline → el `if` da
+  # FALSO justo en el caso que debía disparar. El efecto era que
+  # `daemon:restart` no reconstruía nunca (sólo si faltaba BUILD_ID) y el
+  # daemon servía un build viejo indefinidamente — sin un solo mensaje de
+  # error. Aquí el corte lo hace el propio find con -quit y el resultado se
+  # juzga por si la cadena viene vacía, sin tuberías de por medio.
+  local newer
+  newer="$(find "$REPO_DIR" \
       -path "$REPO_DIR/node_modules" -prune -o \
       -path "$REPO_DIR/.next" -prune -o \
+      -path "$REPO_DIR/.open-next" -prune -o \
       -path "$REPO_DIR/.git" -prune -o \
       \( -name "*.ts" -o -name "*.tsx" -o -name "*.css" -o -name "*.json" -o -name "*.mjs" \) \
-      -newer "$BUILD_MARKER" -print 2>/dev/null | head -1 | grep -q .; then
-    return 0
-  fi
-  return 1
+      -newer "$BUILD_MARKER" -print -quit 2>/dev/null || true)"
+  [ -n "$newer" ]
 }
 
 # --- Commands ----------------------------------------------------------------

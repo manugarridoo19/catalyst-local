@@ -162,15 +162,28 @@ export async function selectForwardCandidates(
  * `article_extracts`, así que la segunda revisión de los mismos valores
  * empieza casi llena.
  */
+/** Lo MÍNIMO que necesita la cosecha: un id de noticia y si ya tiene cuerpo.
+ *  Tipado estructural a propósito — `lib/ask/retrieve.ts` cosecha sobre
+ *  `Citation[]` y no tiene por qué fabricar ForwardCandidates falsos para
+ *  reusar esta función. */
+export type Harvestable = { newsId: number | null; hasExtract: boolean };
+
 export async function harvestBodies(
-  candidates: ForwardCandidate[],
+  candidates: Harvestable[],
   opts?: { budgetMs?: number; concurrency?: number },
 ): Promise<{ harvested: number; attempted: number }> {
   const budgetMs = opts?.budgetMs ?? 20_000;
   const concurrency = opts?.concurrency ?? 4;
   const deadline = Date.now() + budgetMs;
 
-  const pending = [...new Set(candidates.filter((c) => !c.hasExtract).map((c) => c.newsId))];
+  const pending = [
+    ...new Set(
+      candidates
+        .filter((c) => !c.hasExtract)
+        .map((c) => c.newsId)
+        .filter((id): id is number => id !== null),
+    ),
+  ];
   if (!pending.length) return { harvested: 0, attempted: 0 };
 
   let cursor = 0;

@@ -15,6 +15,7 @@
 
 import { sql, type SQL } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
+import { harvestBodies } from "@/lib/ask/forward";
 
 export type Citation = {
   n: number;
@@ -29,8 +30,10 @@ export type Citation = {
   sentiment: number;
   /** Cómo llegó aquí — se pinta en la UI y ayuda a depurar el retrieval.
    *  "forward" = entró por peso de CATEGORÍA prospectiva, no por impacto
-   *  ni por semejanza (ver lib/ask/forward.ts). */
-  via: "vector" | "lexical" | "forward";
+   *  ni por semejanza (ver lib/ask/forward.ts).
+   *  "filing"  = no es una noticia: es el documento de la propia empresa
+   *  (comunicado de resultados). Fuente primaria, va siempre la primera. */
+  via: "vector" | "lexical" | "forward" | "filing";
   /** Categoría editorial, cuando se conoce (sólo canal forward: el
    *  snapshot de news_embeddings no la guarda). */
   category?: string | null;
@@ -51,17 +54,59 @@ export type StructuredFacts = {
   insiderSellers30d: number;
   stakes: Array<{ filer: string | null; pct: number | null; filedAt: string }>;
   nextEarnings: string | null;
+  /** La VARA del próximo trimestre, no sólo la fecha. Estaba en la tabla
+   *  desde el principio y /ask no la leía: "reporta el 26-oct" no dice si
+   *  la noticia será buena; "reporta el 26-oct con consenso de 0,17$" sí. */
+  nextEarningsHour: string | null;
+  nextEarningsEps: number | null;
+  nextEarningsRevenue: number | null;
   lastPick: { thesis: string; generatedAt: string } | null;
   newsCount7d: number;
   avgSentiment7d: number | null;
+};
+
+/**
+ * El comunicado de resultados de la propia empresa, ya leído (8-K item 2.02,
+ * exhibit 99.1 → `lib/ai/earnings-report.ts`).
+ *
+ * ⚠️ Esta tabla se escribía desde la Fase 3 y NADIE la leía — ni /ask, ni la
+ * página de ticker, ni la revisión de cartera (auditado 2026-07-29: el único
+ * `earningsReports` del repo fuera del schema era su propio INSERT). Es el
+ * agujero que hacía que preguntar "¿qué dicen del earnings de $SOFI?"
+ * devolviera prensa parafraseada mientras el comunicado leído —con las
+ * cifras, la guía y lo que el management NO dijo— estaba en la BD.
+ *
+ * Es material de PRIMERA MANO: no es una noticia sobre el trimestre, es el
+ * trimestre. En el prompt va antes que ninguna cita.
+ */
+export type EarningsRead = {
+  symbol: string;
+  filingDate: string;
+  reportDate: string | null;
+  headline: string | null;
+  summary: string[];
+  readBetweenLines: string | null;
+  exhibitUrl: string;
+  /** Consenso del trimestre que ESTE comunicado responde (casado por fecha
+   *  contra earnings_events). Sin él no se puede decir si batió o falló. */
+  epsEstimate: number | null;
+  revenueEstimate: number | null;
 };
 
 export type Retrieval = {
   symbols: string[];
   citations: Citation[];
   facts: StructuredFacts[];
+  /** Comunicados de resultados leídos de los símbolos de la pregunta. */
+  earnings: EarningsRead[];
   /** true si el canal vectorial pudo usarse (sesión del dueño con cuota). */
   vectorUsed: boolean;
+  /** Cuántos cuerpos se salieron a buscar en esta pregunta y cuántos
+   *  llegaron. Si es 0/12 el archivo no dio material y la respuesta debe
+   *  decirlo en vez de fingir profundidad (mismo criterio que ForwardLayer). */
+  harvested: number;
+  attempted: number;
+  bodiesAvailable: number;
 };
 
 // All-caps que son palabras normales en una pregunta y ADEMÁS existen como
@@ -238,7 +283,14 @@ async function lexicalSearch(
  *  Las 6 queries del símbolo (y los hasta 3 símbolos) van en Promise.all:
  *  el driver HTTP hace un fetch independiente por query, así que en serie
  *  eran ~18 round-trips encadenados de latencia pura. */
-async function factsForSymbol(symbol: string): Promise<StructuredFacts> {
+async function factsForSymbol(
+  symbol: string,
+  /** Fechas de earnings cuyo comunicado YA hemos leído: no son "próximos".
+   *  Llega como PROMESA a propósito — así la query de comunicados vuela en
+   *  paralelo con estas 6 en vez de encadenarse delante (el driver HTTP de
+   *  Neon hace un fetch por query y la latencia en serie se nota). */
+  reportedP: Promise<Set<string>>,
+): Promise<StructuredFacts> {
   const metaQ = db.execute(sql`SELECT name FROM tickers WHERE symbol = ${symbol}`);
   const insiderQ = db.execute(sql`
         SELECT
@@ -261,10 +313,19 @@ async function factsForSymbol(symbol: string): Promise<StructuredFacts> {
       `);
   // earnings_events.date es TEXT yyyy-mm-dd (sortable) — se compara como
   // texto contra la fecha de hoy, no con operadores de fecha.
+  //
+  // Se piden DOS y no una: `date >= current_date` incluye el trimestre que
+  // se publica HOY, así que el día del resultado /ask anunciaba como
+  // "próximos resultados" uno que ya había salido esa mañana. El que ya
+  // tiene comunicado leído se descarta arriba y queda el siguiente de
+  // verdad. Y viajan las estimaciones, que es la vara a batir.
   const earnQ = db.execute(sql`
-        SELECT date AS d FROM earnings_events
+        SELECT date AS d, hour,
+               NULLIF(regexp_replace(COALESCE(eps_estimate,''),'[^0-9.\\-]','','g'),'')::float8 AS eps,
+               NULLIF(regexp_replace(COALESCE(revenue_estimate,''),'[^0-9.\\-]','','g'),'')::float8 AS revenue
+        FROM earnings_events
         WHERE symbol = ${symbol} AND date >= to_char(current_date, 'YYYY-MM-DD')
-        ORDER BY date ASC LIMIT 1
+        ORDER BY date ASC LIMIT 2
       `);
   // ai_picks guarda UN JSON array por generación, no una fila por
   // símbolo: hay que desplegarlo para encontrar la tesis de este ticker.
@@ -295,9 +356,18 @@ async function factsForSymbol(symbol: string): Promise<StructuredFacts> {
     sellers: number;
   }>(insiderR);
   const stakes = unwrapRows<{ filer: string | null; pct: number | null; filedAt: string }>(stakesR);
-  const [earn] = unwrapRows<{ d: string | null }>(earnR);
+  const earnRows = unwrapRows<{
+    d: string;
+    hour: string | null;
+    eps: number | null;
+    revenue: number | null;
+  }>(earnR);
   const [pick] = unwrapRows<{ thesis: string; generatedAt: string }>(pickR);
   const [cov] = unwrapRows<{ n: number; avg: number | null }>(covR);
+
+  // El trimestre cuyo comunicado ya hemos leído NO es "el próximo".
+  const reported = await reportedP;
+  const earn = earnRows.find((r) => !reported.has(r.d)) ?? null;
 
   return {
     symbol,
@@ -308,14 +378,105 @@ async function factsForSymbol(symbol: string): Promise<StructuredFacts> {
     insiderSellers30d: insider?.sellers ?? 0,
     stakes,
     nextEarnings: earn?.d ?? null,
+    nextEarningsHour: earn?.hour ?? null,
+    nextEarningsEps: earn?.eps ?? null,
+    nextEarningsRevenue: earn?.revenue ?? null,
     lastPick: pick ?? null,
     newsCount7d: cov?.n ?? 0,
     avgSentiment7d: cov?.avg ?? null,
   };
 }
 
-async function structuredFacts(symbols: string[]): Promise<StructuredFacts[]> {
-  return Promise.all(symbols.slice(0, 3).map(factsForSymbol));
+async function structuredFacts(
+  symbols: string[],
+  reportedBySymbol: Promise<Map<string, Set<string>>>,
+): Promise<StructuredFacts[]> {
+  return Promise.all(
+    symbols.slice(0, 3).map((s) =>
+      factsForSymbol(
+        s,
+        reportedBySymbol.then((m) => m.get(s) ?? new Set<string>()),
+      ),
+    ),
+  );
+}
+
+/** Cuántos días atrás sigue siendo "el último trimestre". Un comunicado de
+ *  hace 4 meses ya no explica el precio de hoy y confundiría más que ayuda:
+ *  100 días cubre el trimestre vigente con holgura sin colarse en el
+ *  anterior (ciclo ~90d). */
+const EARNINGS_READ_MAX_AGE_DAYS = 100;
+
+/**
+ * El último comunicado leído de cada símbolo, con el consenso de SU
+ * trimestre al lado. Una query para todos los símbolos.
+ *
+ * El casado con `earnings_events` va por fecha con ventana de ±5 días
+ * (`report_date` es lo que declara el propio filing y `date` lo que dice el
+ * calendario de Finnhub; no siempre coinciden al día) y se queda con el más
+ * cercano. Sin este join el modelo puede decir "récord de ingresos" pero no
+ * si eso batió o falló, que es la única pregunta que importa.
+ */
+async function earningsReads(symbols: string[]): Promise<EarningsRead[]> {
+  if (!symbols.length) return [];
+  const rows = unwrapRows<{
+    symbol: string;
+    filingDate: string;
+    reportDate: string | null;
+    headline: string | null;
+    summary: string;
+    readBetweenLines: string | null;
+    exhibitUrl: string;
+    eps: number | null;
+    revenue: number | null;
+  }>(
+    await db.execute(sql`
+      SELECT r.symbol, r.filing_date AS "filingDate", r.report_date AS "reportDate",
+             r.headline, r.summary, r.read_between_lines AS "readBetweenLines",
+             r.exhibit_url AS "exhibitUrl", e.eps, e.revenue
+      FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY filing_date DESC) AS rn
+        FROM earnings_reports
+        WHERE symbol IN (${list(symbols)})
+          AND filing_date::date >= current_date - ${sql.raw(String(EARNINGS_READ_MAX_AGE_DAYS))}
+      ) r
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(regexp_replace(COALESCE(eps_estimate,''),'[^0-9.\\-]','','g'),'')::float8 AS eps,
+               NULLIF(regexp_replace(COALESCE(revenue_estimate,''),'[^0-9.\\-]','','g'),'')::float8 AS revenue
+        FROM earnings_events ev
+        WHERE ev.symbol = r.symbol
+          AND ABS(ev.date::date - COALESCE(r.report_date, r.filing_date)::date) <= 5
+        ORDER BY ABS(ev.date::date - COALESCE(r.report_date, r.filing_date)::date) ASC
+        LIMIT 1
+      ) e ON true
+      WHERE r.rn = 1
+    `),
+  );
+  return rows.map((r) => ({
+    symbol: r.symbol,
+    filingDate: r.filingDate,
+    reportDate: r.reportDate,
+    headline: r.headline,
+    // `summary` se guarda como JSON string (array de bullets). Un fallo de
+    // parseo no debe tumbar la pregunta entera: degrada a texto plano.
+    summary: parseSummary(r.summary),
+    readBetweenLines: r.readBetweenLines,
+    exhibitUrl: r.exhibitUrl,
+    epsEstimate: r.eps,
+    revenueEstimate: r.revenue,
+  }));
+}
+
+function parseSummary(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((b): b is string => typeof b === "string" && b.trim() !== "");
+    }
+  } catch {
+    // cae abajo
+  }
+  return raw.trim() ? [raw.trim()] : [];
 }
 
 /**
@@ -328,38 +489,165 @@ export async function retrieve(opts: {
   question: string;
   queryVec: number[] | null;
   limit?: number;
+  /** false = no salir a la red a extraer cuerpos que faltan. Los anónimos
+   *  del Worker van así: no pueden disparar N fetches salientes. */
+  harvest?: boolean;
+  harvestBudgetMs?: number;
 }): Promise<Retrieval> {
   const { question, queryVec } = opts;
   const limit = opts.limit ?? 20;
   const half = Math.ceil(limit / 2);
   const symbols = await extractQuestionSymbols(question);
 
-  const [vector, lexical, facts] = await Promise.all([
+  // Se lanza aquí y se pasa SIN await a structuredFacts: las dos cosas
+  // vuelan a la vez y los hechos sólo la esperan al final.
+  const earningsP = earningsReads(symbols);
+
+  const [vector, lexical, facts, earnings] = await Promise.all([
     queryVec ? vectorSearch(queryVec, symbols, half) : Promise.resolve([]),
     lexicalSearch(question, symbols, half),
-    structuredFacts(symbols),
+    structuredFacts(
+      symbols,
+      earningsP.then((rs) => {
+        const m = new Map<string, Set<string>>();
+        for (const r of rs) {
+          const set = m.get(r.symbol) ?? new Set<string>();
+          if (r.reportDate) set.add(r.reportDate);
+          set.add(r.filingDate);
+          m.set(r.symbol, set);
+        }
+        return m;
+      }),
+    ),
+    earningsP,
   ]);
 
   const seen = new Set<string>();
+  const seenText = new Set<string>();
   const citations: Citation[] = [];
+
+  // Los comunicados se numeran PRIMERO, y no es cosmética. El orden de las
+  // citas es el orden en que el modelo las lee, y quien ocupaba el [1] era
+  // la noticia de mejor semejanza — que sobre un día de resultados es la
+  // crónica de la caída. Ahora el [1] es el documento de la empresa. Es la
+  // misma corrección que la revisión de cartera aplicó el 2026-07-25.
+  for (const e of earnings) {
+    citations.push({
+      n: citations.length + 1,
+      via: "filing",
+      newsId: null,
+      headline: e.headline ?? `${e.symbol}: comunicado de resultados ${e.filingDate}`,
+      summary: null,
+      url: e.exhibitUrl,
+      source: "sec-edgar (8-K ex. 99.1)",
+      symbols: [e.symbol],
+      publishedAt: `${e.reportDate ?? e.filingDate}T00:00:00Z`,
+      impact: 5,
+      sentiment: 0,
+      category: "EARNINGS",
+    });
+  }
+
   for (const c of [...vector, ...lexical]) {
     const key = c.newsId !== null ? `n${c.newsId}` : c.url;
     if (seen.has(key)) continue;
     seen.add(key);
+    // Dedupe TEXTUAL además del de identidad. El mismo teletipo entra por
+    // dos fuentes con titular idéntico salvo el sufijo del sindicador
+    // ("… By Investing.com"), y ocupaban DOS de las citas del prompt: en la
+    // pregunta de SOFI del 2026-07-29, 2 de las 8 citas usadas eran la
+    // misma noticia del mínimo de 52 semanas. Slots gastados en repetirse.
+    const text = normalizeHeadline(c.headline);
+    if (text && seenText.has(text)) continue;
+    if (text) seenText.add(text);
     citations.push({ ...c, n: citations.length + 1 });
     if (citations.length >= limit) break;
   }
 
   await attachExtracts(citations);
 
-  return { symbols, citations, facts, vectorUsed: Boolean(queryVec) };
+  // LA operación que cambia la profundidad de la respuesta. Medido el
+  // 2026-07-29 sobre la pregunta de SOFI: de 18 noticias del día, CERO
+  // tenían cuerpo extraído, así que el modelo volvía a redactar desde
+  // titulares — el mismo fallo que la revisión de cartera ya había medido y
+  // resuelto pagando por extraer. Coste: N fetches acotados por reloj y
+  // CERO llamadas LLM (allowLlm:false). Queda cacheado en article_extracts,
+  // así que repreguntar sobre el mismo tema ya no paga.
+  let harvested = 0;
+  let attempted = 0;
+  if (opts.harvest !== false) {
+    const r = await harvestCitationBodies(citations, {
+      budgetMs: opts.harvestBudgetMs ?? HARVEST_BUDGET_MS,
+    });
+    harvested = r.harvested;
+    attempted = r.attempted;
+    if (harvested > 0) await attachExtracts(citations);
+  }
+
+  return {
+    symbols,
+    citations,
+    facts,
+    earnings,
+    vectorUsed: Boolean(queryVec),
+    harvested,
+    attempted,
+    bodiesAvailable: citations.filter((c) => c.body && c.body.length >= 200).length,
+  };
+}
+
+/** Titular reducido a su esqueleto comparable: sin mayúsculas, sin
+ *  puntuación, sin el sufijo del sindicador ni el nombre del medio tras un
+ *  guion. Dos noticias que colapsan al mismo esqueleto son el mismo
+ *  teletipo redistribuido. */
+export function normalizeHeadline(h: string): string {
+  return h
+    .toLowerCase()
+    .replace(/\s+(by|via)\s+[a-z0-9.\s-]+$/i, "")
+    .replace(/\s+[-–—]\s+[a-z0-9.'\s]{3,30}$/i, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .slice(0, 70);
 }
 
 /** Cuántas citas se enriquecen con el cuerpo del artículo (las primeras N,
  *  que son las mejor rankeadas) y cuántos chars viajan de cada una. Acota
- *  los tokens del prompt de /ask: 10×~700 ≈ 1,8k tokens extra como mucho. */
-const EXTRACT_MAX_CITATIONS = 10;
-const EXTRACT_MAX_CHARS = 700;
+ *  los tokens del prompt de /ask: 12×~900 ≈ 2,7k tokens extra como mucho. */
+const EXTRACT_MAX_CITATIONS = 12;
+const EXTRACT_MAX_CHARS = 900;
+
+/** Presupuesto de PARED de la cosecha de cuerpos. La revisión de cartera usa
+ *  20s; aquí se baja a 14 porque una pregunta se escribe y se espera mirando
+ *  la pantalla, mientras que la revisión se lanza a sabiendas de que tarda.
+ *  Lo que no llegue a tiempo queda cacheado para la siguiente pregunta. */
+const HARVEST_BUDGET_MS = 14_000;
+/** Cuántas citas sin cuerpo se salen a buscar. Por encima de esto el prompt
+ *  no cabría de todos modos y el reloj se agota antes. */
+const HARVEST_MAX_CITATIONS = 12;
+
+/** Cosecha los cuerpos que faltan en las mejores citas. Reusa la máquina ya
+ *  probada de la revisión de cartera (`harvestBodies`): mismo presupuesto de
+ *  reloj, misma concurrencia, mismos fallos cacheados. */
+async function harvestCitationBodies(
+  citations: Citation[],
+  opts: { budgetMs: number },
+): Promise<{ harvested: number; attempted: number }> {
+  const targets = citations
+    .slice(0, HARVEST_MAX_CITATIONS)
+    .filter((c) => c.newsId !== null && !c.body)
+    .map((c) => ({ newsId: c.newsId, hasExtract: false }));
+  if (!targets.length) return { harvested: 0, attempted: 0 };
+  try {
+    return await harvestBodies(targets, { budgetMs: opts.budgetMs });
+  } catch (err) {
+    // Sin cosecha se responde igual, con titulares. Nunca tumba la pregunta.
+    console.warn(
+      "[ask] cosecha de cuerpos falló:",
+      err instanceof Error ? err.message.slice(0, 120) : err,
+    );
+    return { harvested: 0, attempted: targets.length };
+  }
+}
 
 /**
  * Adjunta a las citas la sustancia del artículo que YA está en
