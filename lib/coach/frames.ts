@@ -100,6 +100,10 @@ export const SIGNAL_LABEL: Record<Signal, string> = {
 
 type FrameSpec = {
   label: string;
+  /** Artículo con el que se nombra el marco en prosa. `label` solo no basta:
+   *  "en una compounder" y "en un cíclica" son las dos formas de que el panel
+   *  se lea como una traducción automática. */
+  article: "un" | "una";
   /** Cómo se reconoce. Va en la UI: elegir mal el marco envenena todo lo
    *  que cuelga de él, así que la elección tiene que ser fácil de acertar. */
   hint: string;
@@ -124,6 +128,7 @@ type FrameSpec = {
 export const FRAME_SPEC: Record<Frame, FrameSpec> = {
   power_play: {
     label: "power play",
+    article: "una",
     hint: "gasta hoy para ganar mañana: un núcleo que genera caja financiando una apuesta cara",
     core: "crecimiento de ingresos y márgenes del negocio ya establecido, ANTES del gasto de la apuesta",
     severity: {
@@ -145,6 +150,7 @@ export const FRAME_SPEC: Record<Frame, FrameSpec> = {
   },
   compounder: {
     label: "compounder",
+    article: "un",
     hint: "ya cosecha: crece de forma constante sin necesitar gasto pesado",
     core: "estabilidad del margen y crecimiento sostenido sin capex extraordinario",
     severity: {
@@ -162,6 +168,7 @@ export const FRAME_SPEC: Record<Frame, FrameSpec> = {
   },
   turnaround: {
     label: "turnaround",
+    article: "un",
     hint: "empresa rota que se está arreglando: la tesis es el PLAN, no los números de hoy",
     core: "cumplimiento del calendario de recuperación anunciado por la dirección",
     severity: {
@@ -180,6 +187,7 @@ export const FRAME_SPEC: Record<Frame, FrameSpec> = {
   },
   ciclica: {
     label: "cíclica",
+    article: "una",
     hint: "sube y baja con su ciclo: los malos números en el valle son parte del guion",
     core: "posición competitiva y cuota a lo largo del ciclo, no el resultado del trimestre",
     severity: {
@@ -294,13 +302,13 @@ export function readingOf(
   if (sev === "esperado") {
     return {
       severity: sev,
-      note: `en una ${f.label} esto es lo esperado, no una grieta`,
+      note: `en ${f.article} ${f.label} esto es lo esperado, no una grieta`,
     };
   }
   if (sev === "mortal") {
     return {
       severity: sev,
-      note: `en una ${f.label} esto golpea la tesis en su raíz: ${f.core}`,
+      note: `en ${f.article} ${f.label} esto golpea la tesis en su raíz: ${f.core}`,
     };
   }
   // El caso intermedio es donde la capa manda: la MISMA señal marcada como
