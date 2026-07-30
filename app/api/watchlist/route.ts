@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  addLotToPosition,
   addToWatchlist,
   getWatchlist,
   removeFromWatchlist,
@@ -47,6 +48,20 @@ const positionSchema = symbolSchema.extend({
     .nullable(),
 });
 
+// Refuerzo: una COMPRA, no un estado. El cliente manda lo que ejecutó
+// ("10 acciones a 712,40") y el servidor calcula la posición resultante
+// leyendo la actual — si el cliente mandara el total ya recalculado, dos
+// pestañas abiertas con una foto vieja se pisarían y la compra de una
+// desaparecería sin rastro. `shares` positivo obligatorio: esto sólo suma.
+// Reducir es otra operación, con otra aritmética (vender no mueve el coste
+// medio) y otro nombre.
+const lotSchema = symbolSchema.extend({
+  add: z.object({
+    shares: z.number().finite().positive().max(MAX_SHARES),
+    price: z.number().finite().positive().max(MAX_COST),
+  }),
+});
+
 export async function GET() {
   const session = await ensureSessionCookie();
   const items = await getWatchlist(session);
@@ -74,6 +89,42 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   const session = await ensureSessionCookie();
   const body = await req.json().catch(() => ({}));
+
+  // Dos operaciones por el mismo verbo, distinguidas por la presencia de
+  // `add`. Comparten el 404 y el refresco de la lista, que es lo único que
+  // tenían en común de verdad.
+  const lot = lotSchema.safeParse(body);
+  if (lot.success) {
+    const r = await addLotToPosition(
+      session,
+      lot.data.symbol,
+      lot.data.add,
+    );
+    if (r.status === "not_found") {
+      return NextResponse.json({ error: "not_in_watchlist" }, { status: 404 });
+    }
+    // 409 y no un reintento silencioso: si la fila cambió bajo los pies del
+    // cliente, reintentar sobre el estado nuevo podría duplicar una compra
+    // que ya entró. Quien decide es el usuario, con la cifra actualizada
+    // delante.
+    if (r.status === "conflict") {
+      const items = await getWatchlist(session);
+      return NextResponse.json(
+        { error: "stale_position", items },
+        { status: 409 },
+      );
+    }
+    const items = await getWatchlist(session);
+    return NextResponse.json({
+      items,
+      position: {
+        shares: r.shares,
+        avgCost: r.avgCost,
+        avgCostUnknown: r.avgCostUnknown,
+      },
+    });
+  }
+
   const parsed = positionSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(

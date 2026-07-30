@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addToPosition,
   CONCENTRATION,
   buildPortfolio,
   concentrationFlags,
@@ -340,5 +341,64 @@ describe("concentrationFlags", () => {
     for (let i = 1; i < warns.length; i++) {
       expect(warns[i - 1].weightPct).toBeGreaterThanOrEqual(warns[i].weightPct);
     }
+  });
+});
+
+describe("addToPosition — reforzar una posición", () => {
+  it("promedia ponderando por ACCIONES, no por operaciones", () => {
+    // 100 a 300 más 10 a 500 no da 400: da 318,18. Promediar las dos
+    // operaciones a partes iguales es el error clásico de hacerlo a mano, y
+    // es justo la cuenta que este formulario existe para no pedirte.
+    const r = addToPosition({ shares: 100, avgCost: 300 }, { shares: 10, price: 500 });
+    expect(r.shares).toBe(110);
+    expect(r.avgCost!).toBeCloseTo(318.18, 2);
+    expect(r.avgCostUnknown).toBe(false);
+  });
+
+  it("abre posición desde solo-seguimiento: el coste ES el de esta compra", () => {
+    // shares null = se sigue pero no se tiene. No hay historia anterior
+    // cuyo coste se desconozca, así que aquí sí se puede afirmar.
+    const r = addToPosition({ shares: null, avgCost: null }, { shares: 8, price: 712.4 });
+    expect(r.shares).toBe(8);
+    expect(r.avgCost).toBe(712.4);
+    expect(r.avgCostUnknown).toBe(false);
+  });
+
+  it("reabre una posición cerrada (shares 0) igual que una nueva", () => {
+    const r = addToPosition({ shares: 0, avgCost: 250 }, { shares: 5, price: 100 });
+    expect(r.shares).toBe(5);
+    // El coste medio viejo NO arrastra: no queda ninguna acción de aquéllas.
+    expect(r.avgCost).toBe(100);
+  });
+
+  it("NO inventa el coste medio cuando la posición no tenía coste registrado", () => {
+    // El caso peligroso. Poner 500 afirmaría que pagaste 500 por las 100
+    // acciones viejas también, y ese número alimenta P&L, pesos y las
+    // presiones que deciden si /ask te dice que recortes. Fabricado y
+    // plausible es la peor combinación: nadie lo audita.
+    const r = addToPosition({ shares: 100, avgCost: null }, { shares: 10, price: 500 });
+    expect(r.shares).toBe(110);
+    expect(r.avgCost).toBeNull();
+    expect(r.avgCostUnknown).toBe(true);
+  });
+
+  it("dos refuerzos seguidos dan lo mismo que la media global", () => {
+    // Propiedad que tiene que cumplirse para que el registro incremental
+    // sea equivalente a haberlo apuntado todo de golpe.
+    const a = addToPosition({ shares: 10, avgCost: 100 }, { shares: 10, price: 200 });
+    const b = addToPosition(a, { shares: 20, price: 300 });
+    expect(b.shares).toBe(40);
+    // (10*100 + 10*200 + 20*300) / 40 = 225
+    expect(b.avgCost!).toBeCloseTo(225, 6);
+  });
+
+  it("admite fracciones de acción, que es como compra un bróker moderno", () => {
+    const r = addToPosition(
+      { shares: 2.387774594078319, avgCost: 376.92 },
+      { shares: 0.5, price: 445 },
+    );
+    expect(r.shares).toBeCloseTo(2.887774594078319, 9);
+    expect(r.avgCost!).toBeGreaterThan(376.92);
+    expect(r.avgCost!).toBeLessThan(445);
   });
 });

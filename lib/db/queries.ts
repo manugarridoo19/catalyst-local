@@ -15,6 +15,7 @@ import type {
   SentimentScore,
 } from "@/lib/types";
 import { categorizeHeuristic, type NewsCategory } from "@/lib/categorizer";
+import { addToPosition } from "@/lib/portfolio";
 
 // IN-list para `news.category` reutilizado por live feed y News tab. Toma
 // un array de categorías + una flag `allowNull` (incluye filas sin
@@ -443,6 +444,61 @@ export async function setPosition(
     )
     .returning({ symbol: watchlist.symbol });
   return res.length > 0;
+}
+
+/**
+ * Refuerza una posición con una compra nueva y devuelve cómo queda.
+ *
+ * Lee-calcula-escribe en vez de un solo UPDATE con la media dentro del SQL,
+ * y es deliberado: la media ponderada la define `addToPosition` en
+ * `lib/portfolio.ts` y tener UNA sola implementación vale más que ahorrar
+ * un round-trip. Escribir la fórmula también en SQL sería el mismo error
+ * que el proyecto ya evita con `buildPortfolio`: dos sitios calculando lo
+ * mismo acaban discrepando, y aquí el que discrepe se lleva por delante el
+ * P&L y los pesos de toda la cartera.
+ *
+ * Lo que sí protege del hueco entre la lectura y la escritura es la GUARDA
+ * de la cláusula WHERE: si `shares`/`avg_cost` ya no son los que se leyeron
+ * —otra pestaña abierta, un doble click—, no se escribe nada y se devuelve
+ * `conflict`. Sin ella, dos compras simultáneas se pisan y una desaparece
+ * sin dejar rastro, que es la peor forma de perder dinero registrado.
+ */
+export async function addLotToPosition(
+  session: string,
+  symbol: string,
+  lot: { shares: number; price: number },
+): Promise<
+  | { status: "ok"; shares: number; avgCost: number | null; avgCostUnknown: boolean }
+  | { status: "not_found" }
+  | { status: "conflict" }
+> {
+  const [row] = await db
+    .select({ shares: watchlist.shares, avgCost: watchlist.avgCost })
+    .from(watchlist)
+    .where(and(eq(watchlist.userSession, session), eq(watchlist.symbol, symbol)))
+    .limit(1);
+  if (!row) return { status: "not_found" };
+
+  const next = addToPosition(row, lot);
+
+  const res = await db
+    .update(watchlist)
+    .set({ shares: next.shares, avgCost: next.avgCost })
+    .where(
+      and(
+        eq(watchlist.userSession, session),
+        eq(watchlist.symbol, symbol),
+        // `IS NOT DISTINCT FROM` y no `=`: los dos campos son NULLABLE y con
+        // `=` una fila sin coste registrado nunca casaría consigo misma, así
+        // que el refuerzo fallaría siempre justo en el caso que ya es raro.
+        sql`${watchlist.shares} IS NOT DISTINCT FROM ${row.shares}`,
+        sql`${watchlist.avgCost} IS NOT DISTINCT FROM ${row.avgCost}`,
+      ),
+    )
+    .returning({ symbol: watchlist.symbol });
+  if (!res.length) return { status: "conflict" };
+
+  return { status: "ok", ...next };
 }
 
 export async function addToWatchlist(session: string, symbol: string) {

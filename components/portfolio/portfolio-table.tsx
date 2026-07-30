@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Loader2, Pencil, Plus, X } from "lucide-react";
 import {
+  addToPosition,
   buildPortfolio,
   sharesFromAmount,
   type PricedPosition,
@@ -45,6 +46,7 @@ export function PortfolioTable({
   const [items, setItems] = useState(initialItems);
   const [quotes, setQuotes] = useState<QuotesMap>(initialQuotes);
   const [editing, setEditing] = useState<string | null>(null);
+  const [buying, setBuying] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [sort, setSort] = useState<SortKey>("weight");
 
@@ -217,10 +219,20 @@ export function PortfolioTable({
                   pos={pos}
                   item={bySymbol.get(pos.symbol)}
                   editing={editing === pos.symbol}
+                  buying={buying === pos.symbol}
                   price={quotes[pos.symbol]?.price ?? null}
-                  onToggleEdit={() =>
-                    setEditing((cur) => (cur === pos.symbol ? null : pos.symbol))
-                  }
+                  // Los dos formularios se excluyen: abrir uno cierra el
+                  // otro. Tenerlos abiertos a la vez sobre la misma fila
+                  // invita a guardar en el equivocado — uno registra una
+                  // compra y el otro sobrescribe la posición entera.
+                  onToggleEdit={() => {
+                    setBuying(null);
+                    setEditing((cur) => (cur === pos.symbol ? null : pos.symbol));
+                  }}
+                  onToggleBuy={() => {
+                    setEditing(null);
+                    setBuying((cur) => (cur === pos.symbol ? null : pos.symbol));
+                  }}
                   onSaved={(next) => {
                     setItems(next);
                     setEditing(null);
@@ -365,15 +377,19 @@ function Row({
   pos,
   item,
   editing,
+  buying,
   price,
   onToggleEdit,
+  onToggleBuy,
   onSaved,
 }: {
   pos: PricedPosition;
   item: PortfolioItem | undefined;
   editing: boolean;
+  buying: boolean;
   price: number | null;
   onToggleEdit: () => void;
+  onToggleBuy: () => void;
   onSaved: (items: PortfolioItem[]) => void;
 }) {
   return (
@@ -415,10 +431,26 @@ function Row({
         </Td>
         <Td>{pos.weightPct !== null ? `${pos.weightPct.toFixed(1)}%` : "—"}</Td>
         <td className="px-2 py-2 text-right">
+          {/* Reforzar va PRIMERO y con más contraste que editar: comprar más
+              de algo que ya tienes es la operación frecuente; corregir a
+              mano lo que registraste mal es la excepción. */}
+          <button
+            type="button"
+            onClick={onToggleBuy}
+            aria-label={`Reforzar posición de ${pos.symbol}`}
+            title="He comprado más"
+            className={cn(
+              "rounded-sm p-1 text-muted-foreground/50 transition-colors hover:text-emerald-700 dark:hover:text-emerald-300",
+              buying && "text-emerald-700 dark:text-emerald-300",
+            )}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
           <button
             type="button"
             onClick={onToggleEdit}
             aria-label={`Editar posición de ${pos.symbol}`}
+            title="Corregir la posición registrada"
             className={cn(
               "rounded-sm p-1 text-muted-foreground/40 transition-colors hover:text-primary",
               editing && "text-primary",
@@ -428,6 +460,18 @@ function Row({
           </button>
         </td>
       </tr>
+      {buying && item ? (
+        <tr>
+          <td colSpan={11} className="px-2 pb-3">
+            <BuyMore
+              item={item}
+              price={price}
+              onSaved={onSaved}
+              onCancel={onToggleBuy}
+            />
+          </td>
+        </tr>
+      ) : null}
       {editing && item ? (
         <tr>
           <td colSpan={11} className="px-2 pb-3">
@@ -441,6 +485,204 @@ function Row({
         </tr>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Reforzar una posición: registras la COMPRA, no el estado final.
+ *
+ * Es la diferencia con `PositionEditor`, que es para corregir lo que hay.
+ * Aquí escribes lo que acabas de ejecutar en el bróker ("10 a 712,40") y la
+ * posición se recalcula sola. Pedirte el total resultante sería obligarte a
+ * hacer tú la media ponderada, que es justo la cuenta que se hace mal.
+ *
+ * La previsualización enseña el ANTES → DESPUÉS de acciones y coste medio
+ * antes de guardar. No es adorno: es lo único que te deja ver que has
+ * tecleado 7124 en vez de 712,4 mientras todavía puedes corregirlo.
+ */
+function BuyMore({
+  item,
+  price,
+  onSaved,
+  onCancel,
+}: {
+  item: PortfolioItem;
+  price: number | null;
+  onSaved: (items: PortfolioItem[]) => void;
+  onCancel: () => void;
+}) {
+  const [mode, setMode] = useState<"shares" | "amount">("shares");
+  const [qty, setQty] = useState("");
+  const [amount, setAmount] = useState("");
+  // El precio de mercado como valor inicial: una compra "ahora mismo" se
+  // ejecuta cerca de ahí, y así el caso normal es teclear una cifra sola.
+  const [buyPrice, setBuyPrice] = useState(price?.toString() ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const parsedPrice = num(buyPrice);
+  const parsedQty = num(qty);
+  const parsedAmount = num(amount);
+  const addShares =
+    mode === "shares"
+      ? parsedQty
+      : parsedAmount !== null && parsedPrice !== null
+        ? sharesFromAmount(parsedAmount, parsedPrice)
+        : null;
+
+  // Mismo cálculo que hará el servidor — literalmente la misma función, que
+  // es lo que garantiza que lo previsualizado y lo guardado coincidan.
+  const preview =
+    addShares !== null && addShares > 0 && parsedPrice !== null
+      ? addToPosition(item, { shares: addShares, price: parsedPrice })
+      : null;
+
+  async function save() {
+    if (saving) return;
+    if (addShares === null || addShares <= 0 || parsedPrice === null) {
+      setErr("Hacen falta las acciones (o el importe) y el precio de compra");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/watchlist", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: item.symbol,
+          add: { shares: addShares, price: parsedPrice },
+        }),
+      });
+      const data = (await r.json().catch(() => ({}))) as {
+        items?: PortfolioItem[];
+        error?: string;
+      };
+      if (r.status === 409) {
+        // La fila cambió por detrás. Se refresca la tabla y NO se reintenta
+        // solo: reintentar sobre el estado nuevo podría duplicar una compra
+        // que ya entró.
+        if (data.items) onSaved(data.items);
+        setErr("La posición cambió en otro sitio. Revisa el dato y repite.");
+        return;
+      }
+      if (!r.ok || !data.items) {
+        setErr("No se pudo registrar la compra");
+        return;
+      }
+      onSaved(data.items);
+      onCancel();
+    } catch {
+      setErr("Error de red");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") void save();
+    if (e.key === "Escape") onCancel();
+  };
+
+  return (
+    <div className="rounded-sm border border-emerald-600/30 bg-emerald-500/[0.04] px-3 py-2.5">
+      <div className="mb-2 flex items-center gap-1.5">
+        <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-emerald-700/80 dark:text-emerald-300/80">
+          {item.symbol} · he comprado más
+        </span>
+        {(
+          [
+            ["shares", "acciones"],
+            ["amount", "importe"],
+          ] as Array<["shares" | "amount", string]>
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setMode(k)}
+            className={cn(
+              "rounded-sm border px-1.5 py-0.5 font-mono text-[10px] transition-colors",
+              mode === k
+                ? "border-emerald-600/50 text-emerald-700 dark:text-emerald-300"
+                : "border-border/40 text-muted-foreground/70 hover:text-foreground",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {mode === "shares" ? (
+          <Field
+            label="acciones compradas"
+            value={qty}
+            onChange={setQty}
+            onKeyDown={onKey}
+            autoFocus
+          />
+        ) : (
+          <Field
+            label="importe de la compra"
+            value={amount}
+            onChange={setAmount}
+            onKeyDown={onKey}
+            autoFocus
+          />
+        )}
+        <Field
+          label="precio de compra"
+          value={buyPrice}
+          onChange={setBuyPrice}
+          onKeyDown={onKey}
+        />
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving || preview === null}
+          className="rounded-sm border border-emerald-600/50 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-700 transition-colors hover:bg-emerald-500/10 disabled:opacity-40 dark:text-emerald-300"
+        >
+          {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "añadir"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-sm border border-border/50 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          cancelar
+        </button>
+      </div>
+
+      <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground/70">
+        {err ? (
+          <span className="text-rose-700 dark:text-rose-300">{err}</span>
+        ) : preview ? (
+          <>
+            <span className="text-foreground/80">
+              {fmtShares(item.shares ?? 0)} → {fmtShares(preview.shares)} acciones
+            </span>
+            {" · coste medio "}
+            {preview.avgCostUnknown ? (
+              <span className="text-amber-700 dark:text-amber-300">
+                sigue sin conocerse — esta posición no tiene coste registrado y
+                calcularlo desde esta compra sola sería inventarlo. Regístralo
+                con el lápiz si quieres P&amp;L.
+              </span>
+            ) : (
+              <span className="text-foreground/80">
+                {item.avgCost !== null ? money(item.avgCost) : "—"} →{" "}
+                {preview.avgCost !== null ? money(preview.avgCost) : "—"}
+              </span>
+            )}
+            {parsedPrice !== null && addShares !== null
+              ? ` · inviertes ${money(addShares * parsedPrice)}`
+              : ""}
+          </>
+        ) : (
+          "acciones (o importe) + precio · Enter guarda · Esc cancela"
+        )}
+      </p>
+    </div>
   );
 }
 

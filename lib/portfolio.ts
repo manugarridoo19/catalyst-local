@@ -106,6 +106,59 @@ export function sharesFromAmount(
   return amount / pricePerShare;
 }
 
+/** Una compra suelta: lo que acabas de ejecutar en el bróker. */
+export type Lot = { shares: number; price: number };
+
+export type PositionAfterLot = {
+  shares: number;
+  avgCost: number | null;
+  /** true = el coste medio resultante NO se puede conocer y sale `null`.
+   *  Se devuelve para que la UI lo DIGA en vez de enseñar un guion mudo. */
+  avgCostUnknown: boolean;
+};
+
+/**
+ * Posición resultante de reforzar con una compra nueva.
+ *
+ * Es la única definición de "precio medio ponderado" del proyecto: la usan
+ * la previsualización del formulario y la escritura en BD. Que sea una sola
+ * es lo que impide que la pantalla te prometa un coste medio y la fila
+ * guarde otro.
+ *
+ * TRES casos, y el tercero es el que importa:
+ *
+ *  1. **Sin acciones previas** (null o 0) → el coste medio ES el precio de
+ *     esta compra. No hay historia anterior cuyo coste se desconozca.
+ *  2. **Con acciones y coste registrado** → media ponderada por acciones,
+ *     que es la definición contable y la que mueve tu P&L.
+ *  3. **Con acciones pero SIN coste registrado** (estado válido y admitido:
+ *     "sé cuánto pesa, no registré a cuánto entré") → el coste medio
+ *     resultante es **desconocido**, y se devuelve `null`.
+ *
+ *     La tentación es poner el precio de esta compra. Sería inventar que
+ *     pagaste ese precio por TODAS las acciones, incluidas las viejas, y
+ *     ese número no se queda quieto: alimenta el P&L, los pesos, la
+ *     plusvalía no realizada y, desde el modo decisión, las presiones que
+ *     deciden si /ask te dice que recortes. Un dato fabricado que además
+ *     parece razonable es el peor de los errores posibles aquí, porque
+ *     nadie lo audita. Mejor `null` y decirlo.
+ */
+export function addToPosition(
+  current: { shares: number | null; avgCost: number | null },
+  lot: Lot,
+): PositionAfterLot {
+  const prev = current.shares ?? 0;
+  const shares = prev + lot.shares;
+  if (prev <= 0) {
+    return { shares, avgCost: lot.price, avgCostUnknown: false };
+  }
+  if (current.avgCost === null) {
+    return { shares, avgCost: null, avgCostUnknown: true };
+  }
+  const avgCost = (prev * current.avgCost + lot.shares * lot.price) / shares;
+  return { shares, avgCost, avgCostUnknown: false };
+}
+
 function isLive(p: Position): p is Position & { shares: number } {
   return p.shares !== null && p.shares > 0;
 }
