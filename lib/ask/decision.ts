@@ -12,8 +12,8 @@
 // hechos duros ya clasificados por hacia dónde empujan, para que el
 // redactor no tenga que inferir la dirección (que es donde inventaría).
 
-import type { Portfolio } from "@/lib/portfolio";
-import type { StructuredFacts } from "@/lib/ask/retrieve";
+import { concentrationFlags, type Portfolio } from "@/lib/portfolio";
+import type { RiskFact, StructuredFacts } from "@/lib/ask/retrieve";
 import type { EarningsBar, PendingDeal, SystematicSeller } from "@/lib/ask/forward";
 
 /**
@@ -48,6 +48,12 @@ export const DECISION_THRESHOLDS = {
   insiderNetUsd: 1_000_000,
   /** Days-to-cover a partir del cual el corto es estructura, no anécdota. */
   daysToCoverHigh: 5,
+  /** Variación del interés corto entre las dos liquidaciones de FINRA que
+   *  deja de ser ruido de medición. */
+  shortChangePct: 15,
+  /** Beta por encima de la cual una posición grande amplifica el resultado
+   *  de la cartera de forma que el peso por sí solo no comunica. */
+  betaHigh: 1.4,
 } as const;
 
 /** La posición del usuario en un símbolo de la pregunta. Todo precalculado
@@ -159,6 +165,7 @@ export function buildDecisionFacts(input: {
   bars?: EarningsBar[];
   sellers?: SystematicSeller[];
   deals?: PendingDeal[];
+  risk?: RiskFact[];
   today?: Date;
 }): DecisionFacts {
   const { symbols, portfolio, facts } = input;
@@ -166,7 +173,14 @@ export function buildDecisionFacts(input: {
   const contexts = positionContexts(symbols, portfolio);
   const factsBy = new Map(facts.map((f) => [f.symbol, f]));
   const barsBy = new Map((input.bars ?? []).map((b) => [b.symbol, b]));
+  const riskBy = new Map((input.risk ?? []).map((r) => [r.symbol, r]));
   const ctxBy = new Map(contexts.map((c) => [c.symbol, c]));
+  // Los pesos por SECTOR ya los calcula `buildPortfolio`; sólo había que
+  // mirarlos. Ver el bloque de abajo para por qué cambian la respuesta.
+  const flags = portfolio ? concentrationFlags(portfolio) : [];
+  const sectorOf = new Map(
+    (portfolio?.positions ?? []).map((p) => [p.symbol, p.sector?.trim() || "Unknown"]),
+  );
 
   const pressures: Pressure[] = [];
   const dated: DatedFact[] = [];
@@ -220,6 +234,39 @@ export function buildDecisionFacts(input: {
         symbol,
         side: "neutral",
         text: `no tienes posición registrada en ${symbol}: la pregunta es de entrada, no de recorte`,
+      });
+    }
+
+    // ── Riesgo estructural ──────────────────────────────────────────────
+    //
+    // Beta y days-to-cover llevaban meses en la BD sin que /ask los leyera,
+    // y son justo lo que CUALIFICA un peso: un 27% con beta 1,9 amplifica
+    // el resultado de la cartera de una forma que el porcentaje solo no
+    // comunica. Ninguno de los dos es un precio — no repiten lo que ya ve
+    // en el bróker, que es la regla que gobierna todo este modo.
+    const risk = riskBy.get(symbol);
+    if (risk?.beta != null && risk.beta >= T.betaHigh && ctx?.held) {
+      pressures.push({
+        symbol,
+        side: "trim",
+        text: `beta ${risk.beta.toFixed(2)}: con ${ctx.weightPct !== null ? `${ctx.weightPct.toFixed(1)}% de la cartera` : "esta posición"} el valor amplifica el movimiento del mercado, no lo diluye`,
+      });
+    }
+    if (risk?.daysToCover != null && risk.daysToCover >= T.daysToCoverHigh) {
+      // Deliberadamente NEUTRAL. Un days-to-cover alto es a la vez apuesta
+      // contraria acumulada (argumento para recortar) y combustible de
+      // squeeze (argumento para aguantar). Asignarle lado sería elegir una
+      // narrativa, que es exactamente lo que este bloque existe para no
+      // hacer. La derivada sí se declara, porque distingue estructura de
+      // gente tomando posición ahora.
+      const deriva =
+        risk.shortChangePct != null && Math.abs(risk.shortChangePct) >= T.shortChangePct
+          ? `, y el interés corto ${risk.shortChangePct > 0 ? "subió" : "bajó"} ${Math.abs(risk.shortChangePct).toFixed(0)}% respecto a la liquidación anterior de FINRA`
+          : " y estable respecto a la liquidación anterior";
+      pressures.push({
+        symbol,
+        side: "neutral",
+        text: `days-to-cover ${risk.daysToCover.toFixed(1)}${deriva}: hay apuesta contraria acumulada, que es a la vez presión vendedora y combustible de un squeeze`,
       });
     }
 
@@ -283,6 +330,27 @@ export function buildDecisionFacts(input: {
     }
   }
 
+  // ── Concentración SECTORIAL ───────────────────────────────────────────
+  //
+  // El dato que puede dar la vuelta a la respuesta y que ya estaba
+  // calculado en `buildPortfolio` sin que nadie lo mirara: recortar una
+  // posición del 27% suena a reducir riesgo, pero si su sector pesa el 70%
+  // de la cartera el riesgo de verdad no está en el nombre, está en la
+  // apuesta sectorial — y venderla para comprar otra tecnológica no cambia
+  // nada. Es la diferencia entre responder a la pregunta que se hizo y
+  // responder a la que había que hacerse.
+  for (const symbol of symbols) {
+    const sector = sectorOf.get(symbol);
+    if (!sector || sector === "Unknown") continue;
+    const flag = flags.find((fl) => fl.kind === "sector" && fl.label === sector);
+    if (!flag) continue;
+    pressures.push({
+      symbol,
+      side: flag.level === "warn" ? "trim" : "neutral",
+      text: `su sector (${sector}) pesa ${flag.weightPct.toFixed(0)}% de la cartera: recortar ${symbol} reduce el riesgo del NOMBRE, no el de la apuesta sectorial — sustituirlo por otro valor del mismo sector dejaría la exposición donde estaba`,
+    });
+  }
+
   // ── Oferta futura ya conocida y operaciones sin cerrar ────────────────
   for (const s of input.sellers ?? []) {
     const quedan =
@@ -296,10 +364,15 @@ export function buildDecisionFacts(input: {
     });
   }
   for (const d of input.deals ?? []) {
+    // La etiqueta NO dice "sin cerrar". Estas noticias se eligen por
+    // categoría y vocabulario, y nadie ha comprobado que la operación siga
+    // abierta — eso sólo lo hace el extractor LLM del libro de futuros, que
+    // este camino no usa. Afirmarlo sería exactamente el tipo de precisión
+    // fabricada que el resto del módulo existe para impedir.
     dated.push({
       symbol: d.symbol,
       date: d.publishedAt,
-      text: `operación anunciada sin cerrar: ${d.headline}`,
+      text: `operación corporativa anunciada (no verificado que siga abierta): ${d.headline}`,
     });
   }
 

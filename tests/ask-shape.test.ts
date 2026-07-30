@@ -31,7 +31,7 @@ function retrieval(over: Partial<Retrieval> = {}): Retrieval {
     citations: [],
     facts: [],
     earnings: [],
-    forward: { bars: [], sellers: [], deals: [] },
+    forward: { bars: [], sellers: [], deals: [], risk: [] },
     vectorUsed: true,
     harvested: 0,
     attempted: 0,

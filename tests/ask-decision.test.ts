@@ -8,7 +8,7 @@ import {
   positionContexts,
 } from "@/lib/ask/decision";
 import { answerShape, cleanBrackets, orderDecisionSections } from "@/lib/ai/ask";
-import { keywords } from "@/lib/ask/retrieve";
+import { keywords, looksLikeDeal } from "@/lib/ask/retrieve";
 import type { Retrieval, StructuredFacts } from "@/lib/ask/retrieve";
 import type { Portfolio } from "@/lib/portfolio";
 
@@ -123,7 +123,7 @@ describe("answerShape", () => {
       citations: [],
       facts: [],
       earnings: [],
-      forward: { bars: [], sellers: [], deals: [] },
+      forward: { bars: [], sellers: [], deals: [], risk: [] },
       vectorUsed: true,
       harvested: 0,
       attempted: 0,
@@ -313,6 +313,99 @@ describe("buildDecisionFacts", () => {
       facts: [facts({ nextEarnings: "2026-10-28" })],
     });
     expect(hasDecisionEvidence(conHecho)).toBe(true);
+  });
+});
+
+describe("riesgo estructural y concentración sectorial", () => {
+  it("la beta alta cualifica el peso, pero sólo si la posición se tiene", () => {
+    const con = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: portfolio({ positions: [MSFT_POSITION], totalValue: 147_000 }),
+      facts: [facts()],
+      risk: [{ symbol: "MSFT", beta: 1.9, pe: 38, daysToCover: null, shortChangePct: null }],
+    });
+    const beta = con.pressures.find((p) => p.text.includes("beta"));
+    expect(beta?.side).toBe("trim");
+    expect(beta?.text).toContain("1.90");
+
+    // Sin posición no hay nada que amplificar: la beta es un dato del valor,
+    // no una presión sobre una exposición que no existe.
+    const sin = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: portfolio(),
+      facts: [facts()],
+      risk: [{ symbol: "MSFT", beta: 1.9, pe: null, daysToCover: null, shortChangePct: null }],
+    });
+    expect(sin.pressures.some((p) => p.text.includes("beta"))).toBe(false);
+  });
+
+  it("el days-to-cover alto es NEUTRAL: corta por los dos lados", () => {
+    // Apuesta contraria acumulada y combustible de squeeze son la misma
+    // cifra. Darle lado sería elegir narrativa, que es justo lo que este
+    // bloque existe para no hacer.
+    const d = buildDecisionFacts({
+      symbols: ["GME"],
+      portfolio: null,
+      facts: [facts({ symbol: "GME" })],
+      risk: [{ symbol: "GME", beta: null, pe: null, daysToCover: 7.2, shortChangePct: 31 }],
+    });
+    const dtc = d.pressures.find((p) => p.text.includes("days-to-cover"));
+    expect(dtc?.side).toBe("neutral");
+    expect(dtc?.text).toContain("subió 31%");
+  });
+
+  it("un days-to-cover bajo no entra", () => {
+    const d = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: null,
+      facts: [facts()],
+      risk: [{ symbol: "MSFT", beta: null, pe: null, daysToCover: 1.2, shortChangePct: null }],
+    });
+    expect(d.pressures.some((p) => p.text.includes("days-to-cover"))).toBe(false);
+  });
+
+  it("la concentración SECTORIAL matiza el recorte del nombre", () => {
+    // El caso que puede dar la vuelta a la respuesta: recortar el 27% de
+    // MSFT suena a reducir riesgo, pero si Technology pesa el 70% vender
+    // para comprar otra tecnológica deja la exposición donde estaba.
+    const p = portfolio({
+      positions: [MSFT_POSITION],
+      totalValue: 147_000,
+      sectors: [{ sector: "Technology", weightPct: 70, symbols: ["MSFT"] }],
+    });
+    const d = buildDecisionFacts({ symbols: ["MSFT"], portfolio: p, facts: [facts()] });
+    const sec = d.pressures.find((x) => x.text.includes("sector"));
+    expect(sec?.side).toBe("trim");
+    expect(sec?.text).toContain("70%");
+  });
+
+  it("un sector sin clasificar no genera presión: es dato que falta, no riesgo", () => {
+    const p = portfolio({
+      positions: [{ ...MSFT_POSITION, sector: null }],
+      totalValue: 147_000,
+      sectors: [{ sector: "Unknown", weightPct: 100, symbols: ["MSFT"] }],
+    });
+    const d = buildDecisionFacts({ symbols: ["MSFT"], portfolio: p, facts: [facts()] });
+    expect(d.pressures.some((x) => x.text.includes("su sector"))).toBe(false);
+  });
+});
+
+describe("looksLikeDeal", () => {
+  it("acepta la operación y rechaza la historia de precio", () => {
+    // Los cuatro son titulares REALES de RKLB que `pendingDeals` devolvió
+    // como "operaciones pendientes" el 2026-07-30. Dos no lo eran, y colarlos
+    // metía por la puerta de atrás el movimiento de precio que el prompt de
+    // decisión prohíbe expresamente.
+    expect(looksLikeDeal("Rocket Lab to acquire Iridium Communications for $8B")).toBe(true);
+    expect(looksLikeDeal("Rocket Lab's Latest Deal Puts It on a Collision Course With SpaceX")).toBe(true);
+    expect(looksLikeDeal("Why Rocket Lab (RKLB) Shares Are Plunging Today")).toBe(false);
+    expect(looksLikeDeal("Rocket Lab Stock Slides 12% as Iridium Deal Risks Hit Momentum")).toBe(false);
+    expect(looksLikeDeal("Huge News for Rocket Lab Investors")).toBe(false);
+  });
+
+  it("entiende el vocabulario en español", () => {
+    expect(looksLikeDeal("Iberdrola anuncia la adquisición de Avangrid")).toBe(true);
+    expect(looksLikeDeal("Las acciones de Iberdrola caen un 3%")).toBe(false);
   });
 });
 

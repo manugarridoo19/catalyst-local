@@ -117,6 +117,7 @@ export async function POST(req: Request) {
         bars: r.forward.bars,
         sellers: r.forward.sellers,
         deals: r.forward.deals,
+        risk: r.forward.risk,
       });
     }
     const decisionOut = {

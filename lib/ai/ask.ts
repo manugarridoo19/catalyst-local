@@ -12,6 +12,7 @@
 
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
+import { getEmpiricalPriors } from "@/lib/signals/priors";
 import {
   hasDecisionEvidence,
   type DecisionFacts,
@@ -132,6 +133,15 @@ export type AskAnswer = {
   model: string;
 };
 
+/** Cifra grande en la escala en que la gente la dice. Por encima de 1.000M
+ *  el número entero es exacto e ilegible, y lo que el modelo copia literal
+ *  a la respuesta es lo que ve escrito aquí. */
+function fmtBillions(n: number): string {
+  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(0)}M`;
+  return `$${n.toLocaleString("en-US")}`;
+}
+
 function formatFacts(facts: StructuredFacts[]): string {
   if (!facts.length) return "";
   const lines = facts.map((f) => {
@@ -159,7 +169,11 @@ function formatFacts(facts: StructuredFacts[]): string {
       const est: string[] = [];
       if (f.nextEarningsEps !== null) est.push(`consensus EPS ${f.nextEarningsEps}`);
       if (f.nextEarningsRevenue !== null) {
-        est.push(`consensus revenue $${f.nextEarningsRevenue.toLocaleString("en-US")}`);
+        // En miles de millones y no con los 12 dígitos crudos: el modelo
+        // copiaba "91,452,019,309 dólares" literal a la respuesta, que es
+        // exacto e ilegible. La escala la aplica el código, como todo
+        // número aquí — el modelo sigue sin poder tocarlo.
+        est.push(`consensus revenue ${fmtBillions(f.nextEarningsRevenue)}`);
       }
       bits.push(
         `next earnings ${f.nextEarnings}${f.nextEarningsHour ? ` (${f.nextEarningsHour})` : ""}${
@@ -407,6 +421,16 @@ export async function askArchive(
   }
 
   const shape = answerShape(r);
+
+  // El track record del PROPIO Catalyst entra como CALIBRACIÓN de cuánto
+  // exigir, no como dato a citar: si los upgrades de analista no han batido
+  // a SPY, una postura que se sostiene sólo en un upgrade debe salir más
+  // floja. El helper ya exige n>=20 y prohíbe citar las cifras. Es el mismo
+  // uso que hace la revisión de cartera; el Lab estaba midiendo desde julio
+  // y esta superficie no lo leía. Si falla, la respuesta sale sin ellos.
+  const priors =
+    shape === "decision" ? await getEmpiricalPriors().catch(() => null) : null;
+
   const userBlock = [
     `QUESTION: ${question}`,
     "",
@@ -416,6 +440,7 @@ export async function askArchive(
     formatItems(r.citations, r.earnings),
     "",
     formatFacts(r.facts),
+    priors ?? "",
   ]
     .filter(Boolean)
     .join("\n");

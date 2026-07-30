@@ -154,13 +154,35 @@ export function surprisePct(
   return ((actual - estimate) / Math.abs(estimate)) * 100;
 }
 
+/**
+ * Riesgo ESTRUCTURAL de un símbolo: lo que no cambia con la noticia del día.
+ *
+ * Estos dos datos llevaban meses en la BD y la respuesta de decisión no los
+ * leía, aun siendo los que cualifican una posición grande: un 27% con beta
+ * 1,9 no es el mismo 27% que con beta 0,8, y el days-to-cover de FINRA dice
+ * cuánta gente tiene la apuesta contraria puesta y cuánto tardaría en
+ * deshacerla. Ninguno de los dos es un precio: no repiten lo que el usuario
+ * ya ve en su bróker, que es la regla que gobierna todo este modo.
+ */
+export type RiskFact = {
+  symbol: string;
+  beta: number | null;
+  pe: number | null;
+  daysToCover: number | null;
+  /** Interés corto de la última liquidación contra la anterior. La
+   *  DERIVADA es la señal: un DTC alto y ESTABLE es estructura del valor;
+   *  uno que sube rápido es gente tomando posición contra él ahora. */
+  shortChangePct: number | null;
+};
+
 /** Material prospectivo. Sólo se levanta para preguntas de DECISIÓN: son
  *  las únicas donde "qué está comprometido a pasar y aún no ha pasado"
- *  manda sobre "qué se publicó". Cuatro queries más, cero cuota de IA. */
+ *  manda sobre "qué se publicó". Cinco queries más, cero cuota de IA. */
 export type AskForward = {
   bars: EarningsBar[];
   sellers: SystematicSeller[];
   deals: PendingDeal[];
+  risk: RiskFact[];
 };
 
 export type Retrieval = {
@@ -398,6 +420,69 @@ async function lexicalSearch(
     `),
   );
   return rowsToCitations(rows, "lexical");
+}
+
+/**
+ * Beta, PER y presión de cortos, en UNA query por tabla para todos los
+ * símbolos (no una por símbolo: el driver HTTP de Neon hace un fetch
+ * independiente por query y en serie se nota).
+ *
+ * `beta`/`pe` llegan como TEXT de FMP y el cast a float8 va en SQL, no en
+ * TS: así un valor basura ("" o "N/A") cae como NULL en vez de convertirse
+ * en NaN y propagarse. Mismo criterio que `lib/ask/portfolio.ts`.
+ *
+ * Coste CERO de cuota FMP: `ticker_fundamentals` está cacheada a 7 días y
+ * esto sólo lee. Nunca disparar una llamada a FMP desde aquí — son 250/día
+ * para todo el proyecto y una pregunta no puede gastarlas.
+ */
+async function riskFacts(symbols: string[]): Promise<RiskFact[]> {
+  if (!symbols.length) return [];
+  const syms = list(symbols);
+  const [fndR, shrR] = await Promise.all([
+    db.execute(sql`
+      SELECT symbol,
+             NULLIF(regexp_replace(COALESCE(beta,''), '[^0-9.\\-]', '', 'g'), '')::float8 AS beta,
+             NULLIF(regexp_replace(COALESCE(pe,''), '[^0-9.\\-]', '', 'g'), '')::float8 AS pe
+      FROM ticker_fundamentals WHERE symbol IN (${syms})
+    `),
+    // Las DOS últimas liquidaciones de FINRA por símbolo: la vigente y la
+    // anterior, para poder dar la derivada y no sólo el nivel.
+    db.execute(sql`
+      SELECT symbol, dtc, qty, prev FROM (
+        SELECT symbol, days_to_cover::float8 AS dtc,
+               current_short_qty::float8 AS qty, previous_short_qty::float8 AS prev,
+               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY settlement_date DESC) AS rn
+        FROM short_interest WHERE symbol IN (${syms})
+      ) t WHERE rn = 1
+    `),
+  ]);
+  const fnd = new Map(
+    unwrapRows<{ symbol: string; beta: number | null; pe: number | null }>(fndR).map((r) => [
+      r.symbol,
+      r,
+    ]),
+  );
+  const shr = new Map(
+    unwrapRows<{ symbol: string; dtc: number | null; qty: number | null; prev: number | null }>(
+      shrR,
+    ).map((r) => [r.symbol, r]),
+  );
+  return symbols.map((symbol) => {
+    const s = shr.get(symbol);
+    // El porcentaje se calcula AQUÍ y no en el prompt: es la regla dura del
+    // proyecto (si el número sale en pantalla, lo calcula el código).
+    const shortChangePct =
+      s?.qty != null && s.prev != null && s.prev > 0
+        ? ((s.qty - s.prev) / s.prev) * 100
+        : null;
+    return {
+      symbol,
+      beta: fnd.get(symbol)?.beta ?? null,
+      pe: fnd.get(symbol)?.pe ?? null,
+      daysToCover: s?.dtc ?? null,
+      shortChangePct,
+    };
+  });
 }
 
 /** Agregados reales por símbolo. Aquí es donde salen los números.
@@ -661,7 +746,7 @@ export async function retrieve(opts: {
   // vuelan a la vez y los hechos sólo la esperan al final.
   const earningsP = earningsReads(symbols);
 
-  const [vector, lexical, facts, earnings, fwdCandidates, bars, sellers, rawDeals] =
+  const [vector, lexical, facts, earnings, fwdCandidates, bars, sellers, rawDeals, risk] =
     await Promise.all([
     queryVec ? vectorSearch(queryVec, symbols, half) : Promise.resolve([]),
     lexicalSearch(question, symbols, half, intent),
@@ -689,6 +774,7 @@ export async function retrieve(opts: {
     forwardOn ? earningsBars(symbols) : Promise.resolve([]),
     forwardOn ? systematicSellers(symbols) : Promise.resolve([]),
     forwardOn ? pendingDeals(symbols) : Promise.resolve([]),
+    forwardOn ? riskFacts(symbols) : Promise.resolve([]),
   ]);
 
   // `pendingDeals` levanta TODA noticia de categoría MA ligada al símbolo, y
@@ -700,7 +786,11 @@ export async function retrieve(opts: {
   // código: la operación cuenta sólo si el titular NOMBRA a la empresa.
   const nameBySymbol = new Map(facts.map((f) => [f.symbol, f.name]));
   const deals = rawDeals
-    .filter((d) => mentionsTicker(d.headline, d.symbol, nameBySymbol.get(d.symbol) ?? null))
+    .filter(
+      (d) =>
+        mentionsTicker(d.headline, d.symbol, nameBySymbol.get(d.symbol) ?? null) &&
+        looksLikeDeal(d.headline),
+    )
     .slice(0, FORWARD_DEALS_MAX);
 
   const seen = new Set<string>();
@@ -798,7 +888,7 @@ export async function retrieve(opts: {
     citations,
     facts,
     earnings,
-    forward: { bars, sellers, deals },
+    forward: { bars, sellers, deals, risk },
     vectorUsed: Boolean(queryVec),
     harvested,
     attempted,
@@ -839,6 +929,33 @@ const HARVEST_MAX_CITATIONS = 12;
  *  contexto, no la respuesta: doce líneas de "operación sin cerrar" ahogan
  *  las dos que de verdad afectan a la posición. */
 const FORWARD_DEALS_MAX = 4;
+
+/** Vocabulario que delata una operación de verdad. */
+const DEAL_WORDS =
+  /\b(acquir\w+|acquisition|merger|merges|merging|deal|takeover|buyout|tender offer|to buy|agrees to|stake in|combination|adquis\w+|adquier\w+|fusi[oó]n|opa|oferta p[uú]blica|compra de)\b/i;
+
+/** Titular que en realidad cuenta un MOVIMIENTO DE PRECIO. */
+const PRICE_MOVE =
+  /\b(slid\w+|plung\w+|soar\w+|jump\w+|tumbl\w+|rall\w+|sink\w+|surg\w+|drop\w+|spike\w+|climb\w+|cae|caen|sube|suben|desplom\w+|se dispara)\b|\d+(\.\d+)?\s?%/i;
+
+/**
+ * ¿Este titular de categoría `MA` es de verdad una operación abierta?
+ *
+ * `pendingDeals` selecciona por CATEGORÍA, no por contenido, y la categoría
+ * es generosa: de los 4 "pendientes" de RKLB (2026-07-30), dos eran "Why
+ * Rocket Lab Shares Are Plunging Today" y "Stock Slides 12%". Colarlos hace
+ * dos daños a la vez — el bloque afirma que hay una operación sin cerrar
+ * donde no la hay, y mete por la puerta de atrás justo el contenido que el
+ * prompt de decisión prohíbe: el movimiento de precio que el usuario ya ve
+ * en su bróker.
+ *
+ * La comprobación de que la operación SIGA abierta no se hace aquí (la hace
+ * el extractor LLM del libro de futuros, que este camino no usa), y por eso
+ * la etiqueta que se pinta en `lib/ask/decision.ts` no lo afirma.
+ */
+export function looksLikeDeal(headline: string): boolean {
+  return DEAL_WORDS.test(headline) && !PRICE_MOVE.test(headline);
+}
 
 /** Cosecha los cuerpos que faltan en las mejores citas. Reusa la máquina ya
  *  probada de la revisión de cartera (`harvestBodies`): mismo presupuesto de
