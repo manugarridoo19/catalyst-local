@@ -15,7 +15,19 @@
 
 import { sql, type SQL } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
-import { harvestBodies } from "@/lib/ask/forward";
+import {
+  earningsBars,
+  harvestBodies,
+  pendingDeals,
+  selectForwardCandidates,
+  systematicSellers,
+  type EarningsBar,
+  type PendingDeal,
+  type SystematicSeller,
+} from "@/lib/ask/forward";
+import { DECISION_NOISE, type AskIntent } from "@/lib/ask/intent";
+import { COMMON_WORD_DENYLIST } from "@/lib/tickers/alias-denylist";
+import { mentionsTicker } from "@/lib/providers/google-news-tickers";
 
 export type Citation = {
   n: number;
@@ -142,12 +154,25 @@ export function surprisePct(
   return ((actual - estimate) / Math.abs(estimate)) * 100;
 }
 
+/** Material prospectivo. Sólo se levanta para preguntas de DECISIÓN: son
+ *  las únicas donde "qué está comprometido a pasar y aún no ha pasado"
+ *  manda sobre "qué se publicó". Cuatro queries más, cero cuota de IA. */
+export type AskForward = {
+  bars: EarningsBar[];
+  sellers: SystematicSeller[];
+  deals: PendingDeal[];
+};
+
 export type Retrieval = {
   symbols: string[];
+  /** Qué clase de pregunta se recuperó. Decide la FORMA de la respuesta en
+   *  `answerShape` y qué canales se usaron aquí. */
+  intent: AskIntent;
   citations: Citation[];
   facts: StructuredFacts[];
   /** Comunicados de resultados leídos de los símbolos de la pregunta. */
   earnings: EarningsRead[];
+  forward: AskForward;
   /** true si el canal vectorial pudo usarse (sesión del dueño con cuota). */
   vectorUsed: boolean;
   /** Cuántos cuerpos se salieron a buscar en esta pregunta y cuántos
@@ -184,6 +209,32 @@ function list(values: string[]): SQL {
 }
 
 /**
+ * ¿Es esta palabra suelta demasiado corriente para ser el alias de una
+ * empresa dentro de una PREGUNTA?
+ *
+ * El guard de los tokens en mayúsculas sólo cubría su propio canal; el de
+ * alias entraba sin filtro. Medido el 2026-07-30 con "¿es buena IDEA dejar
+ * correr $MSFT…?": la pregunta consultaba también IACO, cuyo alias es
+ * "Idea" — con sus agregados SQL, sus noticias y un bloque de presiones
+ * colgando de una empresa que no pintaba nada en la pregunta.
+ *
+ * Reusa `COMMON_WORD_DENYLIST`, que es la fuente ÚNICA del proyecto para
+ * esto (extractor + enricher ya la comparten, y forkarla está prohibido por
+ * convención), y le suma el vocabulario de la duda, que es específico de
+ * este canal: en un titular no aparece "vendemos", en una pregunta sí.
+ */
+function isCommonWord(word: string): boolean {
+  const bare = word.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  return (
+    COMMON_WORD_DENYLIST.has(word) ||
+    COMMON_WORD_DENYLIST.has(bare) ||
+    DECISION_NOISE.has(bare) ||
+    STOPWORDS.has(word) ||
+    STOPWORDS.has(bare)
+  );
+}
+
+/**
  * Símbolos mencionados en la pregunta. Dos vías: token en mayúsculas que
  * existe en `tickers`, y n-grama que coincide con un alias conocido
  * ("Nvidia", "Palo Alto Networks"). El diccionario NO se carga entero: se
@@ -213,7 +264,7 @@ export async function extractQuestionSymbols(question: string): Promise<string[]
   for (let i = 0; i < lower.length; i++) {
     for (let n = 1; n <= 3 && i + n <= lower.length; n++) {
       const g = lower.slice(i, i + n).join(" ");
-      if (n === 1 && (STOPWORDS.has(g) || g.length < 3)) continue;
+      if (n === 1 && (isCommonWord(g) || g.length < 3)) continue;
       ngrams.add(g);
     }
   }
@@ -247,15 +298,35 @@ export async function extractQuestionSymbols(question: string): Promise<string[]
   return [...found].slice(0, 6);
 }
 
-/** Palabras con contenido de la pregunta, para el canal léxico. */
-function keywords(question: string): string[] {
+/**
+ * Palabras con contenido de la pregunta, para el canal léxico.
+ *
+ * En una pregunta de DECISIÓN el vocabulario de la decisión se come las 6
+ * plazas ("buena", "idea", "dejar", "correr", "vendemos", "parte") y ninguna
+ * describe una noticia — encima "parte" y "correr" casan por subcadena con
+ * medio archivo. Se purgan: lo que queda es lo que sí nombra algo del mundo
+ * ("resultados", "antitrust", "guidance"), y si no queda nada el canal cae
+ * al filtro por símbolo, que es lo correcto.
+ */
+export function keywords(question: string, intent: AskIntent = "archive"): string[] {
+  // El término que viaja al ILIKE conserva sus tildes (un titular en
+  // español las lleva y `ILIKE '%opinion%'` no casa "opinión"); la
+  // comparación contra las listas sí se hace sin ellas, que es donde están
+  // escritas. Dos formas de la misma palabra, cada una donde toca.
+  const bare = (w: string) => w.normalize("NFD").replace(/\p{Diacritic}/gu, "");
   return [
     ...new Set(
       question
         .toLowerCase()
         .replace(/[^\p{L}\p{N}\s]/gu, " ")
         .split(/\s+/)
-        .filter((w) => w.length >= 4 && !STOPWORDS.has(w)),
+        .filter(
+          (w) =>
+            w.length >= 4 &&
+            !STOPWORDS.has(w) &&
+            !STOPWORDS.has(bare(w)) &&
+            !(intent === "decision" && DECISION_NOISE.has(bare(w))),
+        ),
     ),
   ].slice(0, 6);
 }
@@ -306,8 +377,9 @@ async function lexicalSearch(
   question: string,
   symbols: string[],
   limit: number,
+  intent: AskIntent,
 ): Promise<Citation[]> {
-  const terms = keywords(question);
+  const terms = keywords(question, intent);
   const conds: SQL[] = [];
   if (symbols.length) {
     conds.push(sql`symbols && ARRAY[${list(symbols)}]::text[]`);
@@ -570,23 +642,29 @@ export async function retrieve(opts: {
   question: string;
   queryVec: number[] | null;
   limit?: number;
+  /** Clasificación de la pregunta. `decision` enciende el canal prospectivo
+   *  y purga el vocabulario de decisión del canal léxico. */
+  intent?: AskIntent;
   /** false = no salir a la red a extraer cuerpos que faltan. Los anónimos
    *  del Worker van así: no pueden disparar N fetches salientes. */
   harvest?: boolean;
   harvestBudgetMs?: number;
 }): Promise<Retrieval> {
   const { question, queryVec } = opts;
+  const intent: AskIntent = opts.intent ?? "archive";
   const limit = opts.limit ?? 20;
   const half = Math.ceil(limit / 2);
   const symbols = await extractQuestionSymbols(question);
+  const forwardOn = intent === "decision" && symbols.length > 0;
 
   // Se lanza aquí y se pasa SIN await a structuredFacts: las dos cosas
   // vuelan a la vez y los hechos sólo la esperan al final.
   const earningsP = earningsReads(symbols);
 
-  const [vector, lexical, facts, earnings] = await Promise.all([
+  const [vector, lexical, facts, earnings, fwdCandidates, bars, sellers, rawDeals] =
+    await Promise.all([
     queryVec ? vectorSearch(queryVec, symbols, half) : Promise.resolve([]),
-    lexicalSearch(question, symbols, half),
+    lexicalSearch(question, symbols, half, intent),
     structuredFacts(
       symbols,
       earningsP.then((rs) => {
@@ -601,7 +679,29 @@ export async function retrieve(opts: {
       }),
     ),
     earningsP,
+    // Canal PROSPECTIVO, sólo en decisiones. Selecciona por peso de
+    // CATEGORÍA (MA > GUIDANCE > REGULATORY > …), nunca por impacto: el
+    // scoring de impacto premia por definición lo que YA movió el precio,
+    // así que en una pregunta de "¿vendo?" la cita mejor rankeada era la
+    // crónica de la subida que provocó la pregunta. Es la misma trampa que
+    // midió la revisión de cartera el 2026-07-25.
+    forwardOn ? selectForwardCandidates(symbols, 3) : Promise.resolve([]),
+    forwardOn ? earningsBars(symbols) : Promise.resolve([]),
+    forwardOn ? systematicSellers(symbols) : Promise.resolve([]),
+    forwardOn ? pendingDeals(symbols) : Promise.resolve([]),
   ]);
+
+  // `pendingDeals` levanta TODA noticia de categoría MA ligada al símbolo, y
+  // un nombre como MSFT está ligado a media portada de fusiones ajenas.
+  // Medido el 2026-07-30: de 12 "operaciones pendientes" de MSFT, la
+  // mayoría eran de terceros ("Will SpaceX buy Tesla?"). En la revisión de
+  // cartera esto lo filtra después el extractor LLM del libro de futuros;
+  // aquí van directas a la respuesta, así que el filtro tiene que ser de
+  // código: la operación cuenta sólo si el titular NOMBRA a la empresa.
+  const nameBySymbol = new Map(facts.map((f) => [f.symbol, f.name]));
+  const deals = rawDeals
+    .filter((d) => mentionsTicker(d.headline, d.symbol, nameBySymbol.get(d.symbol) ?? null))
+    .slice(0, FORWARD_DEALS_MAX);
 
   const seen = new Set<string>();
   const seenText = new Set<string>();
@@ -626,6 +726,33 @@ export async function retrieve(opts: {
       impact: 5,
       sentiment: 0,
       category: "EARNINGS",
+    });
+  }
+
+  // Los candidatos prospectivos van justo detrás de los comunicados y por
+  // delante de vectorial y léxico. El orden de las citas es el orden en que
+  // el modelo las lee, y en una decisión lo que pesa es lo que sigue
+  // abierto, no lo último que se publicó.
+  for (const c of fwdCandidates) {
+    const key = `n${c.newsId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const text = normalizeHeadline(c.headline);
+    if (text) seenText.add(text);
+    citations.push({
+      n: citations.length + 1,
+      via: "forward",
+      category: c.category,
+      newsId: c.newsId,
+      headline: c.headline,
+      summary: null,
+      url: c.url,
+      source: c.source,
+      symbols: [c.symbol],
+      publishedAt: c.publishedAt,
+      impact: c.impact,
+      sentiment: c.sentiment,
+      body: c.body ? c.body.slice(0, EXTRACT_MAX_CHARS) : null,
     });
   }
 
@@ -667,9 +794,11 @@ export async function retrieve(opts: {
 
   return {
     symbols,
+    intent,
     citations,
     facts,
     earnings,
+    forward: { bars, sellers, deals },
     vectorUsed: Boolean(queryVec),
     harvested,
     attempted,
@@ -705,6 +834,11 @@ const HARVEST_BUDGET_MS = 14_000;
 /** Cuántas citas sin cuerpo se salen a buscar. Por encima de esto el prompt
  *  no cabría de todos modos y el reloj se agota antes. */
 const HARVEST_MAX_CITATIONS = 12;
+
+/** Operaciones pendientes que entran en una respuesta de decisión. Son
+ *  contexto, no la respuesta: doce líneas de "operación sin cerrar" ahogan
+ *  las dos que de verdad afectan a la posición. */
+const FORWARD_DEALS_MAX = 4;
 
 /** Cosecha los cuerpos que faltan en las mejores citas. Reusa la máquina ya
  *  probada de la revisión de cartera (`harvestBodies`): mismo presupuesto de

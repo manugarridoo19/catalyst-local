@@ -14,9 +14,30 @@ import type { AskResponse } from "@/app/api/ask/route";
 
 const EXAMPLES = [
   "¿Qué se dijo de NVDA esta semana?",
+  "¿Dejo correr $MSFT o vendo una parte?",
   "What are insiders buying lately?",
   "¿Hay algún 13D nuevo?",
 ];
+
+function pct(n: number): string {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+}
+
+function money(n: number): string {
+  return `${Math.round(n).toLocaleString("es-ES")}$`;
+}
+
+const SIDE_LABEL: Record<string, string> = {
+  hold: "a favor de aguantar",
+  trim: "a favor de recortar",
+  neutral: "importa, no inclina",
+};
+
+const SIDE_TONE: Record<string, string> = {
+  hold: "text-emerald-700 dark:text-emerald-300",
+  trim: "text-amber-700 dark:text-amber-300",
+  neutral: "text-muted-foreground",
+};
 
 function sentimentTone(n: number): string {
   if (n >= 2) return "text-emerald-700 dark:text-emerald-300";
@@ -104,8 +125,159 @@ export function AskPanel() {
   );
 }
 
+/**
+ * Exposición, presiones y calendario de una pregunta de decisión.
+ *
+ * Se pinta APARTE de la prosa y no dentro de ella por la misma razón que la
+ * revisión de cartera devuelve el libro de futuros fuera de la reseña: son
+ * los datos que sostienen la postura, salen de SQL y son verdad aunque el
+ * redactor haya fallado o la cadena de fallback haya contestado con el
+ * modelo de la cola. Si el LLM cae, esto sigue respondiendo media pregunta.
+ */
+function DecisionBlocks({ res }: { res: AskResponse }) {
+  const held = res.position.filter((p) => p.held);
+  const sides = (["trim", "hold", "neutral"] as const).map((side) => ({
+    side,
+    items: res.pressures.filter((p) => p.side === side),
+  }));
+  const hasAny = held.length || res.pressures.length || res.dated.length;
+  if (!hasAny) return null;
+
+  return (
+    <section className="flex flex-col gap-3">
+      {held.length ? (
+        <div>
+          <h2 className="eyebrow mb-2 text-[10px] text-foreground">
+            Tu exposición
+          </h2>
+          <div className="grid gap-2 md:grid-cols-2">
+            {held.map((p) => (
+              <div
+                key={p.symbol}
+                className="rounded-sm border border-border/50 bg-card/30 px-3 py-2 font-mono text-[11px]"
+              >
+                <div className="flex items-baseline justify-between">
+                  <Link
+                    href={`/ticker/${p.symbol}`}
+                    className="text-foreground hover:text-primary"
+                  >
+                    {p.symbol}
+                  </Link>
+                  {p.weightPct !== null ? (
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {p.weightPct.toFixed(1)}% de la cartera
+                    </span>
+                  ) : null}
+                </div>
+                <dl className="mt-1.5 space-y-0.5 text-[10.5px] text-muted-foreground">
+                  {p.marketValue !== null ? (
+                    <div className="flex justify-between gap-3">
+                      <dt>valor</dt>
+                      <dd className="text-foreground/80">{money(p.marketValue)}</dd>
+                    </div>
+                  ) : null}
+                  {p.unrealizedPct !== null ? (
+                    <div className="flex justify-between gap-3">
+                      <dt>P&amp;L no realizado</dt>
+                      <dd
+                        className={
+                          p.unrealizedPct >= 0
+                            ? "text-emerald-700 dark:text-emerald-300"
+                            : "text-rose-700 dark:text-rose-300"
+                        }
+                      >
+                        {pct(p.unrealizedPct)}
+                        {p.unrealizedAbs !== null ? ` · ${money(p.unrealizedAbs)}` : ""}
+                      </dd>
+                    </div>
+                  ) : null}
+                  {p.avgCost !== null ? (
+                    <div className="flex justify-between gap-3">
+                      <dt>coste medio</dt>
+                      <dd className="text-foreground/80">{p.avgCost}$</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {res.pressures.length ? (
+        <div>
+          <div className="mb-2 flex items-baseline gap-2.5">
+            <h2 className="eyebrow text-[10px] text-foreground">Presiones</h2>
+            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50">
+              hechos duros · el lado lo asigna el código, no el modelo
+            </span>
+          </div>
+          <div className="flex flex-col gap-2">
+            {sides
+              .filter((s) => s.items.length)
+              .map((s) => (
+                <div key={s.side}>
+                  <h3
+                    className={`eyebrow mb-1 text-[9px] ${SIDE_TONE[s.side]}`}
+                  >
+                    {SIDE_LABEL[s.side]}
+                  </h3>
+                  <ul className="flex flex-col gap-1">
+                    {s.items.map((p, i) => (
+                      <li
+                        key={`${p.symbol}-${i}`}
+                        className="rounded-sm border border-border/40 bg-card/25 px-3 py-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground"
+                      >
+                        <span className="text-foreground/80">{p.symbol}</span>{" "}
+                        {p.text}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+          </div>
+        </div>
+      ) : null}
+
+      {res.dated.length ? (
+        <div>
+          <div className="mb-2 flex items-baseline gap-2.5">
+            <h2 className="eyebrow text-[10px] text-foreground">
+              Lo que ya está fechado
+            </h2>
+            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50">
+              publicado o comprometido — aquí no hay ninguna previsión
+            </span>
+          </div>
+          <ul className="flex flex-col gap-1">
+            {res.dated.map((d, i) => (
+              <li
+                key={`${d.symbol}-${i}`}
+                className="flex gap-2.5 rounded-sm border border-border/40 bg-card/25 px-3 py-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground"
+              >
+                <span className="shrink-0 text-primary/70">
+                  {d.date ?? "s/f"}
+                </span>
+                <span>
+                  <span className="text-foreground/80">{d.symbol}</span> {d.text}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function Answer({ res }: { res: AskResponse }) {
-  const noCoverage = res.coverage === "none" && !res.answer;
+  // "No hay cobertura" y un bloque de presiones debajo se contradicen. En
+  // una decisión con hechos duros el archivo SÍ sabe algo: lo que falta es
+  // la prosa, y eso ya lo dice `note`.
+  const hasHardDecision =
+    res.intent === "decision" &&
+    (res.pressures.length > 0 || res.dated.length > 0);
+  const noCoverage = res.coverage === "none" && !res.answer && !hasHardDecision;
 
   return (
     <div className="flex flex-col gap-5">
@@ -142,18 +314,37 @@ function Answer({ res }: { res: AskResponse }) {
               retrieval), no esta vista: aquí sólo se pinta lo que vino. */}
           {res.sections?.length ? (
             <div className="flex flex-col gap-3">
-              {res.sections.map((s, i) => (
-                <div key={`${s.key}-${i}`}>
-                  {s.title ? (
-                    <h3 className="eyebrow mb-1 text-[9.5px] text-muted-foreground">
-                      {s.title}
-                    </h3>
-                  ) : null}
-                  <p className="font-editorial text-[13.5px] leading-relaxed text-foreground/90">
-                    {s.text}
-                  </p>
-                </div>
-              ))}
+              {res.sections.map((s, i) =>
+                // La postura no es una sección más: es la respuesta a la
+                // pregunta y el resto es el porqué. Si se pinta igual que
+                // "lo que no sé", el lector vuelve a tener que buscarla.
+                s.key === "stance" ? (
+                  <div
+                    key={`${s.key}-${i}`}
+                    className="border-l-2 border-primary/60 pl-3"
+                  >
+                    {s.title ? (
+                      <h3 className="eyebrow mb-1 text-[9.5px] text-primary/80">
+                        {s.title}
+                      </h3>
+                    ) : null}
+                    <p className="font-editorial text-[15px] leading-relaxed text-foreground">
+                      {s.text}
+                    </p>
+                  </div>
+                ) : (
+                  <div key={`${s.key}-${i}`}>
+                    {s.title ? (
+                      <h3 className="eyebrow mb-1 text-[9.5px] text-muted-foreground">
+                        {s.title}
+                      </h3>
+                    ) : null}
+                    <p className="font-editorial text-[13.5px] leading-relaxed text-foreground/90">
+                      {s.text}
+                    </p>
+                  </div>
+                ),
+              )}
             </div>
           ) : (
             <p className="font-editorial text-[13.5px] leading-relaxed text-foreground/90">
@@ -167,6 +358,8 @@ function Answer({ res }: { res: AskResponse }) {
           ) : null}
         </div>
       ) : null}
+
+      {res.intent === "decision" ? <DecisionBlocks res={res} /> : null}
 
       {res.facts.length ? (
         <section>

@@ -27,9 +27,11 @@ function citation(n: number, over: Partial<Citation> = {}): Citation {
 function retrieval(over: Partial<Retrieval> = {}): Retrieval {
   return {
     symbols: [],
+    intent: "archive",
     citations: [],
     facts: [],
     earnings: [],
+    forward: { bars: [], sellers: [], deals: [] },
     vectorUsed: true,
     harvested: 0,
     attempted: 0,

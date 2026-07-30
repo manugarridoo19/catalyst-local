@@ -12,6 +12,11 @@
 
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
+import {
+  hasDecisionEvidence,
+  type DecisionFacts,
+  type PositionContext,
+} from "@/lib/ask/decision";
 import type {
   Retrieval,
   Citation,
@@ -19,21 +24,30 @@ import type {
   EarningsRead,
 } from "@/lib/ask/retrieve";
 
-const ASK_BASE_RULES = `You answer questions about a proprietary news archive (Catalyst). You are a librarian of that archive, NOT a market commentator.
-You receive: (a) numbered ARCHIVE ITEMS retrieved for the question, and optionally (b) COMPUTED FACTS — aggregates calculated by SQL over structured filings data.
-Item types you may see:
+// Los tipos de material y las reglas de evidencia son COMUNES a las dos
+// clases de pregunta. Lo que cambia entre ellas es el papel del modelo, y
+// por eso el papel se declara aparte: el bibliotecario tiene prohibido
+// opinar y el analista está obligado a hacerlo, pero ninguno de los dos
+// puede inventarse un número ni citar de memoria.
+const ITEM_TYPES = `Item types you may see:
 - EARNINGS RELEASE: the company's OWN press release (SEC 8-K exhibit 99.1), already read. This is FIRST-PARTY evidence and outranks any journalism about it. Its CONTENT carries the quarter's real numbers, and a "NOT SAID OUT LOUD" line with what a careful reader notices that the release does not advertise.
-- News items. Some carry a CONTENT line: the extracted body of the article. When present, base your answer on the CONTENT, not the headline — the substance (and sometimes a contradiction of the headline) lives there.
-Rules:
-- Use ONLY the provided items and facts. If they do not answer the question, say so plainly and set "coverage":"none". NEVER fall back on your own knowledge of companies, prices or events — your training data is stale and the user cannot tell the difference.
+- News items. Some carry a CONTENT line: the extracted body of the article. When present, base your answer on the CONTENT, not the headline — the substance (and sometimes a contradiction of the headline) lives there.`;
+
+const EVIDENCE_RULES = `- Use ONLY the provided items and facts. If they do not answer the question, say so plainly and set "coverage":"none". NEVER fall back on your own knowledge of companies, prices or events — your training data is stale and the user cannot tell the difference.
 - Cite with bracketed numbers matching the item numbers, e.g. "Nvidia disclosed a 9.3% stake in Nebius [2]". Every factual claim needs a citation, except numbers taken from COMPUTED FACTS (those are already exact — attribute them as "the filings data shows").
 - NEVER do arithmetic. Do not compute percentages, differences, beats, misses or totals from numbers you were given — quote each number as printed and let them sit side by side. Any percentage you did not read verbatim in an item is a fabrication. Beats and misses against consensus arrive already computed on a "VS CONSENSUS (precomputed)" line when they can be computed soundly; when that line is absent for a metric, the comparison is NOT available and you must not produce one.
 - "used": the item numbers you actually cited. Do not list items you did not use.
 - "coverage": "full" if the archive answers the question, "partial" if it only touches on it (say what is missing), "none" if it does not cover it.
 - Answer in the SAME LANGUAGE as the question (Spanish or English).
-- Desk-analyst register: concrete, no hedging boilerplate, no investment advice, no "as an AI".
 - Dates matter: the items carry publication dates. When something is older than a few days, say when it happened rather than implying it is current.
 - Prefer the specific over the general: a number, a name and a date beat any adjective. If an item only supports a vague claim, leave the claim out.`;
+
+const ASK_BASE_RULES = `You answer questions about a proprietary news archive (Catalyst). You are a librarian of that archive, NOT a market commentator.
+You receive: (a) numbered ARCHIVE ITEMS retrieved for the question, and optionally (b) COMPUTED FACTS — aggregates calculated by SQL over structured filings data.
+${ITEM_TYPES}
+Rules:
+${EVIDENCE_RULES}
+- Desk-analyst register: concrete, no hedging boilerplate, no investment advice, no "as an AI".`;
 
 // Respuesta ESTRUCTURADA. Se usa sólo cuando el retrieval trajo material de
 // verdad (ver `answerShape`): con dos titulares sueltos, cuatro epígrafes
@@ -59,6 +73,47 @@ const ASK_PROSE_PROMPT = `${ASK_BASE_RULES}
 
 Output ONLY a JSON object: {"answer": "...", "used": [1,4,7], "coverage": "full" | "partial" | "none"}
 - 2-6 sentences, one paragraph.`;
+
+// Respuesta de DECISIÓN. La tercera forma, y la que existe porque las otras
+// dos NO respondían: preguntado "¿dejo correr $MSFT o vendo una parte?", un
+// bibliotecario con prohibición de opinar sólo puede describir MSFT.
+//
+// El papel cambia; las reglas de evidencia NO. Este modelo se moja, pero se
+// moja sobre EXPOSICIÓN (cuánto de tu dinero está en juego y frente a qué
+// desenlace fechado), nunca sobre dirección de precio. La diferencia no es
+// retórica: lo primero sale de datos que están en la mesa —el peso de la
+// posición, la fecha del evento, el papel que un directivo tiene declarado
+// que va a colocar—, lo segundo sería adivinar.
+//
+// Los LADOS vienen ya asignados desde `lib/ask/decision.ts`. Que el modelo
+// no tenga que decidir si un dato empuja a aguantar o a recortar es
+// deliberado: ahí es exactamente donde improvisaría.
+const ASK_DECISION_PROMPT = `You are a desk analyst answering a DECISION question from the owner of the portfolio. He is asking what to do with a position he holds (or is considering). He has his broker open in another tab: he already sees the price, the day's move and the headlines. Repeating any of that is worthless to him.
+
+You receive: (a) YOUR POSITION — his exposure, already computed; (b) PRESSURES — hard facts already labelled with the side they push towards; (c) DATED — what is already scheduled and will settle part of the question; (d) numbered ARCHIVE ITEMS; (e) COMPUTED FACTS.
+${ITEM_TYPES}
+
+ANSWER THE QUESTION. Declining to answer, deferring to "a financial advisor", or describing the company instead of taking a position is a FAILED answer — he did not ask what the company does, he asked what to do about it.
+
+Output ONLY a JSON object:
+{"sections": [{"key": "stance", "title": "...", "text": "..."}], "used": [1,4], "coverage": "full"}
+
+Sections, in this order, using exactly these keys (omit "hold" or "trim" only if that side has literally nothing):
+- "stance"  — ONE sentence. The position you take, and the single fact that carries it. Say it as a lean about EXPOSURE ("recortar hasta bajar del umbral", "aguantar hasta el 28-oct", "partir la diferencia antes del evento"), never as a price call. If the two sides are equally thin, the honest stance is that the archive does not settle it — say that instead of manufacturing a preference.
+- "hold"    — the case for leaving the position alone. Built from PRESSURES marked hold plus what the items support.
+- "trim"    — the case for taking part of it off. Same rule.
+- "decides" — what is already on the calendar or already committed that will resolve this, with its date. Only dates and commitments present in the material. No forecasts.
+- "unknown" — what would change your answer and the archive does not know. Name the gap concretely (a body that could not be extracted, a position with no coverage, an estimate that is missing). This section is never padding: it is what stops the rest from reading as more certain than it is.
+
+Section rules:
+- "title": a SHORT all-caps label in the question's language, e.g. "POSTURA", "A FAVOR DE AGUANTAR", "A FAVOR DE RECORTAR", "LO QUE LO DECIDE", "LO QUE NO SÉ".
+- 1 sentence for "stance", 2-4 for the rest. Each section carries its own citations.
+- The PRESSURES block already states which side each fact pushes towards. Use that assignment; do not re-argue it and do not move a fact to the other side.
+- NEVER predict a price or a direction ("va a subir", "el suelo está en"). NEVER name an amount or a number of shares to execute — you do not know his tax situation, his horizon or his other assets, and inventing precision there is the one error he cannot audit.
+- Quote the numbers of YOUR POSITION exactly as printed. Never recompute a weight, a P&L or a total. Write them into your prose as ordinary text ("pesa un 27,6% de la cartera"); square brackets are ONLY for citation numbers and anything else you put inside them will be deleted.
+- Do not moralise, do not add disclaimers, do not say "consult a professional", do not say "as an AI". He built this tool on purpose.
+
+${EVIDENCE_RULES}`;
 
 /** Un bloque de la respuesta. `title` null = prosa sin epígrafe. */
 export type AskSection = {
@@ -224,7 +279,14 @@ export function hasCoverage(r: Retrieval): boolean {
  * andamiaje aparenta una profundidad que el archivo no tiene — que es
  * exactamente el fallo que esta feature existe para no cometer.
  */
-export function answerShape(r: Retrieval): "sections" | "prose" {
+export type AnswerShape = "decision" | "sections" | "prose";
+
+export function answerShape(r: Retrieval): AnswerShape {
+  // La intención MANDA sobre el material. Una pregunta de decisión con
+  // poco archivo sigue queriendo la forma de decisión: la respuesta será
+  // "no da para inclinarse, esto es lo que falta", que responde. Caer a
+  // prosa aquí devolvía el párrafo genérico que abrió esta sesión.
+  if (r.intent === "decision") return "decision";
   if (r.earnings.length > 0) return "sections";
   if (r.citations.length >= 6 && r.bodiesAvailable >= 2) return "sections";
   return "prose";
@@ -232,15 +294,109 @@ export function answerShape(r: Retrieval): "sections" | "prose" {
 
 /** Techo de salida por forma. En prosa el prompt pide 2-6 frases y el cap
  *  nunca se roza (medido: ~90 tokens); en secciones sí hace falta sitio. */
-const MAX_TOKENS: Record<"sections" | "prose", number> = {
+const MAX_TOKENS: Record<AnswerShape, number> = {
   sections: 1600,
+  decision: 1400,
   prose: 700,
 };
 
-const SECTION_KEYS = ["numbers", "reading", "overlooked", "watch"];
+const SECTION_KEYS = [
+  "numbers", "reading", "overlooked", "watch",
+  "stance", "hold", "trim", "decides", "unknown",
+];
 
-export async function askArchive(r: Retrieval, question: string): Promise<AskAnswer> {
-  if (!hasCoverage(r)) {
+/** Las de decisión, en el orden en que se leen. Se usa para reordenar la
+ *  salida: un modelo de la cola de la cadena devuelve las secciones en el
+ *  orden que le apetece y "LO QUE NO SÉ" abriendo la respuesta cambia por
+ *  completo lo que el lector entiende. */
+const DECISION_ORDER = ["stance", "hold", "trim", "decides", "unknown"];
+
+const SYSTEM_BY_SHAPE: Record<AnswerShape, string> = {
+  sections: ASK_SECTIONS_PROMPT,
+  decision: ASK_DECISION_PROMPT,
+  prose: ASK_PROSE_PROMPT,
+};
+
+/**
+ * El bloque que hace que la respuesta sea SOBRE SU DINERO.
+ *
+ * Va el PRIMERO del prompt a propósito: un modelo pondera lo que lee antes,
+ * y con las noticias arriba la respuesta vuelve a ser una crónica del valor
+ * con un "por tanto" pegado al final. Aquí lo primero que se lee es cuánto
+ * hay en juego.
+ */
+function formatDecision(d: DecisionFacts): string {
+  const out: string[] = [];
+
+  const lines = d.contexts.map((c: PositionContext) => {
+    if (!c.held) return `- ${c.symbol}: SIN POSICIÓN REGISTRADA (está en seguimiento, no en cartera)`;
+    const bits: string[] = [];
+    if (c.weightPct !== null) bits.push(`peso ${c.weightPct.toFixed(1)}% de la cartera`);
+    if (c.marketValue !== null) bits.push(`valor ${Math.round(c.marketValue).toLocaleString("es-ES")}$`);
+    if (c.unrealizedPct !== null) {
+      bits.push(
+        `P&L no realizado ${c.unrealizedPct >= 0 ? "+" : ""}${c.unrealizedPct.toFixed(1)}%` +
+          (c.unrealizedAbs !== null ? ` (${Math.round(c.unrealizedAbs).toLocaleString("es-ES")}$)` : ""),
+      );
+    }
+    if (c.avgCost !== null) bits.push(`coste medio ${c.avgCost}$`);
+    if (c.price !== null) bits.push(`precio ${c.price}$`);
+    return `- ${c.symbol}: ${bits.join(" · ")}`;
+  });
+  const ctx = d.contexts[0];
+  out.push(
+    `YOUR POSITION (precomputed — quote verbatim, never recompute):\n${lines.join("\n")}` +
+      (ctx
+        ? `\n(cartera total ${Math.round(ctx.portfolioValue).toLocaleString("es-ES")}$ en ${ctx.positionCount} posiciones valorables)`
+        : ""),
+  );
+
+  const bySide = (side: "hold" | "trim" | "neutral") =>
+    d.pressures.filter((p) => p.side === side).map((p) => `- ${p.symbol}: ${p.text}`);
+  const hold = bySide("hold");
+  const trim = bySide("trim");
+  const neutral = bySide("neutral");
+  const blocks: string[] = [];
+  if (hold.length) blocks.push(`PUSHES TOWARDS HOLDING:\n${hold.join("\n")}`);
+  if (trim.length) blocks.push(`PUSHES TOWARDS TRIMMING:\n${trim.join("\n")}`);
+  if (neutral.length) blocks.push(`MATTERS BUT PICKS NO SIDE:\n${neutral.join("\n")}`);
+  if (blocks.length) {
+    out.push(
+      `PRESSURES (hard facts, side already assigned by code — do not reassign):\n${blocks.join("\n")}`,
+    );
+  } else {
+    // Decirlo explícitamente es la mitad del valor: sin esta línea el
+    // modelo rellena el hueco con generalidades bien escritas.
+    out.push(
+      "PRESSURES: NONE. No filings, no calendar entry and no portfolio threshold pushes either way. Say so in the stance instead of inventing a lean.",
+    );
+  }
+
+  if (d.dated.length) {
+    out.push(
+      `DATED (already published or already committed — this is all the future Catalyst can honestly claim):\n${d.dated
+        .map((x) => `- ${x.date ?? "sin fecha"} · ${x.symbol}: ${x.text}`)
+        .join("\n")}`,
+    );
+  } else {
+    out.push("DATED: NOTHING SCHEDULED in the archive for these symbols.");
+  }
+
+  return out.join("\n\n");
+}
+
+export async function askArchive(
+  r: Retrieval,
+  question: string,
+  /** Hechos de decisión ya calculados. Sólo llega en preguntas de decisión;
+   *  es lo que convierte "MSFT en general" en "tu 34% de MSFT". */
+  decision?: DecisionFacts,
+): Promise<AskAnswer> {
+  // Una pregunta de decisión con evidencia dura propia (peso, insiders,
+  // una fecha de resultados) merece respuesta aunque el archivo de noticias
+  // venga flojo: la mitad de la respuesta no sale de las noticias.
+  const decisionBacked = Boolean(decision && hasDecisionEvidence(decision));
+  if (!hasCoverage(r) && !decisionBacked) {
     return {
       answer: "",
       sections: [],
@@ -254,6 +410,8 @@ export async function askArchive(r: Retrieval, question: string): Promise<AskAns
   const userBlock = [
     `QUESTION: ${question}`,
     "",
+    shape === "decision" && decision ? formatDecision(decision) : "",
+    "",
     "ARCHIVE ITEMS:",
     formatItems(r.citations, r.earnings),
     "",
@@ -264,10 +422,7 @@ export async function askArchive(r: Retrieval, question: string): Promise<AskAns
 
   const res = await proseCompletion({
     messages: [
-      {
-        role: "system",
-        content: shape === "sections" ? ASK_SECTIONS_PROMPT : ASK_PROSE_PROMPT,
-      },
+      { role: "system", content: SYSTEM_BY_SHAPE[shape] },
       { role: "user", content: userBlock },
     ],
     temperature: 0.2,
@@ -278,8 +433,8 @@ export async function askArchive(r: Retrieval, question: string): Promise<AskAns
     // cabeza tarda ~24s en escribirlos: con los 25s por defecto se quedaba
     // JUSTO fuera y contestaba el de reserva. Techo de pared para que un
     // modelo lento no encadene un timeout por key (ver gemini.ts).
-    geminiTimeoutMs: shape === "sections" ? 50_000 : 25_000,
-    geminiOverallTimeoutMs: shape === "sections" ? 75_000 : 45_000,
+    geminiTimeoutMs: shape === "prose" ? 25_000 : 50_000,
+    geminiOverallTimeoutMs: shape === "prose" ? 45_000 : 75_000,
   });
 
   // Rastro del modelo que REALMENTE respondió. La cadena de fallback es
@@ -305,7 +460,8 @@ export async function askArchive(r: Retrieval, question: string): Promise<AskAns
     throw new Error("ask: respuesta no parseable como JSON");
   }
 
-  const sections = normalizeSections(parsed);
+  let sections = normalizeSections(parsed);
+  if (shape === "decision") sections = orderDecisionSections(sections);
   const answer = sections.map((s) => s.text).join("\n\n").trim();
   if (!answer || looksLikeScratchpad(answer)) {
     throw new Error("ask: respuesta vacía o con scratchpad");
@@ -326,16 +482,60 @@ export async function askArchive(r: Retrieval, question: string): Promise<AskAns
   ]);
   const cited = r.citations.filter((c) => used.has(c.n));
 
-  const coverage =
+  let coverage: AskAnswer["coverage"] =
     parsed.coverage === "none" || parsed.coverage === "partial"
       ? parsed.coverage
       : "full";
+
+  // ── El gate de la postura ────────────────────────────────────────────
+  //
+  // Misma doctrina que `applyEvidenceGate` en la revisión de cartera: la
+  // regla editorial se COMPRUEBA, no se pide. Un modelo puede ignorar una
+  // instrucción del prompt; no puede ignorar un filtro sobre su salida.
+  //
+  // Que se moje es lo que pidió el usuario, pero mojarse sin respaldo es
+  // exactamente el fallo contrario al que abría esta sesión: pasar de una
+  // respuesta genérica a una opinión con aplomo y sin nada debajo. Si no
+  // hay NI cita usada NI hecho duro, la postura desaparece y quedan los
+  // bloques descriptivos, que sí son verdad.
+  let finalSections = sections;
+  if (shape === "decision" && !cited.length && !decisionBacked) {
+    finalSections = sections.filter((s) => s.key !== "stance");
+    if (coverage === "full") coverage = "partial";
+  }
+  const finalAnswer = finalSections.map((s) => s.text).join("\n\n").trim();
 
   // Sin fallback a "las 3 primeras recuperadas": cuando el modelo no cita
   // nada suele ser porque no había nada que citar, y adjuntar citas que no
   // sostienen el texto fabrica respaldo justo donde la respuesta honesta
   // era "no lo sé". Mejor cero citas que citas decorativas.
-  return { answer, sections, citations: cited, coverage, model: res.model };
+  return {
+    answer: finalAnswer || answer,
+    sections: finalSections.length ? finalSections : sections,
+    citations: cited,
+    coverage,
+    model: res.model,
+  };
+}
+
+/**
+ * Reordena las secciones de una decisión al orden canónico.
+ *
+ * No es cosmética: la cadena de fallback llega hasta llama-3.1-8b y los
+ * modelos de la cola devuelven las claves en el orden que les sale. Una
+ * respuesta que abre con "LO QUE NO SÉ" y esconde la postura al final se
+ * lee como una evasiva — que es justo lo que esta forma existe para no ser.
+ * Las claves desconocidas se conservan al final en vez de tirarse.
+ */
+export function orderDecisionSections(sections: AskSection[]): AskSection[] {
+  const rank = (k: string) => {
+    const i = DECISION_ORDER.indexOf(k);
+    return i === -1 ? DECISION_ORDER.length : i;
+  };
+  return [...sections]
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => rank(a.s.key) - rank(b.s.key) || a.i - b.i)
+    .map((x) => x.s);
 }
 
 /** Números de cita escritos en línea: "[4]" y también "[1, 2]". */
@@ -367,7 +567,7 @@ export function normalizeSections(parsed: {
   const out: AskSection[] = [];
   if (Array.isArray(parsed.sections)) {
     for (const s of parsed.sections) {
-      const text = typeof s?.text === "string" ? s.text.trim() : "";
+      const text = typeof s?.text === "string" ? cleanBrackets(s.text) : "";
       if (!text) continue; // sección vacía = sección que no existe
       const key =
         typeof s.key === "string" && SECTION_KEYS.includes(s.key) ? s.key : "other";
@@ -379,6 +579,32 @@ export function normalizeSections(parsed: {
     }
   }
   if (out.length) return out;
-  const answer = typeof parsed.answer === "string" ? parsed.answer.trim() : "";
+  const answer = typeof parsed.answer === "string" ? cleanBrackets(parsed.answer) : "";
   return answer ? [{ key: "answer", title: null, text: answer }] : [];
+}
+
+/**
+ * En este esquema un corchete significa UNA cosa: un número de cita. Todo
+ * lo demás entre corchetes se borra.
+ *
+ * No es cosmética. Visto en la primera prueba real (2026-07-30): dado el
+ * bloque "YOUR POSITION" y la orden de citar las cifras tal cual, el modelo
+ * cerró tres de las cinco secciones pegando la línea entera entre
+ * corchetes — "…del 25% [MSFT: peso 27.6% de la cartera · valor 1063$ ·
+ * P&L no realizado +18.2% · coste medio 376.92$]". Se lee como una fuente
+ * verificable y no lo es: es el propio prompt devuelto al lector.
+ *
+ * Se borra el contenido, no sólo los delimitadores: dejar el texto suelto
+ * mete un volcado de datos en mitad de una frase, que es peor.
+ */
+export function cleanBrackets(text: string): string {
+  return text
+    .replace(/\[([^\]]*)\]/g, (m, inner: string) =>
+      /^\s*\d+(\s*,\s*\d+)*\s*$/.test(inner) ? m : "",
+    )
+    // La limpieza deja dobles espacios y puntuación colgando (" ." , " ,").
+    .replace(/\s+([.,;:)])/g, "$1")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
