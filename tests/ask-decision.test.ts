@@ -8,8 +8,8 @@ import {
   positionContexts,
 } from "@/lib/ask/decision";
 import { answerShape, cleanBrackets, orderDecisionSections } from "@/lib/ai/ask";
-import { keywords, looksLikeDeal } from "@/lib/ask/retrieve";
-import type { Retrieval, StructuredFacts } from "@/lib/ask/retrieve";
+import { keywords, ledgerCandidates, looksLikeDeal } from "@/lib/ask/retrieve";
+import type { Citation, Retrieval, StructuredFacts } from "@/lib/ask/retrieve";
 import type { Portfolio } from "@/lib/portfolio";
 
 // Lo que fijan estos tests es la frontera entre las DOS clases de pregunta.
@@ -387,6 +387,85 @@ describe("riesgo estructural y concentración sectorial", () => {
     });
     const d = buildDecisionFacts({ symbols: ["MSFT"], portfolio: p, facts: [facts()] });
     expect(d.pressures.some((x) => x.text.includes("su sector"))).toBe(false);
+  });
+});
+
+describe("ledgerCandidates", () => {
+  function cita(over: Partial<Citation>): Citation {
+    return {
+      n: 1,
+      newsId: 100,
+      headline: "titular",
+      summary: null,
+      url: "https://example.com/1",
+      source: "rss:test",
+      symbols: ["MSFT"],
+      publishedAt: "2026-07-29T10:00:00Z",
+      impact: 3,
+      sentiment: 0,
+      via: "vector",
+      body: "x".repeat(300),
+      ...over,
+    };
+  }
+
+  const base: Retrieval = {
+    symbols: ["MSFT"],
+    intent: "decision",
+    citations: [],
+    facts: [],
+    earnings: [],
+    forward: { bars: [], sellers: [], deals: [], risk: [] },
+    vectorUsed: true,
+    harvested: 0,
+    attempted: 0,
+    bodiesAvailable: 0,
+  };
+
+  it("toma cualquier cita con cuerpo, no sólo las del canal prospectivo", () => {
+    // Un compromiso pendiente no deja de serlo por haber entrado al prompt
+    // por semejanza en vez de por peso de categoría.
+    const { candidates } = ledgerCandidates({
+      ...base,
+      citations: [cita({ n: 1, newsId: 1, via: "vector" }), cita({ n: 2, newsId: 2, via: "forward" })],
+    });
+    expect(candidates.map((c) => c.newsId)).toEqual([1, 2]);
+  });
+
+  it("descarta el titular sin cuerpo: no hay plazo ni condición que extraer", () => {
+    const { candidates } = ledgerCandidates({
+      ...base,
+      citations: [cita({ body: null }), cita({ n: 2, newsId: 2, body: "corto" })],
+    });
+    expect(candidates).toHaveLength(0);
+  });
+
+  it("descarta el comunicado de resultados: ya viaja entero por otro sitio", () => {
+    const { candidates } = ledgerCandidates({
+      ...base,
+      citations: [cita({ newsId: null, via: "filing" })],
+    });
+    expect(candidates).toHaveLength(0);
+  });
+
+  it("descarta la cita de una empresa que no es la preguntada", () => {
+    // Un compromiso de otra empresa que salía de refilón en el artículo no
+    // es material para esta decisión, y el gate del extractor lo tiraría
+    // igual: mejor no pagar tokens por él.
+    const { candidates } = ledgerCandidates({
+      ...base,
+      citations: [cita({ symbols: ["TSLA"] })],
+    });
+    expect(candidates).toHaveLength(0);
+  });
+
+  it("numberOf devuelve el mismo [n] que verá el lector", () => {
+    const { numberOf } = ledgerCandidates({
+      ...base,
+      citations: [cita({ n: 7, newsId: 42 })],
+    });
+    expect(numberOf(42)).toBe(7);
+    expect(numberOf(999)).toBeUndefined();
   });
 });
 

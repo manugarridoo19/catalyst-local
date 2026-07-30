@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
-import { retrieve, type Citation, type StructuredFacts } from "@/lib/ask/retrieve";
+import {
+  ledgerCandidates,
+  retrieve,
+  type Citation,
+  type StructuredFacts,
+} from "@/lib/ask/retrieve";
 import { askArchive, hasCoverage, type AskSection } from "@/lib/ai/ask";
+import { extractForwardLedger, type ForwardItem } from "@/lib/ai/forward-ledger";
 import { embedBatch, EmbedQuotaError } from "@/lib/providers/gemini-embed";
 import { isWorkersRuntime, llmAllowed, rateLimited } from "@/lib/ask/gate";
 import { classifyIntent, type AskIntent } from "@/lib/ask/intent";
@@ -52,6 +58,11 @@ export type AskResponse = {
   position: PositionContext[];
   pressures: Pressure[];
   dated: DatedFact[];
+  /** Compromisos sin resolver extraídos de los cuerpos. Va fuera de la
+   *  prosa por el mismo criterio que en la revisión de cartera: es lo más
+   *  valioso de la respuesta y no puede depender de que el redactor
+   *  acierte. Si la 2ª llamada falla, esto se pinta igual. */
+  ledger: ForwardItem[];
   model: string | null;
   note?: string;
 };
@@ -139,13 +150,35 @@ export async function POST(req: Request) {
           facts: r.facts,
           symbols: r.symbols,
           ...decisionOut,
+          // El anónimo no gasta cuota: sin llamada LLM no hay libro de
+          // futuros, y devolver [] es lo honesto (no es que no haya
+          // compromisos, es que no se han extraído).
+          ledger: [],
           model: null,
         } satisfies AskResponse,
         { headers: { "Cache-Control": "no-store" } },
       );
     }
 
-    const a = await askArchive(r, question, decision);
+    // DOS llamadas encadenadas y no una, igual que la revisión de cartera.
+    // La 1ª sólo EXTRAE compromisos sin resolver a un esquema donde "la
+    // acción cayó" no cabe en ningún campo; la 2ª redacta con ese libro
+    // delante de las noticias. Con una sola llamada el modelo resume
+    // titulares por gradiente natural y ninguna instrucción del prompt lo
+    // evita de forma fiable (medido en la revisión el 2026-07-25).
+    //
+    // Sólo en decisiones: una consulta de archivo no la necesita y pagaría
+    // el doble de cuota por nada. Y si falla, la 2ª sigue igual.
+    let ledger: ForwardItem[] = [];
+    if (intent === "decision") {
+      const { candidates, numberOf } = ledgerCandidates(r);
+      const extracted = await extractForwardLedger(candidates, numberOf).catch(
+        () => null,
+      );
+      ledger = extracted?.items ?? [];
+    }
+
+    const a = await askArchive(r, question, { decision, ledger });
     return NextResponse.json(
       {
         mode: "answer",
@@ -158,6 +191,7 @@ export async function POST(req: Request) {
         facts: r.facts,
         symbols: r.symbols,
         ...decisionOut,
+        ledger,
         model: a.model === "none" ? null : a.model,
         note,
       } satisfies AskResponse,
@@ -184,6 +218,7 @@ export async function POST(req: Request) {
         position: [],
         pressures: [],
         dated: [],
+        ledger: [],
         model: null,
         note: "El generador no respondió. Inténtalo de nuevo en un momento.",
       } satisfies AskResponse,

@@ -140,7 +140,8 @@ function DecisionBlocks({ res }: { res: AskResponse }) {
     side,
     items: res.pressures.filter((p) => p.side === side),
   }));
-  const hasAny = held.length || res.pressures.length || res.dated.length;
+  const hasAny =
+    held.length || res.pressures.length || res.dated.length || res.ledger.length;
   if (!hasAny) return null;
 
   return (
@@ -239,6 +240,40 @@ function DecisionBlocks({ res }: { res: AskResponse }) {
         </div>
       ) : null}
 
+      {res.ledger.length ? (
+        <div>
+          <div className="mb-2 flex items-baseline gap-2.5">
+            <h2 className="eyebrow text-[10px] text-foreground">
+              Compromisos sin resolver
+            </h2>
+            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/50">
+              extraído del cuerpo de los artículos — lo que no ves en tu bróker
+            </span>
+          </div>
+          <ul className="flex flex-col gap-1">
+            {res.ledger.map((i, idx) => (
+              <li
+                key={`${i.symbol}-${idx}`}
+                className="rounded-sm border border-border/40 bg-card/25 px-3 py-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground"
+              >
+                <span className="text-foreground/80">{i.symbol}</span>{" "}
+                <span className="text-foreground/70">{i.event}</span>
+                {i.when || i.whenDate ? (
+                  <span className="text-primary/70"> · {i.whenDate ?? i.when}</span>
+                ) : null}
+                {i.condition ? (
+                  <span className="text-amber-700/80 dark:text-amber-300/80">
+                    {" "}
+                    · sujeto a {i.condition}
+                  </span>
+                ) : null}
+                <span className="text-muted-foreground/50"> [{i.source}]</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {res.dated.length ? (
         <div>
           <div className="mb-2 flex items-baseline gap-2.5">
@@ -276,7 +311,7 @@ function Answer({ res }: { res: AskResponse }) {
   // la prosa, y eso ya lo dice `note`.
   const hasHardDecision =
     res.intent === "decision" &&
-    (res.pressures.length > 0 || res.dated.length > 0);
+    (res.pressures.length > 0 || res.dated.length > 0 || res.ledger.length > 0);
   const noCoverage = res.coverage === "none" && !res.answer && !hasHardDecision;
 
   return (

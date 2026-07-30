@@ -22,6 +22,7 @@ import {
   selectForwardCandidates,
   systematicSellers,
   type EarningsBar,
+  type ForwardCandidate,
   type PendingDeal,
   type SystematicSeller,
 } from "@/lib/ask/forward";
@@ -894,6 +895,57 @@ export async function retrieve(opts: {
     attempted,
     bodiesAvailable: citations.filter((c) => c.body && c.body.length >= 200).length,
   };
+}
+
+/**
+ * Prepara la entrada de la PRIMERA llamada LLM de una decisión (el libro de
+ * futuros, `lib/ai/forward-ledger.ts`) a partir de las citas ya cosechadas.
+ *
+ * Se construye desde `citations` y no desde los candidatos prospectivos por
+ * dos razones. La primera es de frescura: los cuerpos se cosechan y se
+ * adjuntan SOBRE las citas, así que los candidatos originales van con el
+ * cuerpo viejo (la revisión de cartera necesita `reloadBodies` justo por
+ * esto; aquí no hace falta). La segunda es de cobertura: en /ask también
+ * traen cuerpo las citas vectoriales y léxicas, y un compromiso pendiente
+ * no deja de serlo por haber entrado al prompt por semejanza.
+ *
+ * Se exigen ≥200 chars de cuerpo: con un titular suelto no hay plazo ni
+ * condición que extraer, y mandarlo es invitar al modelo justo al error que
+ * la separación en dos etapas trata de eliminar.
+ */
+export function ledgerCandidates(r: Retrieval): {
+  candidates: ForwardCandidate[];
+  numberOf: (newsId: number) => number | undefined;
+} {
+  const wanted = new Set(r.symbols);
+  const byNewsId = new Map<number, number>();
+  const candidates: ForwardCandidate[] = [];
+
+  for (const c of r.citations) {
+    if (c.newsId === null) continue; // el comunicado ya viaja entero aparte
+    if (!c.body || c.body.trim().length < 200) continue;
+    // El símbolo del candidato tiene que ser uno de los PREGUNTADOS: un
+    // compromiso de otra empresa que aparecía de refilón en el artículo no
+    // es material para esta decisión, y el gate del extractor lo tiraría
+    // igual — mejor no pagar tokens por él.
+    const symbol = c.symbols.find((s) => wanted.has(s));
+    if (!symbol) continue;
+    byNewsId.set(c.newsId, c.n);
+    candidates.push({
+      newsId: c.newsId,
+      symbol,
+      headline: c.headline,
+      url: c.url,
+      source: c.source,
+      publishedAt: c.publishedAt,
+      category: c.category ?? null,
+      impact: c.impact,
+      sentiment: c.sentiment,
+      body: c.body,
+      hasExtract: true,
+    });
+  }
+  return { candidates, numberOf: (newsId: number) => byNewsId.get(newsId) };
 }
 
 /** Titular reducido a su esqueleto comparable: sin mayúsculas, sin

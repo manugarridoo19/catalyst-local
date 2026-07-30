@@ -13,6 +13,7 @@
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
+import type { ForwardItem } from "@/lib/ai/forward-ledger";
 import {
   hasDecisionEvidence,
   type DecisionFacts,
@@ -91,7 +92,7 @@ Output ONLY a JSON object: {"answer": "...", "used": [1,4,7], "coverage": "full"
 // deliberado: ahí es exactamente donde improvisaría.
 const ASK_DECISION_PROMPT = `You are a desk analyst answering a DECISION question from the owner of the portfolio. He is asking what to do with a position he holds (or is considering). He has his broker open in another tab: he already sees the price, the day's move and the headlines. Repeating any of that is worthless to him.
 
-You receive: (a) YOUR POSITION — his exposure, already computed; (b) PRESSURES — hard facts already labelled with the side they push towards; (c) DATED — what is already scheduled and will settle part of the question; (d) numbered ARCHIVE ITEMS; (e) COMPUTED FACTS.
+You receive: (a) YOUR POSITION — his exposure, already computed; (b) PRESSURES — hard facts already labelled with the side they push towards; (c) DATED — what is already scheduled and will settle part of the question; (d) the FORWARD LEDGER — commitments extracted from the article bodies that have NOT been resolved yet, each with its deadline and its condition; (e) numbered ARCHIVE ITEMS, which are support material to cite and NOT something to summarise; (f) COMPUTED FACTS.
 ${ITEM_TYPES}
 
 ANSWER THE QUESTION. Declining to answer, deferring to "a financial advisor", or describing the company instead of taking a position is a FAILED answer — he did not ask what the company does, he asked what to do about it.
@@ -103,7 +104,7 @@ Sections, in this order, using exactly these keys (omit "hold" or "trim" only if
 - "stance"  — ONE sentence. The position you take, and the single fact that carries it. Say it as a lean about EXPOSURE ("recortar hasta bajar del umbral", "aguantar hasta el 28-oct", "partir la diferencia antes del evento"), never as a price call. If the two sides are equally thin, the honest stance is that the archive does not settle it — say that instead of manufacturing a preference.
 - "hold"    — the case for leaving the position alone. Built from PRESSURES marked hold plus what the items support.
 - "trim"    — the case for taking part of it off. Same rule.
-- "decides" — what is already on the calendar or already committed that will resolve this, with its date. Only dates and commitments present in the material. No forecasts.
+- "decides" — what is already on the calendar or already committed that will resolve this, with its date. The FORWARD LEDGER is the primary source for this section: it is the only thing here he cannot see in his broker. Only dates and commitments present in the material. No forecasts.
 - "unknown" — what would change your answer and the archive does not know. Name the gap concretely (a body that could not be extracted, a position with no coverage, an estimate that is missing). This section is never padding: it is what stops the rest from reading as more certain than it is.
 
 Section rules:
@@ -339,7 +340,7 @@ const SYSTEM_BY_SHAPE: Record<AnswerShape, string> = {
  * con un "por tanto" pegado al final. Aquí lo primero que se lee es cuánto
  * hay en juego.
  */
-function formatDecision(d: DecisionFacts): string {
+function formatDecision(d: DecisionFacts, ledger: ForwardItem[]): string {
   const out: string[] = [];
 
   const lines = d.contexts.map((c: PositionContext) => {
@@ -396,16 +397,46 @@ function formatDecision(d: DecisionFacts): string {
     out.push("DATED: NOTHING SCHEDULED in the archive for these symbols.");
   }
 
+  // El libro de futuros va aquí, DELANTE de las noticias. Es lo único de
+  // todo el prompt que el usuario no puede ver en su bróker, y un modelo
+  // pondera lo que lee antes: con las noticias primero, la sección "lo que
+  // lo decide" volvía a ser una fecha de resultados y poco más.
+  if (ledger.length) {
+    const lines = ledger.map((i) => {
+      const bits = [`${i.symbol} · ${i.event}`];
+      if (i.when) bits.push(`plazo: ${i.when}`);
+      if (i.whenDate) bits.push(`fecha: ${i.whenDate}`);
+      if (i.condition) bits.push(`condición: ${i.condition}`);
+      return `- [${i.source}] ${bits.join(" · ")}`;
+    });
+    out.push(
+      `FORWARD LEDGER (unresolved commitments extracted from the article bodies — this is the part he cannot see in his broker):\n${lines.join("\n")}`,
+    );
+  } else {
+    out.push(
+      "FORWARD LEDGER: EMPTY. No article body in the archive contains an unresolved commitment for these symbols. Say so plainly in \"decides\" instead of padding it with generalities.",
+    );
+  }
+
   return out.join("\n\n");
 }
+
+export type AskOptions = {
+  /** Hechos de decisión ya calculados. Sólo llega en preguntas de decisión;
+   *  es lo que convierte "MSFT en general" en "tu 34% de MSFT". */
+  decision?: DecisionFacts;
+  /** Compromisos sin resolver extraídos en la PRIMERA llamada. Si aquélla
+   *  falló llega vacío y esto sigue: la respuesta pierde profundidad en
+   *  "lo que lo decide" pero conserva todo lo estructural. */
+  ledger?: ForwardItem[];
+};
 
 export async function askArchive(
   r: Retrieval,
   question: string,
-  /** Hechos de decisión ya calculados. Sólo llega en preguntas de decisión;
-   *  es lo que convierte "MSFT en general" en "tu 34% de MSFT". */
-  decision?: DecisionFacts,
+  opts: AskOptions = {},
 ): Promise<AskAnswer> {
+  const { decision, ledger = [] } = opts;
   // Una pregunta de decisión con evidencia dura propia (peso, insiders,
   // una fecha de resultados) merece respuesta aunque el archivo de noticias
   // venga flojo: la mitad de la respuesta no sale de las noticias.
@@ -434,9 +465,11 @@ export async function askArchive(
   const userBlock = [
     `QUESTION: ${question}`,
     "",
-    shape === "decision" && decision ? formatDecision(decision) : "",
+    shape === "decision" && decision ? formatDecision(decision, ledger) : "",
     "",
-    "ARCHIVE ITEMS:",
+    shape === "decision"
+      ? "ARCHIVE ITEMS (support material to cite — do NOT summarise them):"
+      : "ARCHIVE ITEMS:",
     formatItems(r.citations, r.earnings),
     "",
     formatFacts(r.facts),
@@ -470,7 +503,8 @@ export async function askArchive(
   console.log(
     `[ask] model=${res.model} shape=${shape} citas=${r.citations.length} ` +
       `cuerpos=${r.bodiesAvailable} cosecha=${r.harvested}/${r.attempted} ` +
-      `comunicados=${r.earnings.length}`,
+      `comunicados=${r.earnings.length} ledger=${ledger.length} ` +
+      `presiones=${decision?.pressures.length ?? 0}`,
   );
 
   let parsed: {
