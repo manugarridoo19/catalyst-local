@@ -1,6 +1,6 @@
 import { Header } from "@/components/header";
 import { PortfolioTable } from "@/components/portfolio/portfolio-table";
-import { getWatchlist } from "@/lib/db/queries";
+import { getTrades, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import { getQuotesMap } from "@/lib/providers/finnhub";
 
@@ -22,7 +22,10 @@ export const revalidate = 0;
 
 export default async function PortfolioPage() {
   const session = await getSessionId();
-  const rows = await getWatchlist(session).catch(() => []);
+  const [rows, trades] = await Promise.all([
+    getWatchlist(session).catch(() => []),
+    getTrades(session).catch(() => []),
+  ]);
   const symbols = rows.map((r) => r.symbol);
   const quotes = symbols.length
     ? await getQuotesMap(symbols).catch(() => ({}))
@@ -55,6 +58,7 @@ export default async function PortfolioPage() {
               avgCost: r.avgCost,
             }))}
             initialQuotes={quotes}
+            initialTrades={trades}
           />
         </div>
       </main>

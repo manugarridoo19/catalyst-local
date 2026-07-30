@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import {
   addLotToPosition,
   addToWatchlist,
+  getTrades,
   getWatchlist,
+  reduceLotFromPosition,
   removeFromWatchlist,
   setPosition,
 } from "@/lib/db/queries";
@@ -62,10 +64,23 @@ const lotSchema = symbolSchema.extend({
   }),
 });
 
+// Recorte. `shares` positivo también: el signo lo lleva el NOMBRE del
+// campo, no la cifra. Aceptar negativos en `add` habría dejado dos formas
+// de expresar lo mismo y una de ellas se acaba usando por error.
+const sellSchema = symbolSchema.extend({
+  sell: z.object({
+    shares: z.number().finite().positive().max(MAX_SHARES),
+    price: z.number().finite().positive().max(MAX_COST),
+  }),
+});
+
 export async function GET() {
   const session = await ensureSessionCookie();
-  const items = await getWatchlist(session);
-  return NextResponse.json({ items });
+  const [items, trades] = await Promise.all([
+    getWatchlist(session),
+    getTrades(session),
+  ]);
+  return NextResponse.json({ items, trades });
 }
 
 export async function POST(req: Request) {
@@ -114,13 +129,52 @@ export async function PATCH(req: Request) {
         { status: 409 },
       );
     }
-    const items = await getWatchlist(session);
+    const [items, trades] = await Promise.all([
+      getWatchlist(session),
+      getTrades(session),
+    ]);
     return NextResponse.json({
       items,
+      trades,
       position: {
         shares: r.shares,
         avgCost: r.avgCost,
         avgCostUnknown: r.avgCostUnknown,
+      },
+    });
+  }
+
+  const sell = sellSchema.safeParse(body);
+  if (sell.success) {
+    const r = await reduceLotFromPosition(session, sell.data.symbol, sell.data.sell);
+    if (r.status === "not_found") {
+      return NextResponse.json({ error: "not_in_watchlist" }, { status: 404 });
+    }
+    if (r.status === "invalid") {
+      // 422 y no 400: la petición está bien formada, lo que no cuadra es el
+      // ESTADO (vender 10 de una posición de 3). El cliente necesita saber
+      // que el problema es el saldo y cuánto hay, para poder corregirlo.
+      return NextResponse.json(
+        { error: r.reason, shares: r.shares },
+        { status: 422 },
+      );
+    }
+    if (r.status === "conflict") {
+      const items = await getWatchlist(session);
+      return NextResponse.json({ error: "stale_position", items }, { status: 409 });
+    }
+    const [items, trades] = await Promise.all([
+      getWatchlist(session),
+      getTrades(session),
+    ]);
+    return NextResponse.json({
+      items,
+      trades,
+      position: {
+        shares: r.shares,
+        avgCost: r.avgCost,
+        realized: r.realized,
+        closes: r.closes,
       },
     });
   }
@@ -137,8 +191,11 @@ export async function PATCH(req: Request) {
   if (!ok) {
     return NextResponse.json({ error: "not_in_watchlist" }, { status: 404 });
   }
-  const items = await getWatchlist(session);
-  return NextResponse.json({ items });
+  const [items, trades] = await Promise.all([
+    getWatchlist(session),
+    getTrades(session),
+  ]);
+  return NextResponse.json({ items, trades });
 }
 
 export async function DELETE(req: Request) {

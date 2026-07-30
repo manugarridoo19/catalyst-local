@@ -159,6 +159,63 @@ export function addToPosition(
   return { shares, avgCost, avgCostUnknown: false };
 }
 
+export type PositionAfterSale =
+  | {
+      ok: true;
+      shares: number;
+      /** El coste medio NO cambia al vender. Ver la nota de abajo. */
+      avgCost: number | null;
+      /** Ganancia o pérdida REALIZADA en esta venta. `null` si el coste
+       *  medio no se conocía: sin él no hay nada contra lo que medirla. */
+      realized: number | null;
+      /** true si esta venta cierra la posición por completo. */
+      closes: boolean;
+    }
+  | { ok: false; reason: "sin_posicion" | "excede" };
+
+/**
+ * Posición resultante de recortar (vender parte o todo).
+ *
+ * LA REGLA QUE MÁS SE INCUMPLE A MANO: **vender NO mueve el coste medio**.
+ * Es intuitivo pensar que si vendes caro "subes tu precio medio", y es
+ * falso: el coste medio es lo que pagaste por acción, y las acciones que
+ * te quedan las pagaste exactamente igual que antes de vender. Lo que la
+ * venta produce es P&L REALIZADO, que es otra magnitud y vive en otro
+ * sitio (el diario de operaciones).
+ *
+ * Mover el coste medio al vender contamina hacia adelante todo lo que
+ * cuelga de él: el P&L no realizado de lo que queda, y desde el modo
+ * decisión de /ask, la plusvalía que se le enseña al modelo.
+ *
+ * El P&L realizado se calcula CONTRA EL COSTE MEDIO DEL MOMENTO y se
+ * archiva. Recalcularlo más tarde daría otro número, porque una compra
+ * posterior habrá movido la media — y esa diferencia no sería una
+ * corrección, sería una falsificación de lo que ganaste ese día.
+ */
+export function reducePosition(
+  current: { shares: number | null; avgCost: number | null },
+  lot: Lot,
+): PositionAfterSale {
+  const prev = current.shares ?? 0;
+  if (prev <= 0) return { ok: false, reason: "sin_posicion" };
+  // Tolerancia de una millonésima de acción: con posiciones fraccionarias
+  // (2,387774594078319 acciones) "vender todo" tecleado a mano nunca cuadra
+  // al bit, y rechazar una venta por 1e-12 sería absurdo.
+  if (lot.shares > prev + 1e-9) return { ok: false, reason: "excede" };
+
+  const sold = Math.min(lot.shares, prev);
+  const shares = prev - sold;
+  const closes = shares <= 1e-9;
+  return {
+    ok: true,
+    shares: closes ? 0 : shares,
+    avgCost: current.avgCost,
+    realized:
+      current.avgCost !== null ? sold * (lot.price - current.avgCost) : null,
+    closes,
+  };
+}
+
 function isLive(p: Position): p is Position & { shares: number } {
   return p.shares !== null && p.shares > 0;
 }

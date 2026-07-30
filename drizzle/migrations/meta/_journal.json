@@ -169,6 +169,13 @@
       "when": 1785340218425,
       "tag": "0023_silky_synch",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785429780450,
+      "tag": "0024_known_captain_cross",
+      "breakpoints": true
     }
   ]
 }

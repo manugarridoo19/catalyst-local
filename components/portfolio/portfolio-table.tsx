@@ -2,14 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Loader2, Pencil, Plus, X } from "lucide-react";
+import { Loader2, Minus, Pencil, Plus, X } from "lucide-react";
 import {
   addToPosition,
   buildPortfolio,
+  reducePosition,
   sharesFromAmount,
   type PricedPosition,
   type QuoteLike,
 } from "@/lib/portfolio";
+// Type-only: se borra al compilar, así que este componente de cliente NO
+// arrastra `lib/db` al bundle. Mismo patrón que `AskResponse` en /ask.
+import type { PositionTrade } from "@/lib/db/queries";
 import { cn } from "@/lib/utils";
 
 // Tabla de cartera. Toda la aritmética sale de `buildPortfolio`, la MISMA
@@ -39,14 +43,18 @@ type SortKey = "weight" | "today" | "pnl" | "symbol";
 export function PortfolioTable({
   initialItems,
   initialQuotes,
+  initialTrades,
 }: {
   initialItems: PortfolioItem[];
   initialQuotes: QuotesMap;
+  initialTrades: PositionTrade[];
 }) {
   const [items, setItems] = useState(initialItems);
   const [quotes, setQuotes] = useState<QuotesMap>(initialQuotes);
+  const [trades, setTrades] = useState(initialTrades);
   const [editing, setEditing] = useState<string | null>(null);
   const [buying, setBuying] = useState<string | null>(null);
+  const [selling, setSelling] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [sort, setSort] = useState<SortKey>("weight");
 
@@ -220,6 +228,8 @@ export function PortfolioTable({
                   item={bySymbol.get(pos.symbol)}
                   editing={editing === pos.symbol}
                   buying={buying === pos.symbol}
+                  selling={selling === pos.symbol}
+                  trades={trades.filter((t) => t.symbol === pos.symbol)}
                   price={quotes[pos.symbol]?.price ?? null}
                   // Los dos formularios se excluyen: abrir uno cierra el
                   // otro. Tenerlos abiertos a la vez sobre la misma fila
@@ -227,14 +237,22 @@ export function PortfolioTable({
                   // compra y el otro sobrescribe la posición entera.
                   onToggleEdit={() => {
                     setBuying(null);
+                    setSelling(null);
                     setEditing((cur) => (cur === pos.symbol ? null : pos.symbol));
                   }}
                   onToggleBuy={() => {
                     setEditing(null);
+                    setSelling(null);
                     setBuying((cur) => (cur === pos.symbol ? null : pos.symbol));
                   }}
-                  onSaved={(next) => {
+                  onToggleSell={() => {
+                    setEditing(null);
+                    setBuying(null);
+                    setSelling((cur) => (cur === pos.symbol ? null : pos.symbol));
+                  }}
+                  onSaved={(next, nextTrades) => {
                     setItems(next);
+                    if (nextTrades) setTrades(nextTrades);
                     setEditing(null);
                   }}
                 />
@@ -378,19 +396,25 @@ function Row({
   item,
   editing,
   buying,
+  selling,
+  trades,
   price,
   onToggleEdit,
   onToggleBuy,
+  onToggleSell,
   onSaved,
 }: {
   pos: PricedPosition;
   item: PortfolioItem | undefined;
   editing: boolean;
   buying: boolean;
+  selling: boolean;
+  trades: PositionTrade[];
   price: number | null;
   onToggleEdit: () => void;
   onToggleBuy: () => void;
-  onSaved: (items: PortfolioItem[]) => void;
+  onToggleSell: () => void;
+  onSaved: (items: PortfolioItem[], trades?: PositionTrade[]) => void;
 }) {
   return (
     <>
@@ -448,6 +472,18 @@ function Row({
           </button>
           <button
             type="button"
+            onClick={onToggleSell}
+            aria-label={`Recortar posición de ${pos.symbol}`}
+            title="He vendido"
+            className={cn(
+              "rounded-sm p-1 text-muted-foreground/50 transition-colors hover:text-rose-700 dark:hover:text-rose-300",
+              selling && "text-rose-700 dark:text-rose-300",
+            )}
+          >
+            <Minus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
             onClick={onToggleEdit}
             aria-label={`Editar posición de ${pos.symbol}`}
             title="Corregir la posición registrada"
@@ -460,6 +496,28 @@ function Row({
           </button>
         </td>
       </tr>
+      {selling && item ? (
+        <tr>
+          <td colSpan={11} className="px-2 pb-3">
+            <SellSome
+              item={item}
+              price={price}
+              onSaved={onSaved}
+              onCancel={onToggleSell}
+            />
+          </td>
+        </tr>
+      ) : null}
+      {/* El diario acompaña a cualquiera de los dos formularios abiertos:
+          decidir cuánto comprar o vender se hace mirando lo que ya hiciste,
+          no de memoria. */}
+      {(buying || selling) && trades.length ? (
+        <tr>
+          <td colSpan={11} className="px-2 pb-3">
+            <TradeLog trades={trades} />
+          </td>
+        </tr>
+      ) : null}
       {buying && item ? (
         <tr>
           <td colSpan={11} className="px-2 pb-3">
@@ -485,6 +543,268 @@ function Row({
         </tr>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Recortar: vender parte (o todo) y ver lo que realizas ANTES de confirmar.
+ *
+ * La previsualización enseña el P&L realizado porque es el número que no
+ * está en ninguna otra pantalla y el que de verdad decide si vendes hoy o
+ * mañana. Y enseña que el coste medio NO se mueve, que es lo que casi todo
+ * el mundo espera que pase y no pasa.
+ */
+function SellSome({
+  item,
+  price,
+  onSaved,
+  onCancel,
+}: {
+  item: PortfolioItem;
+  price: number | null;
+  onSaved: (items: PortfolioItem[], trades?: PositionTrade[]) => void;
+  onCancel: () => void;
+}) {
+  const [qty, setQty] = useState("");
+  const [sellPrice, setSellPrice] = useState(price?.toString() ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const parsedPrice = num(sellPrice);
+  const parsedQty = num(qty);
+  const held = item.shares ?? 0;
+
+  const preview =
+    parsedQty !== null && parsedQty > 0 && parsedPrice !== null
+      ? reducePosition(item, { shares: parsedQty, price: parsedPrice })
+      : null;
+
+  async function save() {
+    if (saving) return;
+    if (parsedQty === null || parsedQty <= 0 || parsedPrice === null) {
+      setErr("Hacen falta las acciones vendidas y el precio");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/watchlist", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: item.symbol,
+          sell: { shares: parsedQty, price: parsedPrice },
+        }),
+      });
+      const data = (await r.json().catch(() => ({}))) as {
+        items?: PortfolioItem[];
+        trades?: PositionTrade[];
+        error?: string;
+        shares?: number | null;
+      };
+      if (r.status === 422) {
+        setErr(
+          data.error === "excede"
+            ? `Sólo tienes ${fmtShares(data.shares ?? 0)} acciones`
+            : "No hay posición que recortar",
+        );
+        return;
+      }
+      if (r.status === 409) {
+        if (data.items) onSaved(data.items, data.trades);
+        setErr("La posición cambió en otro sitio. Revisa el dato y repite.");
+        return;
+      }
+      if (!r.ok || !data.items) {
+        setErr("No se pudo registrar la venta");
+        return;
+      }
+      onSaved(data.items, data.trades);
+      onCancel();
+    } catch {
+      setErr("Error de red");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") void save();
+    if (e.key === "Escape") onCancel();
+  };
+
+  return (
+    <div className="rounded-sm border border-rose-600/30 bg-rose-500/[0.04] px-3 py-2.5">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-rose-700/80 dark:text-rose-300/80">
+          {item.symbol} · he vendido
+        </span>
+        <button
+          type="button"
+          onClick={() => setQty(String(held))}
+          className="rounded-sm border border-border/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground"
+          title="Vender la posición entera"
+        >
+          todo ({fmtShares(held)})
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Field
+          label="acciones vendidas"
+          value={qty}
+          onChange={setQty}
+          onKeyDown={onKey}
+          autoFocus
+        />
+        <Field
+          label="precio de venta"
+          value={sellPrice}
+          onChange={setSellPrice}
+          onKeyDown={onKey}
+        />
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving || !preview?.ok}
+          className="rounded-sm border border-rose-600/50 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 transition-colors hover:bg-rose-500/10 disabled:opacity-40 dark:text-rose-300"
+        >
+          {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "vender"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-sm border border-border/50 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          cancelar
+        </button>
+      </div>
+
+      <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground/70">
+        {err ? (
+          <span className="text-rose-700 dark:text-rose-300">{err}</span>
+        ) : preview?.ok ? (
+          <>
+            <span className="text-foreground/80">
+              {fmtShares(held)} → {fmtShares(preview.shares)} acciones
+            </span>
+            {preview.closes ? (
+              <span className="text-amber-700 dark:text-amber-300">
+                {" "}
+                · cierra la posición (sigue en seguimiento)
+              </span>
+            ) : null}
+            {" · realizas "}
+            {preview.realized === null ? (
+              <span className="text-amber-700 dark:text-amber-300">
+                un importe desconocido: esta posición no tiene coste registrado
+              </span>
+            ) : (
+              <span
+                className={
+                  preview.realized >= 0
+                    ? "text-emerald-700 dark:text-emerald-300"
+                    : "text-rose-700 dark:text-rose-300"
+                }
+              >
+                {signedMoney(preview.realized)}
+              </span>
+            )}
+            <span className="text-muted-foreground/50">
+              {" "}
+              · el coste medio no cambia al vender
+            </span>
+          </>
+        ) : preview && !preview.ok ? (
+          <span className="text-rose-700 dark:text-rose-300">
+            {preview.reason === "excede"
+              ? `Sólo tienes ${fmtShares(held)} acciones`
+              : "No hay posición que recortar"}
+          </span>
+        ) : (
+          "acciones + precio · Enter guarda · Esc cancela"
+        )}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Diario de operaciones de un símbolo. Sólo lectura.
+ *
+ * Es append-only y NO es la fuente de verdad de la posición (lo es
+ * `watchlist.shares`/`avg_cost`): sirve para auditar qué pasó, no para
+ * calcular. Por eso cada línea lleva el estado RESULTANTE — sin él, una
+ * fila suelta no se puede verificar sin reproducir todo el historial.
+ */
+function TradeLog({ trades }: { trades: PositionTrade[] }) {
+  if (!trades.length) {
+    return (
+      <p className="px-1 py-2 font-mono text-[10px] text-muted-foreground/50">
+        Sin operaciones registradas. El diario empieza el día que se creó —
+        las posiciones anteriores no tienen historia que enseñar.
+      </p>
+    );
+  }
+  const realizado = trades.reduce((acc, t) => acc + (t.realizedPnl ?? 0), 0);
+  const alguno = trades.some((t) => t.realizedPnl !== null);
+
+  return (
+    <div className="rounded-sm border border-border/50 bg-background/40 px-3 py-2">
+      <div className="mb-1.5 flex items-baseline justify-between">
+        <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-muted-foreground/50">
+          diario de operaciones
+        </span>
+        {alguno ? (
+          <span className="font-mono text-[10px] text-muted-foreground">
+            realizado:{" "}
+            <span className={toneClass(realizado)}>{signedMoney(realizado)}</span>
+          </span>
+        ) : null}
+      </div>
+      <ul className="flex flex-col gap-0.5">
+        {trades.map((t) => (
+          <li
+            key={t.id}
+            className="flex flex-wrap items-baseline gap-x-2 font-mono text-[10.5px] text-muted-foreground"
+          >
+            <span className="text-muted-foreground/50">
+              {t.createdAt.slice(0, 10)}
+            </span>
+            <span
+              className={cn(
+                "w-[4.5rem] uppercase tracking-[0.1em]",
+                t.side === "buy"
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : t.side === "sell"
+                    ? "text-rose-700 dark:text-rose-300"
+                    : "text-muted-foreground/60",
+              )}
+            >
+              {t.side === "buy"
+                ? "compra"
+                : t.side === "sell"
+                  ? "venta"
+                  : "ajuste"}
+            </span>
+            <span className="text-foreground/80">
+              {t.shares !== null && t.price !== null
+                ? `${fmtShares(t.shares)} @ ${money(t.price)}`
+                : "corrección a mano"}
+            </span>
+            {t.realizedPnl !== null ? (
+              <span className={toneClass(t.realizedPnl)}>
+                realiza {signedMoney(t.realizedPnl)}
+              </span>
+            ) : null}
+            <span className="text-muted-foreground/45">
+              → {fmtShares(t.sharesAfter ?? 0)} acc.
+              {t.avgCostAfter !== null ? ` · medio ${money(t.avgCostAfter)}` : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

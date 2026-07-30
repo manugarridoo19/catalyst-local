@@ -15,7 +15,7 @@ import type {
   SentimentScore,
 } from "@/lib/types";
 import { categorizeHeuristic, type NewsCategory } from "@/lib/categorizer";
-import { addToPosition } from "@/lib/portfolio";
+import { addToPosition, reducePosition } from "@/lib/portfolio";
 
 // IN-list para `news.category` reutilizado por live feed y News tab. Toma
 // un array de categorías + una flag `allowNull` (incluye filas sin
@@ -436,14 +436,33 @@ export async function setPosition(
   shares: number | null,
   avgCost: number | null,
 ): Promise<boolean> {
-  const res = await db
-    .update(watchlist)
-    .set({ shares, avgCost })
-    .where(
-      and(eq(watchlist.userSession, session), eq(watchlist.symbol, symbol)),
-    )
-    .returning({ symbol: watchlist.symbol });
-  return res.length > 0;
+  // Se anota como `adjust` en el diario. Sin esto el historial mentiría por
+  // OMISIÓN: las acciones saltarían de una fila a otra sin operación que lo
+  // explique y el lector supondría que falta una compra. Una corrección no
+  // lleva cantidad ni precio (no es una compra ni una venta, es un estado
+  // nuevo declarado a mano), y por eso `shares`/`price` van a null.
+  //
+  // A diferencia de comprar y vender, aquí NO hay guarda optimista: el
+  // editor manda valores absolutos ("déjalo exactamente así"), que es una
+  // orden deliberada del usuario y debe ganar sobre lo que hubiera. El CTE
+  // sigue siendo necesario por la atomicidad entre posición y diario.
+  const rows = unwrapRows<{ id: number }>(
+    await db.execute(sql`
+      WITH upd AS (
+        UPDATE watchlist SET shares = ${shares}, avg_cost = ${avgCost}
+         WHERE user_session = ${session} AND symbol = ${symbol}
+        RETURNING id
+      )
+      INSERT INTO position_trades
+        (user_session, symbol, side, shares, price, realized_pnl,
+         shares_after, avg_cost_after)
+      SELECT ${session}, ${symbol}, 'adjust', NULL, NULL, NULL,
+             ${shares}, ${avgCost}
+      FROM upd
+      RETURNING id
+    `),
+  );
+  return rows.length > 0;
 }
 
 /**
@@ -472,33 +491,161 @@ export async function addLotToPosition(
   | { status: "not_found" }
   | { status: "conflict" }
 > {
+  const row = await readPosition(session, symbol);
+  if (!row) return { status: "not_found" };
+
+  const next = addToPosition(row, lot);
+  const written = await commitPosition(session, symbol, row, {
+    shares: next.shares,
+    avgCost: next.avgCost,
+    side: "buy",
+    lotShares: lot.shares,
+    lotPrice: lot.price,
+    realized: null,
+  });
+  if (!written) return { status: "conflict" };
+  return { status: "ok", ...next };
+}
+
+/**
+ * Recorta una posición vendiendo parte (o todo) y archiva el P&L realizado.
+ */
+export async function reduceLotFromPosition(
+  session: string,
+  symbol: string,
+  lot: { shares: number; price: number },
+): Promise<
+  | {
+      status: "ok";
+      shares: number;
+      avgCost: number | null;
+      realized: number | null;
+      closes: boolean;
+    }
+  | { status: "not_found" }
+  | { status: "conflict" }
+  | { status: "invalid"; reason: "sin_posicion" | "excede"; shares: number | null }
+> {
+  const row = await readPosition(session, symbol);
+  if (!row) return { status: "not_found" };
+
+  const next = reducePosition(row, lot);
+  if (!next.ok) return { status: "invalid", reason: next.reason, shares: row.shares };
+
+  const written = await commitPosition(session, symbol, row, {
+    shares: next.shares,
+    avgCost: next.avgCost,
+    side: "sell",
+    lotShares: lot.shares,
+    lotPrice: lot.price,
+    realized: next.realized,
+  });
+  if (!written) return { status: "conflict" };
+  return {
+    status: "ok",
+    shares: next.shares,
+    avgCost: next.avgCost,
+    realized: next.realized,
+    closes: next.closes,
+  };
+}
+
+async function readPosition(
+  session: string,
+  symbol: string,
+): Promise<{ shares: number | null; avgCost: number | null } | null> {
   const [row] = await db
     .select({ shares: watchlist.shares, avgCost: watchlist.avgCost })
     .from(watchlist)
     .where(and(eq(watchlist.userSession, session), eq(watchlist.symbol, symbol)))
     .limit(1);
-  if (!row) return { status: "not_found" };
+  return row ?? null;
+}
 
-  const next = addToPosition(row, lot);
+/**
+ * Escribe la posición nueva Y su línea de diario en UNA sola sentencia.
+ *
+ * El CTE no es lucimiento: `/api/watchlist` corre en el Worker y ahí está
+ * PROHIBIDO el driver Pool (`createTxDb`), así que no hay transacción
+ * interactiva disponible. Con dos sentencias sueltas, un fallo entre medias
+ * deja la posición movida sin línea en el diario —o al revés—, y un diario
+ * que no cuadra con la posición es peor que no tener diario: invita a
+ * confiar en él. Un único statement es atómico por definición.
+ *
+ * La GUARDA sigue en el WHERE del UPDATE: si la fila cambió entre la
+ * lectura y esto, el CTE no devuelve nada, el INSERT no inserta y la
+ * llamada responde `conflict`. `IS NOT DISTINCT FROM` y no `=` porque los
+ * dos campos son NULLABLE y con `=` una fila sin coste registrado no
+ * casaría NUNCA consigo misma — el refuerzo fallaría siempre justo en el
+ * caso que ya es el raro.
+ */
+async function commitPosition(
+  session: string,
+  symbol: string,
+  prev: { shares: number | null; avgCost: number | null },
+  next: {
+    shares: number | null;
+    avgCost: number | null;
+    side: "buy" | "sell" | "adjust";
+    lotShares: number | null;
+    lotPrice: number | null;
+    realized: number | null;
+  },
+): Promise<boolean> {
+  const rows = unwrapRows<{ id: number }>(
+    await db.execute(sql`
+      WITH upd AS (
+        UPDATE watchlist
+           SET shares = ${next.shares}, avg_cost = ${next.avgCost}
+         WHERE user_session = ${session}
+           AND symbol = ${symbol}
+           AND shares IS NOT DISTINCT FROM ${prev.shares}
+           AND avg_cost IS NOT DISTINCT FROM ${prev.avgCost}
+        RETURNING id
+      )
+      INSERT INTO position_trades
+        (user_session, symbol, side, shares, price, realized_pnl,
+         shares_after, avg_cost_after)
+      SELECT ${session}, ${symbol}, ${next.side}, ${next.lotShares},
+             ${next.lotPrice}, ${next.realized}, ${next.shares}, ${next.avgCost}
+      FROM upd
+      RETURNING id
+    `),
+  );
+  return rows.length > 0;
+}
 
-  const res = await db
-    .update(watchlist)
-    .set({ shares: next.shares, avgCost: next.avgCost })
-    .where(
-      and(
-        eq(watchlist.userSession, session),
-        eq(watchlist.symbol, symbol),
-        // `IS NOT DISTINCT FROM` y no `=`: los dos campos son NULLABLE y con
-        // `=` una fila sin coste registrado nunca casaría consigo misma, así
-        // que el refuerzo fallaría siempre justo en el caso que ya es raro.
-        sql`${watchlist.shares} IS NOT DISTINCT FROM ${row.shares}`,
-        sql`${watchlist.avgCost} IS NOT DISTINCT FROM ${row.avgCost}`,
-      ),
-    )
-    .returning({ symbol: watchlist.symbol });
-  if (!res.length) return { status: "conflict" };
+export type PositionTrade = {
+  id: number;
+  symbol: string;
+  side: "buy" | "sell" | "adjust";
+  shares: number | null;
+  price: number | null;
+  realizedPnl: number | null;
+  sharesAfter: number | null;
+  avgCostAfter: number | null;
+  createdAt: string;
+};
 
-  return { status: "ok", ...next };
+/** El diario de la sesión, lo último primero. Acotado porque se pinta
+ *  entero: quien quiera contabilidad completa exporta, no scrollea. */
+export async function getTrades(
+  session: string,
+  limit = 200,
+): Promise<PositionTrade[]> {
+  return unwrapRows<PositionTrade>(
+    await db.execute(sql`
+      SELECT id, symbol, side, shares, price,
+             realized_pnl AS "realizedPnl",
+             shares_after AS "sharesAfter",
+             avg_cost_after AS "avgCostAfter",
+             to_char(created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "createdAt"
+      FROM position_trades
+      WHERE user_session = ${session}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${limit}
+    `),
+  );
 }
 
 export async function addToWatchlist(session: string, symbol: string) {

@@ -187,6 +187,61 @@ export const watchlist = pgTable(
   ],
 );
 
+/**
+ * Registro de operaciones sobre una posición. APPEND-ONLY.
+ *
+ * NO es la fuente de verdad de la posición y no debe llegar a serlo:
+ * `watchlist.shares` / `avg_cost` siguen siendo la forma canónica porque
+ * ~8 consumidores leen de ahí (rail, tabla, /ask, revisión, prewarm…), y
+ * derivar el estado sumando el log obligaría a recorrerlo entero en cada
+ * lectura. Esto es el DIARIO: qué pasó, cuándo, y cómo quedó la posición
+ * después. Sirve para auditar, no para calcular.
+ *
+ * Se guarda el estado RESULTANTE (`shares_after` / `avg_cost_after`) y no
+ * sólo la operación: el coste medio de una compra depende de cuál era el
+ * anterior, así que sin la foto de después una fila suelta no se puede
+ * verificar sin reproducir todo el historial — y el historial empieza el
+ * día que se creó esta tabla, con posiciones que ya existían.
+ *
+ * `realized_pnl` sólo lo llevan las ventas, y sólo cuando el coste medio
+ * era conocido: es `acciones × (precio_venta − coste_medio)` calculado EN
+ * EL MOMENTO de vender, que es la única forma de que siga siendo cierto
+ * después. Recalcularlo más tarde contra el coste medio de hoy daría otro
+ * número, porque una compra posterior lo habrá movido.
+ */
+export const positionTrades = pgTable(
+  "position_trades",
+  {
+    id: serial("id").primaryKey(),
+    userSession: text("user_session").notNull(),
+    symbol: text("symbol").notNull(),
+    /** buy = refuerzo · sell = recorte · adjust = corrección a mano.
+     *  `adjust` está para que el diario no MIENTA por omisión: sin él, las
+     *  acciones saltarían entre dos filas sin explicación y el lector
+     *  supondría que falta una operación. */
+    side: text("side").notNull(),
+    /** Acciones de ESTA operación. En `adjust` es null: una corrección no
+     *  es una cantidad comprada ni vendida, es un estado nuevo. */
+    shares: doublePrecision("shares"),
+    /** Precio de ejecución. Null en `adjust`. */
+    price: doublePrecision("price"),
+    realizedPnl: doublePrecision("realized_pnl"),
+    sharesAfter: doublePrecision("shares_after"),
+    avgCostAfter: doublePrecision("avg_cost_after"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // El diario se lee SIEMPRE por (sesión, símbolo) y en orden inverso.
+    index("position_trades_session_symbol_idx").on(
+      t.userSession,
+      t.symbol,
+      t.createdAt,
+    ),
+  ],
+);
+
 // Snapshot del último precio por ticker (poll cada N min para SSR rápido).
 export const quotesCache = pgTable("quotes_cache", {
   symbol: text("symbol")

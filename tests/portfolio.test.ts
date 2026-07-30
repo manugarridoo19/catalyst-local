@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addToPosition,
+  reducePosition,
   CONCENTRATION,
   buildPortfolio,
   concentrationFlags,
@@ -400,5 +401,79 @@ describe("addToPosition — reforzar una posición", () => {
     expect(r.shares).toBeCloseTo(2.887774594078319, 9);
     expect(r.avgCost!).toBeGreaterThan(376.92);
     expect(r.avgCost!).toBeLessThan(445);
+  });
+});
+
+describe("reducePosition — recortar una posición", () => {
+  it("vender NO mueve el coste medio", () => {
+    // La regla que más se incumple a mano. Vendes caro y "tu precio medio
+    // sube" es falso: las acciones que te quedan las pagaste igual que
+    // antes. Lo que produce la venta es P&L REALIZADO, otra magnitud.
+    const r = reducePosition({ shares: 100, avgCost: 300 }, { shares: 30, price: 500 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.shares).toBe(70);
+    expect(r.avgCost).toBe(300);
+    expect(r.realized).toBeCloseTo(30 * 200, 6);
+    expect(r.closes).toBe(false);
+  });
+
+  it("una venta en pérdidas realiza un número negativo", () => {
+    const r = reducePosition({ shares: 10, avgCost: 100 }, { shares: 4, price: 75 });
+    if (!r.ok) throw new Error("debería poder venderse");
+    expect(r.realized).toBeCloseTo(-100, 6);
+  });
+
+  it("vender TODO cierra la posición y la deja en 0, no en null", () => {
+    // 0 y null significan cosas distintas en este esquema: 0 = cerrada
+    // pero vigilada, null = nunca se tuvo. Una venta total es lo primero.
+    const r = reducePosition({ shares: 50, avgCost: 20 }, { shares: 50, price: 25 });
+    if (!r.ok) throw new Error("debería poder venderse");
+    expect(r.shares).toBe(0);
+    expect(r.closes).toBe(true);
+    expect(r.realized).toBeCloseTo(250, 6);
+  });
+
+  it("no deja vender más de lo que hay", () => {
+    const r = reducePosition({ shares: 3, avgCost: 10 }, { shares: 10, price: 12 });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe("excede");
+  });
+
+  it("no deja vender lo que no se tiene", () => {
+    expect(reducePosition({ shares: null, avgCost: null }, { shares: 1, price: 5 }).ok).toBe(false);
+    expect(reducePosition({ shares: 0, avgCost: 10 }, { shares: 1, price: 5 }).ok).toBe(false);
+  });
+
+  it("tolera el redondeo al vender una posición fraccionaria entera", () => {
+    // Teclear "2.3877745" para vender 2.387774594078319 no debe rebotar por
+    // una millonésima de acción.
+    const r = reducePosition(
+      { shares: 2.387774594078319, avgCost: 376.92 },
+      { shares: 2.3877745940783194, price: 445 },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.shares).toBe(0);
+    expect(r.closes).toBe(true);
+  });
+
+  it("sin coste registrado se vende igual, pero el realizado es desconocido", () => {
+    // Se puede vender sin saber a cuánto entraste; lo que no se puede es
+    // inventar cuánto ganaste. `null` y no 0: cero sería una afirmación.
+    const r = reducePosition({ shares: 10, avgCost: null }, { shares: 4, price: 50 });
+    if (!r.ok) throw new Error("debería poder venderse");
+    expect(r.shares).toBe(6);
+    expect(r.realized).toBeNull();
+  });
+
+  it("comprar después de vender promedia sobre el coste que NO cambió", () => {
+    const sold = reducePosition({ shares: 100, avgCost: 300 }, { shares: 50, price: 500 });
+    if (!sold.ok) throw new Error("debería poder venderse");
+    const back = addToPosition(sold, { shares: 50, price: 400 });
+    // 50 acciones a 300 + 50 a 400 = 350. Si la venta hubiera movido la
+    // media, este número saldría mal y nadie lo notaría.
+    expect(back.avgCost!).toBeCloseTo(350, 6);
   });
 });
