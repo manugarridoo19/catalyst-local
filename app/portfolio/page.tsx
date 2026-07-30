@@ -4,7 +4,7 @@ import { CoachPanel } from "@/components/portfolio/coach-panel";
 import { getTrades, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import { getQuotesMap } from "@/lib/providers/finnhub";
-import { isFrame } from "@/lib/coach/frames";
+import { parseAxes } from "@/lib/coach/frames";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -58,11 +58,15 @@ export default async function PortfolioPage() {
               logoUrl: null,
               shares: r.shares,
               avgCost: r.avgCost,
-              // El marco viene de BD sin validar contra la unión: la columna
-              // es `text` y un valor viejo o escrito a mano no debe romper la
-              // página. `isFrame` lo degrada a `null`, que la UI ya sabe
-              // pintar como "sin marco".
-              frame: isFrame(r.frame) ? r.frame : null,
+              // Los ejes vienen de BD sin validar: son columnas `text` y un
+              // valor viejo o a medias no debe romper la página. `parseAxes`
+              // exige los TRES y degrada a `null`, que la UI ya sabe pintar
+              // como "sin clasificar".
+              axes: parseAxes({
+                madurez: r.frameMadurez,
+                capital: r.frameCapital,
+                ciclo: r.frameCiclo,
+              }),
             }))}
             initialQuotes={quotes}
             initialTrades={trades}

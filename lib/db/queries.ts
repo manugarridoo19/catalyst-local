@@ -409,7 +409,9 @@ export async function getWatchlist(session: string) {
       sector: tickers.sector,
       shares: watchlist.shares,
       avgCost: watchlist.avgCost,
-      frame: watchlist.frame,
+      frameMadurez: watchlist.frameMadurez,
+      frameCapital: watchlist.frameCapital,
+      frameCiclo: watchlist.frameCiclo,
     })
     .from(watchlist)
     .leftJoin(tickers, eq(tickers.symbol, watchlist.symbol))
@@ -575,19 +577,24 @@ export async function reduceLotFromPosition(
  * en el diario de otro.
  */
 /**
- * Declara qué CLASE de empresa es una posición. Ver `lib/coach/frames.ts`.
+ * Declara qué CLASE de empresa es una posición, en los tres ejes. Ver
+ * `lib/coach/frames.ts`.
  *
- * `null` la deja sin marco, que es un estado legítimo: no saber todavía qué
- * clase de empresa tienes es honesto, y el coach lo dice en vez de leerla
- * con un marco supuesto.
+ * Los tres a la vez y nunca uno suelto: `parseAxes` exige los tres para
+ * leer, así que dejar uno a medias dejaría la posición clasificada a ojos
+ * del usuario e ilegible para el coach. Pasar `null` en los tres la
+ * devuelve a "sin clasificar", que es un estado legítimo.
  */
-export async function setFrame(
+export async function setAxes(
   session: string,
   symbol: string,
-  frame: string | null,
+  axes: { madurez: string; capital: string; ciclo: string } | null,
 ): Promise<boolean> {
   const res = await db.execute(sql`
-    UPDATE watchlist SET frame = ${frame}
+    UPDATE watchlist
+       SET frame_madurez = ${axes?.madurez ?? null},
+           frame_capital = ${axes?.capital ?? null},
+           frame_ciclo   = ${axes?.ciclo ?? null}
      WHERE user_session = ${session} AND symbol = ${symbol}
   `);
   return (res as { rowCount?: number }).rowCount === 1;

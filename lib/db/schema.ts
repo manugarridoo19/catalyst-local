@@ -177,19 +177,27 @@ export const watchlist = pgTable(
      *  algo europeo hay que añadir divisa antes de fiarse del agregado. */
     avgCost: doublePrecision("avg_cost"),
     /**
-     * Qué CLASE de empresa crees que es: 'power_play' | 'compounder' |
-     * 'turnaround' | 'ciclica'. Ver `lib/coach/frames.ts`.
+     * Qué CLASE de empresa crees que es, en TRES EJES ortogonales. Ver
+     * `lib/coach/frames.ts`.
      *
-     * Va en la POSICIÓN y no en la operación porque el marco pertenece a la
+     * Van en la POSICIÓN y no en la operación porque esto pertenece a la
      * empresa, no a cada compra suelta: si reforzaras META tres veces, las
      * tres serían la misma apuesta sobre la misma clase de negocio.
      *
-     * Es lo que decide si una señal es ruido o es mortal — el mismo capex
-     * disparado es la tesis ejecutándose en una power play y una tesis rota
-     * en un compounder. NULLABLE porque no se puede inventar: sin marco, el
-     * coach dice que no puede leerlo, que es preferible a leerlo al revés.
+     * TRES COLUMNAS Y NO UNA ETIQUETA, y el porqué está medido: la primera
+     * versión tenía cuatro marcos fijos y se rompió a las dos posiciones de
+     * una cartera real de siete. META es un "compounder defensivo de capital
+     * intensivo con ciclicidad exógena" — tres rasgos que ninguna etiqueta
+     * contiene, y forzarla a `power_play` marcaba su núcleo como MORTAL:
+     * la próxima recesión publicitaria habría disparado "tesis rota" por el
+     * ciclo y no por la empresa.
+     *
+     * NULLABLES las tres, y `parseAxes` exige las TRES para leer: media
+     * clasificación daría media lectura, que es peor que ninguna.
      */
-    frame: text("frame"),
+    frameMadurez: text("frame_madurez"), // cosechando | construyendo | recuperandose
+    frameCapital: text("frame_capital"), // alto | bajo
+    frameCiclo: text("frame_ciclo"), // exogeno | secular
     addedAt: timestamp("added_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

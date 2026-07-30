@@ -1,5 +1,11 @@
 import { proseCompletion } from "@/lib/ai/prose-chain";
-import { FRAME_SPEC, type Attribution, type Frame } from "@/lib/coach/frames";
+import {
+  coreOf,
+  describeAxes,
+  AXIS_HINT,
+  type Attribution,
+  type Axes,
+} from "@/lib/coach/frames";
 
 // Los dos usos de LLM del coach: proponer falsadores y comprobar si se han
 // cumplido. Ninguno de los dos CONCLUYE nada por su cuenta — el primero
@@ -46,7 +52,7 @@ export type ProposedFalsifiers = { falsifiers: string[] };
  */
 export async function proposeFalsifiers(input: {
   symbol: string;
-  frame: Frame;
+  axes: Axes;
   thesis: string;
   /** Lo último que reportó la empresa. Se pasa para que los falsadores usen
    *  las MAGNITUDES REALES del negocio en vez de porcentajes inventados: sin
@@ -54,7 +60,7 @@ export async function proposeFalsifiers(input: {
    *  empresa cuyo margen es del 45%, y ese falsador no se cumple nunca. */
   attributions: Attribution[];
 }): Promise<string[]> {
-  const spec = FRAME_SPEC[input.frame];
+  const a = input.axes;
   const contexto = input.attributions.length
     ? input.attributions
         .map((a) => `- ${a.magnitude} [${a.layer}]`)
@@ -63,8 +69,11 @@ export async function proposeFalsifiers(input: {
 
   const user = [
     `Symbol: ${input.symbol}`,
-    `Declared frame: ${spec.label} — ${spec.hint}`,
-    `For this frame, "the core" means: ${spec.core}`,
+    `Declared profile: ${describeAxes(a)}`,
+    `  · maturity: ${AXIS_HINT.madurez[a.madurez]}`,
+    `  · capital: ${AXIS_HINT.capital[a.capital]}`,
+    `  · cycle: ${AXIS_HINT.ciclo[a.ciclo]}`,
+    `For this profile, "the core" means: ${coreOf(a)}`,
     ``,
     `The investor's thesis, verbatim:`,
     `"""${input.thesis}"""`,

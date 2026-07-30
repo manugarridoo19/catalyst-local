@@ -1,12 +1,13 @@
 import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import {
-  isFrame,
+  coreOf,
+  describeAxes,
   parseAttributions,
+  parseAxes,
   readingOf,
-  FRAME_SPEC,
   type Attribution,
-  type Frame,
+  type Axes,
   type Severity,
 } from "@/lib/coach/frames";
 import { isTradeHorizon, type TradeHorizon } from "@/lib/coach/horizon";
@@ -30,7 +31,7 @@ import { isTradeHorizon, type TradeHorizon } from "@/lib/coach/horizon";
 export type PositionContrast = {
   symbol: string;
   name: string | null;
-  frame: Frame | null;
+  axes: Axes | null;
   frameLabel: string | null;
   /** Lo que el núcleo significa PARA ESTE MARCO. Es la vara contra la que
    *  se lee todo lo demás, así que se enseña. */
@@ -60,7 +61,9 @@ export type PositionContrast = {
 type Row = {
   symbol: string;
   name: string | null;
-  frame: string | null;
+  frame_madurez: string | null;
+  frame_capital: string | null;
+  frame_ciclo: string | null;
   thesis: string | null;
   thesis_at: string | null;
   thesis_horizon: string | null;
@@ -103,7 +106,7 @@ export async function loadContrasts(
           FROM earnings_reports
          ORDER BY symbol, filing_date DESC
       )
-      SELECT w.symbol, t.name, w.frame,
+      SELECT w.symbol, t.name, w.frame_madurez, w.frame_capital, w.frame_ciclo,
              ut.thesis, ut.thesis_at, ut.thesis_horizon, ut.thesis_annotated_later,
              ui.attribution, ui.report_date
         FROM watchlist w
@@ -117,7 +120,11 @@ export async function loadContrasts(
   );
 
   return rows.map((r) => {
-    const frame = isFrame(r.frame) ? r.frame : null;
+    const axes = parseAxes({
+      madurez: r.frame_madurez,
+      capital: r.frame_capital,
+      ciclo: r.frame_ciclo,
+    });
     let attributions: Attribution[] = [];
     if (r.attribution) {
       try {
@@ -130,22 +137,22 @@ export async function loadContrasts(
     }
 
     const missing: PositionContrast["missing"] = [];
-    if (!frame) missing.push("marco");
+    if (!axes) missing.push("marco");
     if (!r.thesis) missing.push("tesis");
     if (!attributions.length) missing.push("comunicado");
 
     return {
       symbol: r.symbol,
       name: r.name,
-      frame,
-      frameLabel: frame ? FRAME_SPEC[frame].label : null,
-      core: frame ? FRAME_SPEC[frame].core : null,
+      axes,
+      frameLabel: axes ? describeAxes(axes) : null,
+      core: axes ? coreOf(axes) : null,
       thesis: r.thesis,
       thesisAt: r.thesis_at,
       thesisHorizon: isTradeHorizon(r.thesis_horizon) ? r.thesis_horizon : null,
       thesisAnnotatedLater: r.thesis_annotated_later === true,
       readings: attributions.map((a) => {
-        const read = readingOf(frame, a.signal, a.layer);
+        const read = readingOf(axes, a.signal, a.layer);
         return { attribution: a, severity: read.severity, note: read.note };
       }),
       reportDate: r.report_date,

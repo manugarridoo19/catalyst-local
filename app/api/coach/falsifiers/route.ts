@@ -90,7 +90,7 @@ export async function POST(req: Request) {
     // Sin marco o sin tesis no se puede proponer nada útil: los falsadores
     // salen DE la tesis y su severidad depende del marco. Es un 422 y no un
     // 400 — la petición está bien formada, lo que falta es el material.
-    if (!target || !target.frame || !target.thesis) {
+    if (!target || !target.axes || !target.thesis) {
       return NextResponse.json(
         {
           error: "sin_material",
@@ -101,7 +101,7 @@ export async function POST(req: Request) {
     }
     const texts = await proposeFalsifiers({
       symbol,
-      frame: target.frame,
+      axes: target.axes,
       thesis: target.thesis,
       attributions: target.readings.map((r) => r.attribution),
     });

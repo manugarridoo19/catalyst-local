@@ -211,6 +211,20 @@
       "when": 1785437493328,
       "tag": "0029_overjoyed_firelord",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1785440701612,
+      "tag": "0030_polite_prowler",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785440751456,
+      "tag": "0031_absurd_komodo",
+      "breakpoints": true
     }
   ]
 }

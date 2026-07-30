@@ -204,7 +204,7 @@ function PositionCard({
             {/* Sin marco, TODAS las lecturas de la tarjeta dicen lo mismo y
                 repetirlo por línea lo convierte en ruido. La explicación
                 sube una vez al pie de la tarjeta. */}
-            {p.frame ? (
+            {p.axes ? (
               <p className="pl-1 font-mono text-[10px] leading-relaxed text-muted-foreground/70">
                 {r.note}
               </p>
@@ -228,7 +228,7 @@ function PositionCard({
 
       <Falsifiers
         symbol={p.symbol}
-        canPropose={!!p.frame && !!p.thesis}
+        canPropose={!!p.axes && !!p.thesis}
         items={falsifiers.filter((f) => f.symbol === p.symbol)}
         onChange={onFalsifiers}
       />

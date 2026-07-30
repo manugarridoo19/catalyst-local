@@ -22,7 +22,20 @@ import {
   HORIZON_LABEL,
   type TradeHorizon,
 } from "@/lib/coach/horizon";
-import { FRAMES, FRAME_SPEC, type Frame } from "@/lib/coach/frames";
+import {
+  AXIS_HINT,
+  AXIS_LABEL,
+  CAPITAL,
+  CICLO,
+  MADUREZ,
+  PRESETS,
+  PRESET_LABEL,
+  PRESET_NAMES,
+  coreOf,
+  describeAxes,
+  parseAxes,
+  type Axes,
+} from "@/lib/coach/frames";
 import { cn } from "@/lib/utils";
 
 // Tabla de cartera. Toda la aritmética sale de `buildPortfolio`, la MISMA
@@ -38,9 +51,9 @@ export type PortfolioItem = {
   logoUrl: string | null;
   shares: number | null;
   avgCost: number | null;
-  /** Qué clase de empresa crees que es. Decide qué señal es ruido y cuál
-   *  es mortal para ESTA posición — ver `lib/coach/frames.ts`. */
-  frame: Frame | null;
+  /** Qué clase de empresa crees que es, en tres ejes. Decide qué señal es
+   *  ruido y cuál es mortal para ESTA posición — ver `lib/coach/frames.ts`. */
+  axes: Axes | null;
 };
 
 type QuotesMap = Record<string, QuoteLike>;
@@ -512,7 +525,7 @@ function Row({
           </div>
           <FramePicker
             symbol={pos.symbol}
-            frame={item?.frame ?? null}
+            axes={item?.axes ?? null}
             onSaved={onItems}
           />
         </td>
@@ -958,35 +971,81 @@ function TradeLog({
   );
 }
 
+/** Una fila de opciones de un eje. A nivel de módulo y NO dentro de
+ *  `FramePicker`: un componente definido en el render se remonta en cada
+ *  pintada, pierde el foco y tira el estado de sus hijos. */
+function EjeRow<K extends keyof Axes>({
+  k,
+  opciones,
+  valor,
+  disabled,
+  onPick,
+}: {
+  k: K;
+  opciones: readonly Axes[K][];
+  valor: Axes[K] | undefined;
+  disabled: boolean;
+  onPick: (v: Axes[K]) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-0.5">
+      {opciones.map((v) => (
+        <button
+          key={String(v)}
+          type="button"
+          onClick={() => onPick(v)}
+          disabled={disabled}
+          title={AXIS_HINT[k][v as never]}
+          className={cn(
+            "rounded-sm border px-1 py-px font-mono text-[8.5px] uppercase tracking-[0.08em] transition-colors disabled:opacity-40",
+            valor === v
+              ? "border-primary/50 text-primary"
+              : "border-border/40 text-muted-foreground/70 hover:text-foreground",
+          )}
+        >
+          {AXIS_LABEL[k][v as never]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /**
- * Qué CLASE de empresa es esta posición.
+ * Qué CLASE de empresa es esta posición, en los TRES EJES.
  *
- * Va en la fila y no en un ajuste escondido porque es la declaración que
- * más cambia lo que el coach te dirá: el mismo capex disparado es la tesis
- * ejecutándose en una power play y una tesis rota en un compounder. Que se
- * vea «sin marco» en ámbar es deliberado — es una casilla vacía que cuesta
- * un clic y desbloquea toda la lectura.
+ * Los cuatro atajos siguen arriba porque nombrar es más rápido que rellenar
+ * tres campos, pero lo que se guarda son los ejes — y por eso existe la
+ * fila de abajo: una empresa puede no ser ninguno de los cuatro. META es
+ * "cosechando + capital alto + ciclo exógeno" y ninguna etiqueta la nombra;
+ * forzarla a `power play` marcaba su núcleo como MORTAL y la próxima
+ * recesión publicitaria habría disparado "tesis rota" por el ciclo.
+ *
+ * Que se vea «sin clasificar» en ámbar es deliberado: es una casilla vacía
+ * que cuesta tres clics y desbloquea toda la lectura.
  */
 function FramePicker({
   symbol,
-  frame,
+  axes,
   onSaved,
 }: {
   symbol: string;
-  frame: Frame | null;
+  axes: Axes | null;
   onSaved: (items: PortfolioItem[]) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Borrador local: los tres ejes se mandan JUNTOS, así que hasta que estén
+  // los tres no se escribe nada. Media clasificación daría media lectura.
+  const [draft, setDraft] = useState<Partial<Axes>>(axes ?? {});
 
-  async function pick(next: Frame | null) {
+  async function save(next: Axes) {
     if (saving) return;
     setSaving(true);
     try {
       const r = await fetch("/api/watchlist", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol, frame: next }),
+        body: JSON.stringify({ symbol, axes: next }),
       });
       const data = (await r.json().catch(() => ({}))) as {
         items?: PortfolioItem[];
@@ -994,10 +1053,17 @@ function FramePicker({
       if (r.ok && data.items) onSaved(data.items);
       setOpen(false);
     } catch {
-      // Silencioso: el marco anterior sigue en pantalla y se puede repetir.
+      // Silencioso: lo anterior sigue en pantalla y se puede repetir.
     } finally {
       setSaving(false);
     }
+  }
+
+  function set<K extends keyof Axes>(k: K, v: Axes[K]) {
+    const next = { ...draft, [k]: v };
+    setDraft(next);
+    const full = parseAxes(next);
+    if (full) void save(full);
   }
 
   if (!open) {
@@ -1007,44 +1073,46 @@ function FramePicker({
         onClick={() => setOpen(true)}
         className={cn(
           "mt-0.5 rounded-sm border px-1 py-px font-mono text-[9px] uppercase tracking-[0.1em] transition-colors",
-          frame
+          axes
             ? "border-border/40 text-muted-foreground/60 hover:text-foreground"
             : "border-amber-600/30 text-amber-700/70 hover:border-amber-600/60 dark:text-amber-300/70",
         )}
         title={
-          frame
-            ? FRAME_SPEC[frame].hint
-            : "Sin marco: el coach no puede leer si una señal contradice tu tesis"
+          axes
+            ? coreOf(axes)
+            : "Sin clasificar: el coach no puede leer si una señal contradice tu tesis"
         }
       >
-        {frame ? FRAME_SPEC[frame].label : "sin marco"}
+        {axes ? describeAxes(axes) : "sin clasificar"}
       </button>
     );
   }
 
   return (
-    <div className="mt-1 flex flex-col gap-0.5">
-      {FRAMES.map((f) => (
-        <button
-          key={f}
-          type="button"
-          onClick={() => void pick(f)}
-          disabled={saving}
-          className={cn(
-            "rounded-sm border px-1 py-px text-left font-mono text-[9px] uppercase tracking-[0.1em] transition-colors disabled:opacity-40",
-            frame === f
-              ? "border-primary/50 text-primary"
-              : "border-border/40 text-muted-foreground/70 hover:text-foreground",
-          )}
-          title={FRAME_SPEC[f].hint}
-        >
-          {FRAME_SPEC[f].label}
-        </button>
-      ))}
+    <div className="mt-1 flex flex-col gap-1">
+      <div className="flex flex-wrap gap-0.5">
+        {PRESET_NAMES.map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => {
+              setDraft(PRESETS[n]);
+              void save(PRESETS[n]);
+            }}
+            disabled={saving}
+            className="rounded-sm border border-border/30 px-1 py-px font-mono text-[8.5px] uppercase tracking-[0.08em] text-muted-foreground/50 transition-colors hover:text-foreground disabled:opacity-40"
+          >
+            {PRESET_LABEL[n]}
+          </button>
+        ))}
+      </div>
+      <EjeRow k="madurez" opciones={MADUREZ} valor={draft.madurez} disabled={saving} onPick={(v) => set("madurez", v)} />
+      <EjeRow k="capital" opciones={CAPITAL} valor={draft.capital} disabled={saving} onPick={(v) => set("capital", v)} />
+      <EjeRow k="ciclo" opciones={CICLO} valor={draft.ciclo} disabled={saving} onPick={(v) => set("ciclo", v)} />
       <button
         type="button"
         onClick={() => setOpen(false)}
-        className="text-left font-mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground/50 hover:text-foreground"
+        className="text-left font-mono text-[8.5px] uppercase tracking-[0.08em] text-muted-foreground/50 hover:text-foreground"
       >
         cerrar
       </button>

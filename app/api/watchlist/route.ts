@@ -7,12 +7,12 @@ import {
   getWatchlist,
   reduceLotFromPosition,
   removeFromWatchlist,
-  setFrame,
+  setAxes,
   setPosition,
 } from "@/lib/db/queries";
 import { ensureSessionCookie } from "@/lib/session";
 import { HORIZONS } from "@/lib/coach/horizon";
-import { FRAMES } from "@/lib/coach/frames";
+import { CAPITAL, CICLO, MADUREZ } from "@/lib/coach/frames";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -106,11 +106,21 @@ const annotateSchema = z.object({
   }),
 });
 
-// Declarar qué clase de empresa es una posición. `null` la deja sin marco,
-// que es un estado legítimo: no saber todavía es honesto y el coach lo dice
-// en vez de leer la posición con un marco supuesto.
-const frameSchema = symbolSchema.extend({
-  frame: z.enum(FRAMES).nullable(),
+// Declarar qué clase de empresa es una posición, en los TRES ejes. `null`
+// la deja sin clasificar, que es un estado legítimo: no saber todavía es
+// honesto y el coach lo dice en vez de leerla con un perfil supuesto.
+//
+// Los tres juntos y ninguno suelto: `parseAxes` exige los tres para leer,
+// así que aceptar uno a medias dejaría la posición clasificada a ojos del
+// usuario e ilegible para el coach.
+const axesSchema = symbolSchema.extend({
+  axes: z
+    .object({
+      madurez: z.enum(MADUREZ),
+      capital: z.enum(CAPITAL),
+      ciclo: z.enum(CICLO),
+    })
+    .nullable(),
 });
 
 export async function GET() {
@@ -144,11 +154,11 @@ export async function PATCH(req: Request) {
   const session = await ensureSessionCookie();
   const body = await req.json().catch(() => ({}));
 
-  // El marco va primero junto a la clasificación: ninguno de los dos toca
+  // Los ejes van primero junto a la clasificación: ninguno de los dos toca
   // acciones ni coste, así que no comparten la guarda optimista.
-  const fr = frameSchema.safeParse(body);
+  const fr = axesSchema.safeParse(body);
   if (fr.success) {
-    const ok = await setFrame(session, fr.data.symbol, fr.data.frame);
+    const ok = await setAxes(session, fr.data.symbol, fr.data.axes);
     if (!ok) {
       return NextResponse.json({ error: "not_in_watchlist" }, { status: 404 });
     }
