@@ -16,6 +16,7 @@ import { proseCompletion } from "@/lib/ai/prose-chain";
 import { extractSecExhibitText } from "@/lib/articles/extract";
 import { SEC_USER_AGENT } from "@/lib/providers/sec-edgar";
 import type { EarningsFiling } from "@/lib/earnings/filings";
+import { parseAttributions, type Attribution } from "@/lib/coach/frames";
 
 const SYSTEM_PROMPT = `You are a buy-side analyst reading a company's own earnings press release (SEC 8-K, exhibit 99.1).
 
@@ -27,7 +28,12 @@ Return STRICT JSON:
   "revenueActual": 1220000000,
   "revenueBasis": "GAAP",
   "epsActual": 0.12,
-  "epsBasis": "GAAP"
+  "epsBasis": "GAAP",
+  "attribution": [
+    {"signal": "margen_comprimido", "layer": "inversion",
+     "magnitude": "operating margin 38% vs 44% a year ago (-6pp)",
+     "quote": "the decline was driven primarily by increased infrastructure investment"}
+  ]
 }
 
 "revenueActual" / "epsActual": the headline top-line and bottom-line figures for
@@ -54,6 +60,50 @@ versus the prior quarter, margin pressure, a one-off gain flattering the
 headline, guidance that is absent when it is usually given, heavy reliance on
 non-GAAP adjustments. Ground it in what IS printed in the document.
 
+"attribution": the release's own explanation of WHAT MOVED and WHY. This is
+the most important field and the one nobody extracts. A margin falling
+because the company is buying infrastructure and a margin falling because the
+business is losing steam are the SAME number and the OPPOSITE news. The
+release usually says which ("driven by", "primarily reflects", "due to").
+
+  "signal" — exactly one of: margen_comprimido, capex_disparado,
+  nucleo_desacelera, guidance_recortada, hito_incumplido, cuota_perdida,
+  insider_vendiendo, deuda_creciendo. Skip anything that fits none of these.
+
+  "layer" — where the movement belongs, exactly one of:
+    "nucleo"        the established business: its revenue, its growth, its
+                    own margins. Deterioration here is about the business.
+    "inversion"     deliberate spending on something being built: capex,
+                    R&D, a new segment's losses, hiring for it.
+    "no_recurrente" one-offs: legal accruals and settlements, restructuring
+                    charges, impairments, FX.
+
+  "magnitude" — what moved, with the release's own figures.
+  "quote" — the sentence where the company attributes it, VERBATIM. Use null
+  when the release states the movement but never explains it; do NOT invent
+  an attribution to fill the field. A null here is a real and useful answer.
+
+THE SIGNAL NAMES SOUND NEGATIVE. THEY ARE NOT ACCUSATIONS. "capex_disparado"
+means "the company is spending heavily on building something" — nothing more.
+Companies present exactly this as their headline strength ("Cloud and AI
+Strength Fuels Results", "record investment in infrastructure"), and a
+triumphant release is the MOST likely place to find it. Report it there. A
+release that boasts about heavy investment and one that apologises for it get
+the same entry; the reader decides what it means, not you.
+
+Look in the financial statements too, not only the prose. Rising "additions to
+property and equipment" in the cash flow statement is a capex movement even if
+no sentence discusses it — in that case "quote" is null and "magnitude" carries
+the two figures being compared.
+
+Report only movements the document actually states, worse OR better. Two to
+four entries is normal; an empty array is correct for a quiet quarter.
+
+DO NOT judge severity, and do not say whether any of this is good or bad for
+an investor. Whether a margin squeeze is expected or alarming depends on what
+kind of company the reader believes they own, and that is decided elsewhere.
+Your job is to report what moved and what the company says caused it.
+
 HARD RULES:
 - Use ONLY the document. Never add outside knowledge, prices or estimates.
 - Never invent a number. If the release omits guidance, say it is absent.
@@ -70,6 +120,10 @@ export type EarningsReportContent = {
   revenueBasis: EarningsBasis | null;
   epsActual: number | null;
   epsBasis: EarningsBasis | null;
+  /** Qué se movió y a qué lo atribuye la EMPRESA. El extractor no juzga si
+   *  es bueno o malo: eso depende del marco de quien lo lee y se decide en
+   *  `lib/coach/frames.ts`. Ver el prompt. */
+  attribution: Attribution[];
 };
 
 const BASES: EarningsBasis[] = ["GAAP", "adjusted", "other"];
@@ -129,6 +183,10 @@ function sanitize(parsed: unknown): EarningsReportContent | null {
     revenueBasis: revenueActual === null ? null : revenueBasis,
     epsActual,
     epsBasis: epsActual === null ? null : epsBasis,
+    // Un array vacío es una respuesta legítima (trimestre tranquilo), así
+    // que la atribución NO puede invalidar el comunicado entero como sí
+    // hace un `summary` vacío.
+    attribution: parseAttributions(o.attribution),
   };
 }
 
@@ -151,7 +209,18 @@ export async function generateEarningsReport(
     signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) throw new Error(`exhibit ${res.status}`);
-  const text = extractSecExhibitText(await res.text());
+  // 24.000 y no el 14.000 por defecto del extractor. MEDIDO 2026-07-30: con
+  // 14k, el comunicado de MSFT perdía el 39% del documento y con él la línea
+  // "Additions to property and equipment" (char 18.606) — que en un
+  // comunicado que no habla de capex en prosa es el ÚNICO sitio donde consta
+  // la inversión. Sin ella, `attribution` no puede ver la capa `inversion`,
+  // que es justo la que distingue "gasta porque construye" de "gasta porque
+  // se deteriora". El corte no daba error: devolvía un array vacío, que se
+  // lee igual que un trimestre tranquilo.
+  //
+  // Coste: ~2.500 tokens más de entrada por filing, una vez por trimestre y
+  // empresa. El default de 14k se queda para cualquier otro llamante.
+  const text = extractSecExhibitText(await res.text(), 24_000);
   if (!text) return null;
 
   const result = await proseCompletion({
@@ -165,8 +234,9 @@ export async function generateEarningsReport(
     temperature: 0.3,
     // 900 con cuatro campos más se acercaba al techo, y un JSON truncado no
     // degrada: se pierde el comunicado entero (el repo ya se comió esto con
-    // "batch unparseable"). El cap es un tope, no un gasto.
-    maxTokens: 1100,
+    // "batch unparseable"). El cap es un tope, no un gasto — subido a 1800
+    // al añadir `attribution`, que son 2-4 objetos con cita literal dentro.
+    maxTokens: 1800,
     jsonMode: true,
     tag: "earnings",
   });
@@ -197,6 +267,7 @@ export async function generateEarningsReport(
     revenueBasis: content.revenueBasis,
     epsActual: content.epsActual,
     epsBasis: content.epsBasis,
+    attribution: JSON.stringify(content.attribution),
     model: result.model,
   };
   const insert = db.insert(earningsReports).values(row);

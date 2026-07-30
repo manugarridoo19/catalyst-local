@@ -1,8 +1,10 @@
 import { Header } from "@/components/header";
 import { PortfolioTable } from "@/components/portfolio/portfolio-table";
+import { CoachPanel } from "@/components/portfolio/coach-panel";
 import { getTrades, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import { getQuotesMap } from "@/lib/providers/finnhub";
+import { isFrame } from "@/lib/coach/frames";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -56,10 +58,29 @@ export default async function PortfolioPage() {
               logoUrl: null,
               shares: r.shares,
               avgCost: r.avgCost,
+              // El marco viene de BD sin validar contra la unión: la columna
+              // es `text` y un valor viejo o escrito a mano no debe romper la
+              // página. `isFrame` lo degrada a `null`, que la UI ya sabe
+              // pintar como "sin marco".
+              frame: isFrame(r.frame) ? r.frame : null,
             }))}
             initialQuotes={quotes}
             initialTrades={trades}
           />
+
+          <section>
+            <h2 className="eyebrow mb-1 text-[10px] text-foreground">Coach</h2>
+            <p className="mb-2 max-w-[78ch] font-editorial text-[12.5px] leading-relaxed text-muted-foreground">
+              Lo que escribiste al operar, frente a lo que se ha movido y a
+              qué lo atribuye la propia empresa. No emite veredictos: un
+              margen que se estrecha porque la compañía está comprando
+              futuro y otro que se estrecha porque el negocio pierde fuelle
+              son el mismo número y la noticia contraria — quien decide eso
+              eres tú. Lo que hace el coach es que no se te pase la
+              diferencia, y que tu tesis no se pueda reescribir después.
+            </p>
+            <CoachPanel />
+          </section>
         </div>
       </main>
     </div>

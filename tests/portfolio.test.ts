@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addToPosition,
+  journalCash,
   reducePosition,
   CONCENTRATION,
   buildPortfolio,
@@ -9,6 +10,7 @@ import {
   sharesFromAmount,
   type Position,
   type QuoteLike,
+  type TradeLike,
 } from "@/lib/portfolio";
 
 // Matemática de cartera. Todo lo que se prueba aquí se PINTA en el rail y
@@ -475,5 +477,77 @@ describe("reducePosition — recortar una posición", () => {
     // 50 acciones a 300 + 50 a 400 = 350. Si la venta hubiera movido la
     // media, este número saldría mal y nadie lo notaría.
     expect(back.avgCost!).toBeCloseTo(350, 6);
+  });
+});
+
+describe("journalCash — flujo de caja del diario", () => {
+  const buy = (o: Partial<TradeLike> = {}): TradeLike => ({
+    side: "buy",
+    shares: 1,
+    price: 100,
+    realizedPnl: null,
+    createdAt: "2026-07-30T10:00:00Z",
+    ...o,
+  });
+
+  it("el diario vacío no afirma nada: realizado null, no 0", () => {
+    const c = journalCash([]);
+    // Cero se leería como "no has ganado nada". La verdad es que no hay
+    // nada que contar — misma regla que `avgCost: null`.
+    expect(c.realized).toBeNull();
+    expect(c.since).toBeNull();
+    expect(c.net).toBe(0);
+  });
+
+  it("reproduce el caso real: compra de META y venta de MSFT", () => {
+    // Las dos filas que había en `position_trades` el 30-jul-2026.
+    const c = journalCash([
+      buy({
+        side: "sell",
+        shares: 0.28450766,
+        price: 457,
+        realizedPnl: 22.783373412799996,
+        createdAt: "2026-07-30T17:39:20Z",
+      }),
+      buy({
+        shares: 0.3809070303422792,
+        price: 525.01,
+        createdAt: "2026-07-30T17:17:34Z",
+      }),
+    ]);
+    expect(c.proceeds).toBeCloseTo(130.02, 2);
+    expect(c.outlays).toBeCloseTo(199.98, 2);
+    expect(c.net).toBeCloseTo(-69.96, 2);
+    expect(c.realized).toBeCloseTo(22.78, 2);
+    expect(c.buys).toBe(1);
+    expect(c.sells).toBe(1);
+    // `since` es la MÁS ANTIGUA, aunque llegue segunda en la lista (que
+    // viene ordenada DESC). Sin esto el rótulo mentiría sobre desde cuándo.
+    expect(c.since).toBe("2026-07-30T17:17:34Z");
+  });
+
+  it("un ajuste no mueve caja pero sí entra en `since`", () => {
+    // Una corrección a mano es un estado nuevo declarado, no dinero que
+    // haya cambiado de sitio.
+    const c = journalCash([
+      buy({ side: "adjust", shares: null, price: null, createdAt: "2026-07-29T09:00:00Z" }),
+      buy({ createdAt: "2026-07-30T09:00:00Z" }),
+    ]);
+    expect(c.outlays).toBe(100);
+    expect(c.proceeds).toBe(0);
+    expect(c.buys).toBe(1);
+    expect(c.since).toBe("2026-07-29T09:00:00Z");
+  });
+
+  it("una venta sin coste registrado se cuenta en caja pero marca el realizado como parcial", () => {
+    const c = journalCash([
+      buy({ side: "sell", shares: 2, price: 50, realizedPnl: null }),
+      buy({ side: "sell", shares: 1, price: 50, realizedPnl: 10 }),
+    ]);
+    // El dinero entró igual: 150. Lo que no se sabe es cuánto de eso fue
+    // ganancia, y son magnitudes independientes.
+    expect(c.proceeds).toBe(150);
+    expect(c.realized).toBe(10);
+    expect(c.realizedUnknownSales).toBe(1);
   });
 });

@@ -1,0 +1,1 @@
+ALTER TABLE "earnings_reports" ADD COLUMN "attribution" text;

@@ -209,6 +209,50 @@ async function main() {
     );
   }
 
+  // Lo mismo para las operaciones del usuario. Job separado del anterior a
+  // propósito: comparten aritmética pero no destino, y un fallo midiendo el
+  // track record del Lab no debe dejar sin medir el diario de la cartera.
+  // Coste: 1 llamada de precios por SÍMBOLO con operaciones maduras, 1×/día.
+  try {
+    const { runTradeOutcomesCron } = await import("../lib/coach/outcomes");
+    const out = await runTradeOutcomesCron({
+      maxSymbols: Number(process.env.COACH_OUTCOMES_MAX_SYMBOLS ?? 12),
+    });
+    if (out.tradesProcessed > 0) {
+      console.log(
+        `[cron-runner] coach outcomes filled ${out.outcomesFilled} over ${out.tradesProcessed} trades / ${out.symbols} symbols` +
+          (out.abandoned ? ` (${out.abandoned} abandoned)` : "") +
+          ` in ${out.durationMs}ms`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[cron-runner] trade outcomes failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Comprueba los falsadores aprobados contra el último comunicado de cada
+  // símbolo. Vive aquí y no en `/api/coach` para que el panel siga siendo
+  // gratis y funcione con la cuota agotada. `checked_accession` hace que
+  // cada filing se pague UNA vez por símbolo: en régimen normal esto no
+  // hace nada, porque los comunicados son trimestrales.
+  try {
+    const { runFalsifierChecks } = await import("../lib/coach/falsifiers");
+    const out = await runFalsifierChecks();
+    if (out.checked > 0) {
+      console.log(
+        `[cron-runner] falsifiers checked ${out.checked} over ${out.symbols} symbols` +
+          (out.tripped ? ` — ${out.tripped} TRIPPED` : ""),
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[cron-runner] falsifier checks failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   console.log(`[cron-runner] total ${Date.now() - t0}ms`);
 }
 

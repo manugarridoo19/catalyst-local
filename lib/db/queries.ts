@@ -409,6 +409,7 @@ export async function getWatchlist(session: string) {
       sector: tickers.sector,
       shares: watchlist.shares,
       avgCost: watchlist.avgCost,
+      frame: watchlist.frame,
     })
     .from(watchlist)
     .leftJoin(tickers, eq(tickers.symbol, watchlist.symbol))
@@ -485,7 +486,7 @@ export async function setPosition(
 export async function addLotToPosition(
   session: string,
   symbol: string,
-  lot: { shares: number; price: number },
+  lot: { shares: number; price: number; horizon?: string | null; thesis?: string | null },
 ): Promise<
   | { status: "ok"; shares: number; avgCost: number | null; avgCostUnknown: boolean }
   | { status: "not_found" }
@@ -502,6 +503,8 @@ export async function addLotToPosition(
     lotShares: lot.shares,
     lotPrice: lot.price,
     realized: null,
+    horizon: lot.horizon,
+    thesis: lot.thesis,
   });
   if (!written) return { status: "conflict" };
   return { status: "ok", ...next };
@@ -513,7 +516,7 @@ export async function addLotToPosition(
 export async function reduceLotFromPosition(
   session: string,
   symbol: string,
-  lot: { shares: number; price: number },
+  lot: { shares: number; price: number; horizon?: string | null; thesis?: string | null },
 ): Promise<
   | {
       status: "ok";
@@ -539,6 +542,8 @@ export async function reduceLotFromPosition(
     lotShares: lot.shares,
     lotPrice: lot.price,
     realized: next.realized,
+    horizon: lot.horizon,
+    thesis: lot.thesis,
   });
   if (!written) return { status: "conflict" };
   return {
@@ -548,6 +553,64 @@ export async function reduceLotFromPosition(
     realized: next.realized,
     closes: next.closes,
   };
+}
+
+/**
+ * Clasifica una operación YA registrada: le pone plazo y, opcionalmente,
+ * tesis.
+ *
+ * Marca SIEMPRE `annotated_later = true`, y eso es el corazón de la
+ * función. Una tesis escrita cuando ya sabes cómo fue la operación no es
+ * una predicción — es una explicación, y las explicaciones a toro pasado
+ * son justo el material del sesgo retrospectivo. Sin esta marca, el panel
+ * acabaría felicitándote por "aciertos" cuya tesis redactaste después de
+ * ver el resultado, que es la forma más eficaz de que una herramienta así
+ * te haga peor inversor en vez de mejor.
+ *
+ * Es idempotente y reversible (puedes reclasificar), pero la marca NO se
+ * puede quitar: una vez que la operación existió sin plazo, el hecho de
+ * que se clasificara tarde es cierto para siempre.
+ *
+ * Acotada a la sesión: sin el filtro, un id ajeno bastaría para escribir
+ * en el diario de otro.
+ */
+/**
+ * Declara qué CLASE de empresa es una posición. Ver `lib/coach/frames.ts`.
+ *
+ * `null` la deja sin marco, que es un estado legítimo: no saber todavía qué
+ * clase de empresa tienes es honesto, y el coach lo dice en vez de leerla
+ * con un marco supuesto.
+ */
+export async function setFrame(
+  session: string,
+  symbol: string,
+  frame: string | null,
+): Promise<boolean> {
+  const res = await db.execute(sql`
+    UPDATE watchlist SET frame = ${frame}
+     WHERE user_session = ${session} AND symbol = ${symbol}
+  `);
+  return (res as { rowCount?: number }).rowCount === 1;
+}
+
+export async function annotateTrade(
+  session: string,
+  tradeId: number,
+  horizon: string | null,
+  thesis: string | null,
+): Promise<boolean> {
+  const res = await db.execute(sql`
+    UPDATE position_trades
+       SET horizon = ${horizon},
+           thesis = ${thesis},
+           annotated_later = true
+     WHERE id = ${tradeId}
+       AND user_session = ${session}
+       -- Los 'adjust' no se clasifican: no son decisiones de mercado, así
+       -- que darles plazo sugeriría que se juzgan, y no se juzgan.
+       AND side <> 'adjust'
+  `);
+  return (res as { rowCount?: number }).rowCount === 1;
 }
 
 async function readPosition(
@@ -590,6 +653,12 @@ async function commitPosition(
     lotShares: number | null;
     lotPrice: number | null;
     realized: number | null;
+    /** Intención DECLARADA al operar. Viaja hasta el INSERT porque anotarla
+     *  después en otra sentencia dejaría un hueco en el que la operación
+     *  existe sin plazo — y una operación sin plazo no se juzga, así que ese
+     *  hueco es una pérdida permanente de dato, no un estado transitorio. */
+    horizon?: string | null;
+    thesis?: string | null;
   },
 ): Promise<boolean> {
   const rows = unwrapRows<{ id: number }>(
@@ -605,9 +674,10 @@ async function commitPosition(
       )
       INSERT INTO position_trades
         (user_session, symbol, side, shares, price, realized_pnl,
-         shares_after, avg_cost_after)
+         shares_after, avg_cost_after, horizon, thesis)
       SELECT ${session}, ${symbol}, ${next.side}, ${next.lotShares},
-             ${next.lotPrice}, ${next.realized}, ${next.shares}, ${next.avgCost}
+             ${next.lotPrice}, ${next.realized}, ${next.shares}, ${next.avgCost},
+             ${next.horizon ?? null}, ${next.thesis ?? null}
       FROM upd
       RETURNING id
     `),
@@ -624,6 +694,9 @@ export type PositionTrade = {
   realizedPnl: number | null;
   sharesAfter: number | null;
   avgCostAfter: number | null;
+  horizon: "corto" | "medio" | "largo" | null;
+  thesis: string | null;
+  annotatedLater: boolean;
   createdAt: string;
 };
 
@@ -635,10 +708,11 @@ export async function getTrades(
 ): Promise<PositionTrade[]> {
   return unwrapRows<PositionTrade>(
     await db.execute(sql`
-      SELECT id, symbol, side, shares, price,
+      SELECT id, symbol, side, shares, price, horizon, thesis,
              realized_pnl AS "realizedPnl",
              shares_after AS "sharesAfter",
              avg_cost_after AS "avgCostAfter",
+             annotated_later AS "annotatedLater",
              to_char(created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "createdAt"
       FROM position_trades
       WHERE user_session = ${session}

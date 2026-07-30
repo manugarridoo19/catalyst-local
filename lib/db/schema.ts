@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   customType,
   pgTable,
   text,
@@ -175,6 +176,20 @@ export const watchlist = pgTable(
      *  en el total — el universo de Catalyst es US, y si algún día entra
      *  algo europeo hay que añadir divisa antes de fiarse del agregado. */
     avgCost: doublePrecision("avg_cost"),
+    /**
+     * Qué CLASE de empresa crees que es: 'power_play' | 'compounder' |
+     * 'turnaround' | 'ciclica'. Ver `lib/coach/frames.ts`.
+     *
+     * Va en la POSICIÓN y no en la operación porque el marco pertenece a la
+     * empresa, no a cada compra suelta: si reforzaras META tres veces, las
+     * tres serían la misma apuesta sobre la misma clase de negocio.
+     *
+     * Es lo que decide si una señal es ruido o es mortal — el mismo capex
+     * disparado es la tesis ejecutándose en una power play y una tesis rota
+     * en un compounder. NULLABLE porque no se puede inventar: sin marco, el
+     * coach dice que no puede leerlo, que es preferible a leerlo al revés.
+     */
+    frame: text("frame"),
     addedAt: timestamp("added_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -231,6 +246,44 @@ export const positionTrades = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * A qué plazo va esta operación: 'corto' | 'medio' | 'largo'.
+     *
+     * NO es un adorno para el prompt: lo consume el CÓDIGO y decide si se
+     * emite veredicto de precio. Comprar por fundamentales a años y recibir
+     * un "error" porque la acción cayó un 4% en tres semanas no es un
+     * veredicto duro, es un veredicto sobre otra pregunta — y un coach que
+     * hace eso se gana que dejes de leerlo, con razón.
+     *
+     * NULLABLE porque las operaciones anteriores a este campo existen y no
+     * se les puede inventar una intención. `null` = sin clasificar: entra en
+     * el diario, no en el análisis. Ver `annotated_later`.
+     */
+    horizon: text("horizon"),
+    /** Por qué hiciste esta operación, en tus palabras. Opcional a
+     *  propósito: obligarlo sube la calidad del dato y hunde la tasa de
+     *  registro, y una operación anotada a medias vale más que una que no
+     *  se registró. Lo que el dato NO tiene que contener es el contexto de
+     *  mercado (qué hacía el precio, qué noticias había): eso lo sabe
+     *  Catalyst y se adjunta solo. Aquí va sólo lo que nadie más sabe. */
+    thesis: text("thesis"),
+    /**
+     * true = el horizonte y la tesis se anotaron DESPUÉS de operar.
+     *
+     * Existe por una única razón, y es la que sostiene todo el panel: una
+     * tesis escrita sabiendo ya cómo fue **no es una predicción**. Sin esta
+     * marca, el sesgo retrospectivo entra en los datos disfrazado de
+     * criterio y el coach acabaría felicitándote por aciertos que redactaste
+     * después de verlos. Es un booleano declarado y no una comparación de
+     * fechas a ojo: quien escribe SABE si está anotando en el momento o a
+     * posteriori, y un umbral de minutos sería adivinar lo que ya se sabe.
+     */
+    annotatedLater: boolean("annotated_later").notNull().default(false),
+    // Control del job que mide la operación contra los precios posteriores,
+    // idéntico al de `signal_events`: sin esto, un símbolo que Yahoo no
+    // sirve se reintentaría en cada pasada para siempre.
+    outcomeAttempts: smallint("outcome_attempts").notNull().default(0),
+    lastOutcomeAt: timestamp("last_outcome_at", { withTimezone: true }),
   },
   (t) => [
     // El diario se lee SIEMPRE por (sesión, símbolo) y en orden inverso.
@@ -239,6 +292,112 @@ export const positionTrades = pgTable(
       t.symbol,
       t.createdAt,
     ),
+  ],
+);
+
+/**
+ * Los FALSADORES de una tesis: qué tendría que pasar para que estuvieras
+ * equivocado.
+ *
+ * Es la única puerta por la que el coach puede llegar a AFIRMAR algo. Por
+ * defecto contrasta y no concluye, porque el mismo hecho significa lo
+ * contrario según el marco (márgenes cayendo por comprar futuro vs. por
+ * deterioro) y cualquier conclusión automática acierta a medias. Cuando se
+ * cumple un falsador que el usuario aprobó, el coach no está opinando: le
+ * está citando su propio criterio, escrito antes de saber el resultado.
+ *
+ * ─── POR QUÉ SE PROPONEN Y NO SE PIDEN ─────────────────────────────────
+ *
+ * Pedirlos en frío empobrece la tesis: una convicción real es un cómputo de
+ * muchas cosas y reducirla a tres métricas la traiciona. Así que el LLM los
+ * PROPONE a partir de la tesis, el marco y lo que la empresa reporta de
+ * verdad, y el usuario aprueba, edita o tira. La pregunta que contesta al
+ * aprobar es la del pre-mortem —«¿qué tendría que pasar para que estuviera
+ * equivocado?»—, que es la más valiosa que existe y la que nadie se hace
+ * sola.
+ *
+ * `status` empieza en 'pendiente' SIEMPRE. Un falsador propuesto por el
+ * modelo y no aprobado no puede disparar nada: sería el coach citándose a
+ * sí mismo y presentándolo como criterio del usuario.
+ */
+export const thesisFalsifiers = pgTable(
+  "thesis_falsifiers",
+  {
+    id: serial("id").primaryKey(),
+    userSession: text("user_session").notNull(),
+    symbol: text("symbol").notNull(),
+    /** La condición, en lenguaje llano. "El crecimiento de ingresos del
+     *  negocio principal baja del 10% dos trimestres seguidos". */
+    text: text("text").notNull(),
+    /** 'propuesto' = lo redactó el modelo · 'escrito' = lo escribió el
+     *  usuario. Se guarda porque un falsador propuesto y aprobado sin leer
+     *  no es lo mismo que uno pensado, y si algún día el panel se equivoca
+     *  hay que poder saber de dónde salió. */
+    source: text("source").notNull(),
+    /** 'pendiente' | 'aprobado' | 'rechazado'. Sólo los aprobados evalúan. */
+    status: text("status").notNull().default("pendiente"),
+    /** Cuándo se cumplió, si se cumplió. NULL = no se ha cumplido o no se
+     *  ha podido comprobar todavía — que no es lo mismo que "está bien". */
+    trippedAt: timestamp("tripped_at", { withTimezone: true }),
+    /** La cita del comunicado que lo cumple. Sin evidencia citable NO se
+     *  marca como cumplido: un veredicto duro sin frase que lo respalde es
+     *  exactamente lo que este diseño existe para evitar. */
+    trippedEvidence: text("tripped_evidence"),
+    /** Accession del último comunicado contra el que se evaluó. Hace la
+     *  comprobación idempotente: sin esto, cada pasada del cron volvería a
+     *  pagar una llamada LLM por el MISMO filing trimestre tras trimestre. */
+    checkedAccession: text("checked_accession"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (t) => [index("thesis_falsifiers_session_symbol_idx").on(t.userSession, t.symbol)],
+);
+
+/**
+ * Cómo le fue al mercado DESPUÉS de cada operación tuya.
+ *
+ * Es el gemelo de `signal_outcomes`: mismas columnas, misma semántica de
+ * retorno (close-to-close sobre cierres AJUSTADOS, horizontes en días
+ * hábiles contados como posiciones en la serie real de sesiones, benchmark
+ * SPY entre las dos mismas fechas) y la misma medición prospectiva que
+ * nunca se revisa. Si `/lab` mide las señales de Catalyst, esto mide las
+ * tuyas — y compararlas sólo tiene sentido si la aritmética es la misma,
+ * así que el job REUTILIZA `findBaselineDate` y `horizonReturn` en vez de
+ * reimplementarlas.
+ *
+ * Tabla aparte y no un `kind` más de `signal_events`: los priors empíricos
+ * del Lab alimentan `PICKS_SYSTEM_PROMPT`, y meter ahí las operaciones del
+ * usuario contaminaría el track record de las señales del sistema con
+ * decisiones humanas que no son señales de nadie.
+ *
+ * `return_pct` es SIEMPRE el del mercado, sin signo aplicado — neutro,
+ * como el dato que es. Si esa subida fue buena o mala para ti depende de
+ * si compraste o vendiste, y esa lectura vive en `lib/coach/measure.ts`,
+ * en código y no en la BD: una convención de signo guardada en disco es
+ * imposible de revisar después sin remedir todo.
+ */
+export const tradeOutcomes = pgTable(
+  "trade_outcomes",
+  {
+    tradeId: integer("trade_id")
+      .notNull()
+      .references(() => positionTrades.id, { onDelete: "cascade" }),
+    horizon: smallint("horizon").notNull(), // días hábiles: 1 | 7 | 30
+    baselineDate: text("baseline_date").notNull(), // yyyy-mm-dd (ET)
+    targetDate: text("target_date").notNull(), // yyyy-mm-dd (ET)
+    baselineClose: doublePrecision("baseline_close").notNull(),
+    targetClose: doublePrecision("target_close").notNull(),
+    returnPct: doublePrecision("return_pct").notNull(),
+    benchmarkReturnPct: doublePrecision("benchmark_return_pct"),
+    filledAt: timestamp("filled_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tradeId, t.horizon] }),
+    index("trade_outcomes_filled_idx").on(t.filledAt),
   ],
 );
 
@@ -726,6 +885,21 @@ export const earningsReports = pgTable(
     revenueBasis: text("revenue_basis"),
     epsActual: doublePrecision("eps_actual"),
     epsBasis: text("eps_basis"),
+    /**
+     * JSON con `Attribution[]` — qué se movió y a qué lo ATRIBUYE la empresa,
+     * clasificado en núcleo / inversión deliberada / no recurrente. Ver
+     * `lib/coach/frames.ts`.
+     *
+     * Es la pieza que separa "el margen baja porque el negocio se deteriora"
+     * de "el margen baja porque estamos comprando el futuro" — mismo número,
+     * noticia opuesta. `read_between_lines` ya OBSERVABA movimientos; esto
+     * los ATRIBUYE, que es lo que permite leerlos contra el marco de la
+     * posición sin inventarse umbrales.
+     *
+     * text y no jsonb, como `signal_events.meta`: es carga útil que se
+     * serializa entera, nunca se consulta por dentro en SQL.
+     */
+    attribution: text("attribution"),
     model: text("model").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

@@ -6,14 +6,23 @@ import { Loader2, Minus, Pencil, Plus, X } from "lucide-react";
 import {
   addToPosition,
   buildPortfolio,
+  journalCash,
   reducePosition,
   sharesFromAmount,
+  type JournalCash,
   type PricedPosition,
   type QuoteLike,
 } from "@/lib/portfolio";
 // Type-only: se borra al compilar, así que este componente de cliente NO
 // arrastra `lib/db` al bundle. Mismo patrón que `AskResponse` en /ask.
 import type { PositionTrade } from "@/lib/db/queries";
+import {
+  HORIZONS,
+  HORIZON_HINT,
+  HORIZON_LABEL,
+  type TradeHorizon,
+} from "@/lib/coach/horizon";
+import { FRAMES, FRAME_SPEC, type Frame } from "@/lib/coach/frames";
 import { cn } from "@/lib/utils";
 
 // Tabla de cartera. Toda la aritmética sale de `buildPortfolio`, la MISMA
@@ -29,6 +38,9 @@ export type PortfolioItem = {
   logoUrl: string | null;
   shares: number | null;
   avgCost: number | null;
+  /** Qué clase de empresa crees que es. Decide qué señal es ruido y cuál
+   *  es mortal para ESTA posición — ver `lib/coach/frames.ts`. */
+  frame: Frame | null;
 };
 
 type QuotesMap = Record<string, QuoteLike>;
@@ -139,9 +151,14 @@ export function PortfolioTable({
   );
   const watchOnly = items.filter((i) => i.shares === null);
 
+  // El diario ENTERO, no el de una fila: es lo que responde "he vendido, ¿y
+  // el dinero?". Antes esta cuenta no existía en ningún sitio y la venta
+  // sólo se veía como una caída del valor de la cartera.
+  const cash = useMemo(() => journalCash(trades), [trades]);
+
   return (
     <div className="flex flex-col gap-5">
-      <Totals p={portfolio} />
+      <Totals p={portfolio} cash={cash} />
 
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1.5">
@@ -226,6 +243,7 @@ export function PortfolioTable({
                   key={pos.symbol}
                   pos={pos}
                   item={bySymbol.get(pos.symbol)}
+                  onItems={setItems}
                   editing={editing === pos.symbol}
                   buying={buying === pos.symbol}
                   selling={selling === pos.symbol}
@@ -261,6 +279,23 @@ export function PortfolioTable({
           </table>
         </div>
       )}
+
+      {trades.length ? (
+        <section>
+          <h2 className="eyebrow mb-2 text-[10px] text-foreground">
+            Diario de operaciones
+          </h2>
+          <p className="mb-2 max-w-[76ch] font-mono text-[10px] leading-relaxed text-muted-foreground/60">
+            Todo lo que has registrado, lo último primero. La{" "}
+            <span className="text-muted-foreground">caja del diario</span> de
+            arriba es la suma de estas ventas menos estas compras — no es el
+            saldo de tu bróker: no incluye ingresos, retiradas, dividendos,
+            comisiones ni las compras anteriores a{" "}
+            {cash.since ? cash.since.slice(0, 10) : "hoy"}.
+          </p>
+          <TradeLog trades={trades} showSymbol onAnnotated={setTrades} />
+        </section>
+      ) : null}
 
       {watchOnly.length ? (
         <section>
@@ -310,9 +345,26 @@ export function PortfolioTable({
 
 // ─────────────────────────────────────────────────────────────────────────
 
-function Totals({ p }: { p: ReturnType<typeof buildPortfolio> }) {
+function Totals({
+  p,
+  cash,
+}: {
+  p: ReturnType<typeof buildPortfolio>;
+  cash: JournalCash;
+}) {
+  // Las dos casillas del diario sólo aparecen si hay diario. Con cero
+  // operaciones, un "0,00 $" de realizado y otro de caja son ruido que
+  // además se lee como una afirmación ("no has ganado nada", "no tienes
+  // efectivo") cuando lo cierto es que no hay nada que contar todavía.
+  const hasJournal = cash.buys + cash.sells > 0;
+
   return (
-    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-sm border border-border/60 bg-border/40 sm:grid-cols-4">
+    <div
+      className={cn(
+        "grid grid-cols-2 gap-px overflow-hidden rounded-sm border border-border/60 bg-border/40",
+        hasJournal ? "sm:grid-cols-3 lg:grid-cols-6" : "sm:grid-cols-4",
+      )}
+    >
       <Stat label="valor de la cartera" value={money(p.totalValue)} />
       <Stat
         label="hoy"
@@ -327,6 +379,33 @@ function Totals({ p }: { p: ReturnType<typeof buildPortfolio> }) {
         tone={p.totalUnrealizedAbs}
       />
       <Stat label="invertido" value={p.totalCost ? money(p.totalCost) : "—"} />
+      {hasJournal ? (
+        <>
+          <Stat
+            label="P&L realizado"
+            value={cash.realized !== null ? signedMoney(cash.realized) : "—"}
+            // Si alguna venta no pudo medir su realizado, el total es
+            // PARCIAL y hay que decirlo: presentarlo a secas invita a
+            // sumarlo con el no realizado y sacar un total falso.
+            sub={
+              cash.realizedUnknownSales > 0
+                ? `parcial · ${cash.realizedUnknownSales} sin coste`
+                : `${cash.sells} vta${cash.sells === 1 ? "" : "s"}`
+            }
+            tone={cash.realized}
+          />
+          <Stat
+            label="caja del diario"
+            value={signedMoney(cash.net)}
+            // El "desde" NO es decorativo: es lo que impide leer esta cifra
+            // como el saldo del bróker. Le faltan ingresos, retiradas,
+            // dividendos, comisiones y todas las compras anteriores al
+            // diario. Ver `journalCash` en lib/portfolio.ts.
+            sub={cash.since ? `desde ${cash.since.slice(0, 10)}` : undefined}
+            tone={cash.net}
+          />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -392,6 +471,7 @@ function Th({
 }
 
 function Row({
+  onItems,
   pos,
   item,
   editing,
@@ -409,6 +489,7 @@ function Row({
   editing: boolean;
   buying: boolean;
   selling: boolean;
+  onItems: (items: PortfolioItem[]) => void;
   trades: PositionTrade[];
   price: number | null;
   onToggleEdit: () => void;
@@ -429,6 +510,11 @@ function Row({
           <div className="truncate font-editorial text-[11px] leading-tight text-muted-foreground/70">
             {pos.name ?? pos.sector ?? "—"}
           </div>
+          <FramePicker
+            symbol={pos.symbol}
+            frame={item?.frame ?? null}
+            onSaved={onItems}
+          />
         </td>
         <Td>{fmtShares(pos.shares)}</Td>
         <Td>{pos.avgCost !== null ? money(pos.avgCost) : "—"}</Td>
@@ -567,6 +653,8 @@ function SellSome({
 }) {
   const [qty, setQty] = useState("");
   const [sellPrice, setSellPrice] = useState(price?.toString() ?? "");
+  const [horizon, setHorizon] = useState<TradeHorizon | null>(null);
+  const [thesis, setThesis] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -585,6 +673,14 @@ function SellSome({
       setErr("Hacen falta las acciones vendidas y el precio");
       return;
     }
+    // En la VENTA el plazo pesa aún más que en la compra: es lo que separa
+    // «cierro un trade que no funcionó» de «recorto concentración de una
+    // posición que sigo queriendo a años». Sin él, las dos se juzgarían con
+    // la misma vara y una de las dos saldría injustamente mal.
+    if (horizon === null) {
+      setErr("Elige el plazo: es lo que decide cómo se juzga esta venta");
+      return;
+    }
     setSaving(true);
     setErr(null);
     try {
@@ -593,7 +689,12 @@ function SellSome({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol: item.symbol,
-          sell: { shares: parsedQty, price: parsedPrice },
+          sell: {
+            shares: parsedQty,
+            price: parsedPrice,
+            horizon,
+            thesis: thesis.trim() || null,
+          },
         }),
       });
       const data = (await r.json().catch(() => ({}))) as {
@@ -666,7 +767,7 @@ function SellSome({
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving || !preview?.ok}
+          disabled={saving || !preview?.ok || horizon === null}
           className="rounded-sm border border-rose-600/50 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-rose-700 transition-colors hover:bg-rose-500/10 disabled:opacity-40 dark:text-rose-300"
         >
           {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "vender"}
@@ -679,6 +780,14 @@ function SellSome({
           cancelar
         </button>
       </div>
+
+      <IntentPicker
+        horizon={horizon}
+        onHorizon={setHorizon}
+        thesis={thesis}
+        onThesis={setThesis}
+        tone="sell"
+      />
 
       <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground/70">
         {err ? (
@@ -737,7 +846,27 @@ function SellSome({
  * calcular. Por eso cada línea lleva el estado RESULTANTE — sin él, una
  * fila suelta no se puede verificar sin reproducir todo el historial.
  */
-function TradeLog({ trades }: { trades: PositionTrade[] }) {
+function TradeLog({
+  trades,
+  showSymbol = false,
+  onAnnotated,
+}: {
+  trades: PositionTrade[];
+  /** El diario global mezcla valores, así que ahí el símbolo es obligatorio;
+   *  dentro de una fila sería repetir la cabecera en cada línea. */
+  showSymbol?: boolean;
+  /** Presente sólo en el diario global: habilita clasificar a posteriori
+   *  las operaciones sin plazo. Dentro del formulario de una fila NO se
+   *  ofrece — estás en mitad de otra operación y clasificar una vieja ahí
+   *  es un desvío que invita a guardar en el sitio equivocado. */
+  onAnnotated?: (trades: PositionTrade[]) => void;
+}) {
+  // Qué fila tiene abierto el formulario de clasificación. Vive AQUÍ y no en
+  // cada fila porque el contenedor con scroll es de este componente: con el
+  // formulario dentro de una caja de 288px se abría aplastado y medio
+  // cortado. Sabiendo si hay alguno abierto, el scroll se suelta.
+  const [annotating, setAnnotating] = useState<number | null>(null);
+
   if (!trades.length) {
     return (
       <p className="px-1 py-2 font-mono text-[10px] text-muted-foreground/50">
@@ -752,8 +881,11 @@ function TradeLog({ trades }: { trades: PositionTrade[] }) {
   return (
     <div className="rounded-sm border border-border/50 bg-background/40 px-3 py-2">
       <div className="mb-1.5 flex items-baseline justify-between">
+        {/* En el diario global la sección ya lleva su <h2>; repetir el
+            rótulo aquí lo pintaba dos veces seguidas. El hueco se mantiene
+            para que el realizado siga alineado a la derecha. */}
         <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-muted-foreground/50">
-          diario de operaciones
+          {showSymbol ? "" : "diario de operaciones"}
         </span>
         {alguno ? (
           <span className="font-mono text-[10px] text-muted-foreground">
@@ -762,7 +894,16 @@ function TradeLog({ trades }: { trades: PositionTrade[] }) {
           </span>
         ) : null}
       </div>
-      <ul className="flex flex-col gap-0.5">
+      <ul
+        className={cn(
+          "flex flex-col gap-0.5",
+          // Sin nadie clasificando, el diario largo no debe empujar la
+          // página entera. Con un formulario abierto, recortarlo sería peor.
+          annotating === null && trades.length > 8
+            ? "max-h-72 overflow-y-auto"
+            : "",
+        )}
+      >
         {trades.map((t) => (
           <li
             key={t.id}
@@ -771,6 +912,9 @@ function TradeLog({ trades }: { trades: PositionTrade[] }) {
             <span className="text-muted-foreground/50">
               {t.createdAt.slice(0, 10)}
             </span>
+            {showSymbol ? (
+              <span className="w-[3.5rem] text-foreground">{t.symbol}</span>
+            ) : null}
             <span
               className={cn(
                 "w-[4.5rem] uppercase tracking-[0.1em]",
@@ -801,9 +945,317 @@ function TradeLog({ trades }: { trades: PositionTrade[] }) {
               → {fmtShares(t.sharesAfter ?? 0)} acc.
               {t.avgCostAfter !== null ? ` · medio ${money(t.avgCostAfter)}` : ""}
             </span>
+            <TradeIntent
+              trade={t}
+              onAnnotated={onAnnotated}
+              open={annotating === t.id}
+              onOpenChange={(v) => setAnnotating(v ? t.id : null)}
+            />
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * Qué CLASE de empresa es esta posición.
+ *
+ * Va en la fila y no en un ajuste escondido porque es la declaración que
+ * más cambia lo que el coach te dirá: el mismo capex disparado es la tesis
+ * ejecutándose en una power play y una tesis rota en un compounder. Que se
+ * vea «sin marco» en ámbar es deliberado — es una casilla vacía que cuesta
+ * un clic y desbloquea toda la lectura.
+ */
+function FramePicker({
+  symbol,
+  frame,
+  onSaved,
+}: {
+  symbol: string;
+  frame: Frame | null;
+  onSaved: (items: PortfolioItem[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function pick(next: Frame | null) {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const r = await fetch("/api/watchlist", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, frame: next }),
+      });
+      const data = (await r.json().catch(() => ({}))) as {
+        items?: PortfolioItem[];
+      };
+      if (r.ok && data.items) onSaved(data.items);
+      setOpen(false);
+    } catch {
+      // Silencioso: el marco anterior sigue en pantalla y se puede repetir.
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className={cn(
+          "mt-0.5 rounded-sm border px-1 py-px font-mono text-[9px] uppercase tracking-[0.1em] transition-colors",
+          frame
+            ? "border-border/40 text-muted-foreground/60 hover:text-foreground"
+            : "border-amber-600/30 text-amber-700/70 hover:border-amber-600/60 dark:text-amber-300/70",
+        )}
+        title={
+          frame
+            ? FRAME_SPEC[frame].hint
+            : "Sin marco: el coach no puede leer si una señal contradice tu tesis"
+        }
+      >
+        {frame ? FRAME_SPEC[frame].label : "sin marco"}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1 flex flex-col gap-0.5">
+      {FRAMES.map((f) => (
+        <button
+          key={f}
+          type="button"
+          onClick={() => void pick(f)}
+          disabled={saving}
+          className={cn(
+            "rounded-sm border px-1 py-px text-left font-mono text-[9px] uppercase tracking-[0.1em] transition-colors disabled:opacity-40",
+            frame === f
+              ? "border-primary/50 text-primary"
+              : "border-border/40 text-muted-foreground/70 hover:text-foreground",
+          )}
+          title={FRAME_SPEC[f].hint}
+        >
+          {FRAME_SPEC[f].label}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        className="text-left font-mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground/50 hover:text-foreground"
+      >
+        cerrar
+      </button>
+    </div>
+  );
+}
+
+/**
+ * El plazo y la tesis de una operación ya registrada — o el botón para
+ * ponérselos si le faltan.
+ *
+ * LA MARCA «a posteriori» ES LO IMPORTANTE DE ESTE COMPONENTE. Una tesis
+ * escrita sabiendo ya cómo fue la operación no es una predicción, y
+ * enseñarla igual que una escrita en el momento convertiría el panel en una
+ * máquina de confirmarte que siempre tuviste razón. Por eso la marca se
+ * pinta SIEMPRE que existe, y no se puede quitar.
+ */
+function TradeIntent({
+  trade,
+  onAnnotated,
+  open,
+  onOpenChange,
+}: {
+  trade: PositionTrade;
+  onAnnotated?: (trades: PositionTrade[]) => void;
+  /** Controlado desde `TradeLog`: sólo una fila puede estar clasificándose a
+   *  la vez, y quien manda en el scroll del contenedor necesita saberlo. */
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const [horizon, setHorizon] = useState<TradeHorizon | null>(null);
+  const [thesis, setThesis] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Los ajustes no se clasifican: no son decisiones de mercado, así que
+  // ofrecerles un plazo sugeriría que se juzgan, y no se juzgan.
+  if (trade.side === "adjust") return null;
+
+  if (trade.horizon) {
+    return (
+      <span className="text-muted-foreground/45">
+        · {trade.horizon}
+        {trade.annotatedLater ? (
+          <span
+            className="text-amber-700/70 dark:text-amber-300/70"
+            title="Clasificada después de operar: no cuenta como predicción"
+          >
+            {" "}
+            (a posteriori)
+          </span>
+        ) : null}
+        {trade.thesis ? (
+          <span className="text-foreground/60"> · «{trade.thesis}»</span>
+        ) : null}
+      </span>
+    );
+  }
+
+  if (!onAnnotated) return null;
+
+  async function save() {
+    if (saving || horizon === null) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/watchlist", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          annotate: {
+            tradeId: trade.id,
+            horizon,
+            thesis: thesis.trim() || null,
+          },
+        }),
+      });
+      const data = (await r.json().catch(() => ({}))) as {
+        trades?: PositionTrade[];
+      };
+      if (!r.ok || !data.trades) {
+        setErr("No se pudo clasificar");
+        return;
+      }
+      onAnnotated!(data.trades);
+      onOpenChange(false);
+    } catch {
+      setErr("Error de red");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenChange(true)}
+        className="rounded-sm border border-amber-600/30 px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.12em] text-amber-700/80 transition-colors hover:border-amber-600/60 dark:text-amber-300/80"
+        title="Sin plazo declarado: el coach no puede juzgarla"
+      >
+        sin clasificar
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1 w-full rounded-sm border border-border/50 bg-background/60 px-2 py-1.5">
+      <p className="mb-1 font-mono text-[9.5px] leading-relaxed text-amber-700/80 dark:text-amber-300/80">
+        Se marcará como clasificada A POSTERIORI: escribir la tesis sabiendo
+        ya el resultado no es predecir, y el coach tiene que distinguirlo.
+      </p>
+      <IntentPicker
+        horizon={horizon}
+        onHorizon={setHorizon}
+        thesis={thesis}
+        onThesis={setThesis}
+        tone={trade.side === "buy" ? "buy" : "sell"}
+      />
+      <div className="mt-1.5 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving || horizon === null}
+          className="rounded-sm border border-primary/50 px-2 py-1 font-mono text-[9.5px] uppercase tracking-[0.12em] text-primary transition-colors disabled:opacity-40"
+        >
+          {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "guardar"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onOpenChange(false)}
+          className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground/70 transition-colors hover:text-foreground"
+        >
+          cancelar
+        </button>
+        {err ? (
+          <span className="font-mono text-[9.5px] text-rose-700 dark:text-rose-300">
+            {err}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Plazo y tesis de una operación. Compartido por comprar, vender y
+ * clasificar a posteriori — una sola definición del control por el mismo
+ * motivo que `buildPortfolio`: si un formulario ofreciera plazos distintos
+ * de los que evalúa el código, habría operaciones imposibles de juzgar.
+ *
+ * EL PLAZO SE ENSEÑA CON SU CONSECUENCIA DEBAJO, y no es adorno: si el
+ * usuario no sabe que «largo» desactiva el veredicto de precio, elegirá al
+ * tuntún y el dato nacerá torcido. Es la diferencia entre pedir un dato y
+ * explicar para qué sirve.
+ *
+ * La tesis dice explícitamente que NO hace falta contar el contexto de
+ * mercado. Sin esa pista, lo primero que se escribe es «está cayendo» —
+ * que Catalyst ya sabe— en vez del porqué, que es lo único que no sabe.
+ */
+function IntentPicker({
+  horizon,
+  onHorizon,
+  thesis,
+  onThesis,
+  tone,
+}: {
+  horizon: TradeHorizon | null;
+  onHorizon: (h: TradeHorizon) => void;
+  thesis: string;
+  onThesis: (v: string) => void;
+  tone: "buy" | "sell";
+}) {
+  const active =
+    tone === "buy"
+      ? "border-emerald-600/50 text-emerald-700 dark:text-emerald-300"
+      : "border-rose-600/50 text-rose-700 dark:text-rose-300";
+  return (
+    <div className="mt-2 flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-muted-foreground/50">
+          plazo
+        </span>
+        {HORIZONS.map((h) => (
+          <button
+            key={h}
+            type="button"
+            onClick={() => onHorizon(h)}
+            className={cn(
+              "rounded-sm border px-1.5 py-0.5 font-mono text-[10px] transition-colors",
+              horizon === h
+                ? active
+                : "border-border/40 text-muted-foreground/70 hover:text-foreground",
+            )}
+          >
+            {HORIZON_LABEL[h]}
+          </button>
+        ))}
+      </div>
+      <p className="font-mono text-[9.5px] leading-relaxed text-muted-foreground/60">
+        {horizon
+          ? HORIZON_HINT[horizon]
+          : "obligatorio — sin plazo la operación entra en el diario pero el coach no la juzga"}
+      </p>
+      <input
+        value={thesis}
+        onChange={(e) => onThesis(e.target.value)}
+        maxLength={600}
+        placeholder="por qué (opcional) — el precio y las noticias ya los sabe Catalyst"
+        className="w-full rounded-sm border border-border/50 bg-background/60 px-2 py-1 font-mono text-[10.5px] text-foreground placeholder:text-muted-foreground/40 focus:border-primary/50 focus:outline-none"
+      />
     </div>
   );
 }
@@ -837,6 +1289,8 @@ function BuyMore({
   // El precio de mercado como valor inicial: una compra "ahora mismo" se
   // ejecuta cerca de ahí, y así el caso normal es teclear una cifra sola.
   const [buyPrice, setBuyPrice] = useState(price?.toString() ?? "");
+  const [horizon, setHorizon] = useState<TradeHorizon | null>(null);
+  const [thesis, setThesis] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -863,6 +1317,13 @@ function BuyMore({
       setErr("Hacen falta las acciones (o el importe) y el precio de compra");
       return;
     }
+    // El plazo se exige AQUÍ y no sólo en el servidor porque el coste de
+    // pedirlo es un clic y el de no tenerlo es permanente: una operación
+    // registrada sin plazo ya no se puede juzgar sin sesgo retrospectivo.
+    if (horizon === null) {
+      setErr("Elige el plazo: es lo que decide cómo se juzga esta compra");
+      return;
+    }
     setSaving(true);
     setErr(null);
     try {
@@ -871,7 +1332,12 @@ function BuyMore({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol: item.symbol,
-          add: { shares: addShares, price: parsedPrice },
+          add: {
+            shares: addShares,
+            price: parsedPrice,
+            horizon,
+            thesis: thesis.trim() || null,
+          },
         }),
       });
       const data = (await r.json().catch(() => ({}))) as {
@@ -959,7 +1425,7 @@ function BuyMore({
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving || preview === null}
+          disabled={saving || preview === null || horizon === null}
           className="rounded-sm border border-emerald-600/50 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-700 transition-colors hover:bg-emerald-500/10 disabled:opacity-40 dark:text-emerald-300"
         >
           {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "añadir"}
@@ -972,6 +1438,14 @@ function BuyMore({
           cancelar
         </button>
       </div>
+
+      <IntentPicker
+        horizon={horizon}
+        onHorizon={setHorizon}
+        thesis={thesis}
+        onThesis={setThesis}
+        tone="buy"
+      />
 
       <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground/70">
         {err ? (

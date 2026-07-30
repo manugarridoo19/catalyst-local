@@ -216,6 +216,99 @@ export function reducePosition(
   };
 }
 
+/** Lo que `journalCash` necesita de una fila del diario. Se declara aquí
+ *  ESTRUCTURALMENTE en vez de importar `PositionTrade` de `lib/db/queries`
+ *  porque este módulo lo consume el cliente y `lib/db` no puede entrar en
+ *  su bundle ni como import de tipo encadenado. */
+export type TradeLike = {
+  side: "buy" | "sell" | "adjust";
+  shares: number | null;
+  price: number | null;
+  realizedPnl: number | null;
+  createdAt: string;
+};
+
+export type JournalCash = {
+  /** Suma de P&L realizado. `null` si NINGUNA venta pudo medirlo (todas sin
+   *  coste medio registrado): cero sería afirmar que no ganaste nada. */
+  realized: number | null;
+  /** Ventas que no pudieron medir su realizado. Quien pinte `realized`
+   *  está obligado a decir que es parcial si esto es > 0. */
+  realizedUnknownSales: number;
+  /** Dinero que ENTRÓ por ventas desde que existe el diario. */
+  proceeds: number;
+  /** Dinero que SALIÓ en compras desde que existe el diario. */
+  outlays: number;
+  /** proceeds − outlays. NO es el saldo de tu bróker: ver el docstring. */
+  net: number;
+  /** Fecha de la operación más antigua del diario (ISO), o null si vacío.
+   *  Es el "desde" obligatorio de cualquier rótulo que pinte `net`. */
+  since: string | null;
+  buys: number;
+  sells: number;
+};
+
+/**
+ * Flujo de caja DEL DIARIO — no un saldo de efectivo.
+ *
+ * LA DISTINCIÓN QUE JUSTIFICA TODO EL DISEÑO: `position_trades` empezó el
+ * día que se creó la tabla y no contiene el historial anterior. Sumar sus
+ * ventas y restar sus compras da un número real y verificable — *cuánto
+ * dinero han movido las operaciones registradas* — pero NO da tu saldo en
+ * el bróker, porque faltan todos los ingresos, retiradas, dividendos y
+ * comisiones, y faltan las compras con las que montaste las posiciones que
+ * ya tenías el primer día.
+ *
+ * La tentación es llamarlo "efectivo" a secas y dejar que se lea como el
+ * saldo. Sería el mismo error que mover el coste medio al vender: un
+ * número plausible, nunca auditado, que además contaminaría los pesos si
+ * alguien lo sumara al valor de la cartera. Por eso el tipo obliga a
+ * devolver `since` — quien lo pinte no puede omitir desde cuándo cuenta.
+ *
+ * `adjust` no mueve caja: una corrección a mano es un estado nuevo
+ * declarado, no dinero que haya cambiado de sitio. Y una fila sin `shares`
+ * o sin `price` se ignora en el flujo (pero su realizado, si lo tiene, sí
+ * cuenta: son magnitudes independientes).
+ */
+export function journalCash(trades: TradeLike[]): JournalCash {
+  let proceeds = 0;
+  let outlays = 0;
+  let realized: number | null = null;
+  let realizedUnknownSales = 0;
+  let buys = 0;
+  let sells = 0;
+  let since: string | null = null;
+
+  for (const t of trades) {
+    if (since === null || t.createdAt < since) since = t.createdAt;
+
+    if (t.side === "sell") {
+      sells++;
+      if (t.realizedPnl !== null) realized = (realized ?? 0) + t.realizedPnl;
+      else realizedUnknownSales++;
+    } else if (t.side === "buy") {
+      buys++;
+    }
+
+    if (t.side === "adjust") continue;
+    if (t.shares === null || t.price === null) continue;
+    const amount = t.shares * t.price;
+    if (t.side === "sell") proceeds += amount;
+    else outlays += amount;
+  }
+
+  return {
+    realized,
+    realizedUnknownSales,
+    proceeds,
+    outlays,
+    net: proceeds - outlays,
+    since,
+    buys,
+    sells,
+  };
+}
+
 function isLive(p: Position): p is Position & { shares: number } {
   return p.shares !== null && p.shares > 0;
 }
