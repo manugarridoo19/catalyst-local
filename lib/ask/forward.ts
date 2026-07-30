@@ -195,7 +195,19 @@ export async function harvestBodies(
       const id = pending[cursor++];
       attempted++;
       try {
-        const d = await getArticleDetail(id, { allowLlm: false });
+        // Texto y NADA más. `allowLlm:false` por sí solo no bastaba: el
+        // re-scoring cuelga de su propio interruptor y se colaba en toda
+        // cosecha masiva, gastando la cuota del pool que puntúa las
+        // noticias frescas y, de paso, comiéndose el presupuesto de pared
+        // de la propia pregunta. Los TRES consumidores de esta función son
+        // caminos masivos (precalentado, revisión de cartera, /ask), así
+        // que el sitio correcto para cortarlo es aquí y no en cada uno. El
+        // click sobre una tarjeta —un artículo, pedido por alguien— sigue
+        // re-puntuando por `/api/article/[id]`.
+        const d = await getArticleDetail(id, {
+          allowLlm: false,
+          allowRescore: false,
+        });
         if (d?.status === "ok" && d.text) harvested++;
       } catch {
         // Una fuente que bloquea (paywall, 403) no debe tumbar la cosecha:

@@ -171,6 +171,7 @@ async function upsertExtract(row: {
 async function computeDetail(
   newsId: number,
   allowLlm: boolean,
+  allowRescore = true,
 ): Promise<ArticleDetail | null> {
   const ctx = await loadNewsContext(newsId);
   if (!ctx) return null;
@@ -261,7 +262,19 @@ async function computeDetail(
   // respuesta a "¿cómo sabe si es buena/mala?" para los titulares crípticos
   // (8-K, Form 4). Best-effort, daemon-only, no bloquea la respuesta al
   // usuario si falla.
-  if (fromExtractor) {
+  //
+  // `allowRescore=false` lo usa la COSECHA MASIVA de cuerpos
+  // (`prewarmPortfolioBodies`): ahí el objetivo es tener texto para el libro
+  // de futuros, y re-puntuar de paso sale caro de una forma que no se ve.
+  // Medido el 2026-07-30 al ampliar el precalentado: de 24 artículos por
+  // pasada salían ~10 re-scorings, casi todos de piezas de hasta 20 días
+  // que volvían con `impact 1`, y cada uno gasta una llamada del MISMO pool
+  // que puntúa las noticias frescas — que ese día ya estaba en `HIT DAILY
+  // CAP`. Un job de comodidad no puede competir por la cuota con el bucle
+  // principal del producto. Bajo demanda (un click) sigue re-puntuando: ahí
+  // es un artículo, lo pidió alguien, y el titular críptico es justo el caso
+  // que lo justifica.
+  if (fromExtractor && allowRescore) {
     await maybeRescore(ctx, text);
   }
 
@@ -365,13 +378,18 @@ export const isWorkersRuntime = isWorkers;
 
 export async function getArticleDetail(
   newsId: number,
-  opts?: { allowLlm?: boolean },
+  opts?: { allowLlm?: boolean; allowRescore?: boolean },
 ): Promise<ArticleDetail | null> {
   const allowLlm = opts?.allowLlm ?? true;
-  if (isWorkers) return computeDetail(newsId, allowLlm);
+  // Por defecto true: `allowLlm:false` NO implicaba (ni implica) que no se
+  // gaste LLM — el re-scoring cuelga de su propio interruptor y de
+  // `RESCORE_ON_EXTRACT`. Quien quiera cosecha de texto y NADA más tiene
+  // que pedirlo explícitamente.
+  const allowRescore = opts?.allowRescore ?? true;
+  if (isWorkers) return computeDetail(newsId, allowLlm, allowRescore);
   const existing = inflight.get(newsId);
   if (existing) return existing;
-  const p = computeDetail(newsId, allowLlm).finally(() =>
+  const p = computeDetail(newsId, allowLlm, allowRescore).finally(() =>
     inflight.delete(newsId),
   );
   inflight.set(newsId, p);
