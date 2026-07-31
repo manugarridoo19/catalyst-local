@@ -58,6 +58,7 @@ describe("answerShape", () => {
           epsEstimate: 0.11,
           revenueEstimate: 1_143_134_910,
           surprises: [],
+          attributions: [],
         },
       ],
     });

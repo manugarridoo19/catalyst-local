@@ -168,6 +168,56 @@ export function normalizeQuestion(question: string): string {
 }
 
 /**
+ * QUÉ decisión se está preguntando, no sólo QUE es una decisión.
+ *
+ * El agujero medido (2026-07-31): "¿qué te parece COMPRAR SOFI a largo
+ * plazo?" clasificaba bien como decisión… y la respuesta venía en clave
+ * aguantar/recortar — contestaba a una pregunta que nadie hizo. El prompt
+ * necesita saber si se pregunta por ENTRAR dinero nuevo o por SACARLO para
+ * exigir que el veredicto responda a ESA pregunta.
+ *
+ * `general` cuando no hay verbo direccional o hay de los dos lados ("¿vendo
+ * o amplío?"): ahí el abanico completo de veredictos es la respuesta.
+ */
+export type AskFocus = "entry" | "exit" | "general";
+
+const ENTRY = [
+  /\bcompr(o|as|amos|ar|arla|arlo|aria|arias|ariamos)\b/,
+  /\bentr(o|amos|ar|aria|arias)\b/,
+  /\bampli(o|amos|ar|aria|arias)\b/,
+  /\breforzar\b|\brefuerz(o|as)\b/,
+  /\banad(o|ir|iria)\b/,
+  /\binversion\b|\binvertir\b|\binviert(o|es|a)\b/,
+  /\bbuy(ing)?\b/,
+  /\benter(ing)?\b/,
+  /\b(double|average)\s+down\b/,
+  /\badd(ing)?\s+(to|more)\b/,
+];
+
+const EXIT = [
+  /\bvend(o|es|e|emos|er|erla|erlo|eria|erias|iera)\b/,
+  /\bsal(go|imos|ir|iria|irme)\b/,
+  /\brecort(o|amos|ar|arla|arlo|aria|arias)\b/,
+  /\bcierr(o|a)\b|\bcerrar\b/,
+  /\bdeshac(er|erme)\b|\bdeshag(o|amos)\b/,
+  /\b(tomar|recoger|realizar)\s+(beneficios|ganancias|plusvalias)\b/,
+  /\bsell(ing|s)?\b/,
+  /\bexit(ing)?\b/,
+  /\btrim(ming|s)?\b/,
+  /\btake\s+profits?\b/,
+  /\bcut\s+(my|the)\s+(loss|losses|position)\b/,
+];
+
+export function classifyFocus(question: string): AskFocus {
+  const q = normalizeQuestion(question);
+  const entry = ENTRY.some((re) => re.test(q));
+  const exit = EXIT.some((re) => re.test(q));
+  if (entry && !exit) return "entry";
+  if (exit && !entry) return "exit";
+  return "general";
+}
+
+/**
  * Decisión = una petición de OPINIÓN explícita (vale por sí sola), o bien
  * un VERBO DE ACCIÓN sobre una posición **y** además o bien la pregunta
  * habla en primera persona o bien pide explícitamente un juicio.

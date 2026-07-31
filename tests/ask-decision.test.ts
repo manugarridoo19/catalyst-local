@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DECISION_NOISE, classifyIntent, normalizeQuestion } from "@/lib/ask/intent";
+import {
+  DECISION_NOISE,
+  classifyFocus,
+  classifyIntent,
+  normalizeQuestion,
+} from "@/lib/ask/intent";
+import { PRESETS, type Attribution, type Axes } from "@/lib/coach/frames";
+import type { EarningsRead } from "@/lib/ask/retrieve";
 import {
   DECISION_THRESHOLDS,
   buildDecisionFacts,
@@ -88,6 +95,143 @@ describe("classifyIntent", () => {
     // "¿Por qué compraría Buffett esta acción?" pregunta por un tercero.
     expect(classifyIntent("¿Por qué compraría Berkshire esta acción?")).toBe("archive");
     expect(classifyIntent("¿Qué opina el mercado de NVDA?")).toBe("archive");
+  });
+});
+
+describe("classifyFocus — qué decisión se pregunta", () => {
+  it("comprar/invertir/ampliar es ENTRY", () => {
+    expect(classifyFocus("qué le parece comprar SOFI a largo plazo?")).toBe("entry");
+    expect(classifyFocus("¿qué te parece una inversión en $SOFI?")).toBe("entry");
+    expect(classifyFocus("¿amplío mi posición en META?")).toBe("entry");
+    expect(classifyFocus("should I buy NVDA?")).toBe("entry");
+  });
+
+  it("vender/recortar/salir es EXIT", () => {
+    expect(classifyFocus("¿vendo una parte de MSFT?")).toBe("exit");
+    expect(classifyFocus("¿recorto PLTR antes de resultados?")).toBe("exit");
+    expect(classifyFocus("should I take profits on TSLA?")).toBe("exit");
+  });
+
+  it("las dos direcciones a la vez, o ninguna, es GENERAL", () => {
+    expect(classifyFocus("¿vendo o amplío SOFI?")).toBe("general");
+    expect(classifyFocus("¿qué te parece SOFI a largo plazo?")).toBe("general");
+    expect(classifyFocus("¿dejo correr $MSFT o vendo una parte?")).toBe("exit");
+  });
+});
+
+describe("el comunicado oficial entra como presión con lado (Fase 1)", () => {
+  function read(attributions: Attribution[]): EarningsRead {
+    return {
+      symbol: "SOFI",
+      filingDate: "2026-07-29",
+      reportDate: "2026-07-29",
+      headline: "Record quarter",
+      summary: ["revenue $1.22B"],
+      readBetweenLines: null,
+      exhibitUrl: "https://sec.gov/x",
+      epsEstimate: null,
+      revenueEstimate: null,
+      surprises: [],
+      attributions,
+    };
+  }
+  const frames = (axes: Axes | null) => new Map([["SOFI", axes]]);
+
+  it("la tesis cumpliéndose (confirma) empuja a AMPLIAR — el caso SOFI", () => {
+    // El agujero medido 2026-07-31: ingresos récord y guía elevada sólo
+    // entraban como citas blandas; la única presión dura de SOFI era la
+    // beta (recortar) y el partner acababa siempre en aguantar.
+    const d = buildDecisionFacts({
+      symbols: ["SOFI"],
+      portfolio: null,
+      facts: [],
+      earnings: [
+        read([
+          { signal: "nucleo_acelera", layer: "nucleo", magnitude: "net revenue +43% to $1.22B", quote: null },
+          { signal: "guidance_elevada", layer: "nucleo", magnitude: "FY26 guidance raised to $4.75-4.85B", quote: "we are raising our full-year guidance" },
+        ]),
+      ],
+      frames: frames(PRESETS.compounder),
+    });
+    const add = d.pressures.filter((p) => p.side === "add");
+    expect(add).toHaveLength(2);
+    expect(add[0].text).toContain("comunicado oficial");
+    expect(add[0].text).toContain("+43%");
+  });
+
+  it("un mortal CON cita empuja a recortar; SIN cita queda neutral (vigilar)", () => {
+    const conCita = buildDecisionFacts({
+      symbols: ["SOFI"],
+      portfolio: null,
+      facts: [],
+      earnings: [
+        read([
+          { signal: "cuota_perdida", layer: "nucleo", magnitude: "market share fell to 12%", quote: "we lost share to competitors" },
+        ]),
+      ],
+      frames: frames(PRESETS.compounder),
+    });
+    expect(conCita.pressures[0].side).toBe("trim");
+
+    const sinCita = buildDecisionFacts({
+      symbols: ["SOFI"],
+      portfolio: null,
+      facts: [],
+      earnings: [
+        read([
+          { signal: "cuota_perdida", layer: "nucleo", magnitude: "market share fell to 12%", quote: null },
+        ]),
+      ],
+      frames: frames(PRESETS.compounder),
+    });
+    expect(sinCita.pressures[0].side).toBe("neutral");
+  });
+
+  it("un esperado negativo DEFIENDE la posición (hold): es lo que compraste", () => {
+    const d = buildDecisionFacts({
+      symbols: ["SOFI"],
+      portfolio: null,
+      facts: [],
+      earnings: [
+        read([
+          { signal: "capex_disparado", layer: "inversion", magnitude: "capex $2B vs $1B", quote: null },
+        ]),
+      ],
+      frames: frames(PRESETS.power_play),
+    });
+    expect(d.pressures[0].side).toBe("hold");
+    expect(d.pressures[0].text).toContain("es lo esperado");
+  });
+
+  it("sin marco declarado no se asigna lado, y el texto lo dice", () => {
+    const d = buildDecisionFacts({
+      symbols: ["SOFI"],
+      portfolio: null,
+      facts: [],
+      earnings: [
+        read([
+          { signal: "nucleo_acelera", layer: "nucleo", magnitude: "revenue +43%", quote: null },
+        ]),
+      ],
+      frames: frames(null),
+    });
+    expect(d.pressures[0].side).toBe("neutral");
+    expect(d.pressures[0].text).toContain("sin clasificar");
+  });
+
+  it("un comunicado de un símbolo NO preguntado no entra", () => {
+    const d = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: null,
+      facts: [],
+      earnings: [
+        read([
+          { signal: "nucleo_acelera", layer: "nucleo", magnitude: "revenue +43%", quote: null },
+        ]),
+      ],
+      frames: frames(PRESETS.compounder),
+    });
+    expect(d.pressures.filter((p) => p.text.includes("comunicado"))).toHaveLength(0);
   });
 });
 

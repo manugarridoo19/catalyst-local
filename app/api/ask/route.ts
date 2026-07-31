@@ -9,7 +9,13 @@ import { askArchive, hasCoverage, type AskSection } from "@/lib/ai/ask";
 import { extractForwardLedger, type ForwardItem } from "@/lib/ai/forward-ledger";
 import { embedBatch, EmbedQuotaError } from "@/lib/providers/gemini-embed";
 import { isWorkersRuntime, llmAllowed, rateLimited } from "@/lib/ask/gate";
-import { classifyIntent, type AskIntent } from "@/lib/ask/intent";
+import {
+  classifyFocus,
+  classifyIntent,
+  type AskFocus,
+  type AskIntent,
+} from "@/lib/ask/intent";
+import { parseAxes, type Axes } from "@/lib/coach/frames";
 import {
   buildDecisionFacts,
   type DatedFact,
@@ -43,6 +49,10 @@ export type AskResponse = {
   /** Qué clase de pregunta se detectó. La UI pinta la exposición y las
    *  presiones sólo en `decision` — en una consulta de archivo serían ruido. */
   intent: AskIntent;
+  /** Qué decisión se pregunta (entrar dinero / sacarlo / general). Se
+   *  devuelve para poder auditar desde fuera que el veredicto respondió a
+   *  la pregunta que se hizo. */
+  focus: AskFocus;
   question: string;
   answer: string | null;
   /** Respuesta troceada en epígrafes cuando el material daba para ello.
@@ -87,14 +97,17 @@ export async function POST(req: Request) {
 
   const allowLlm = await llmAllowed();
   const intent = classifyIntent(question);
+  const focus = classifyFocus(question);
 
   try {
     // La cartera se pide EN PARALELO con el retrieval, no después: son dos
     // ramas independientes (una consulta a Neon + Finnhub, la otra al
     // archivo) y encadenarlas sumaba su latencia a una pregunta que el
     // usuario está esperando con la pantalla delante.
-    const portfolioP: Promise<Portfolio | null> =
-      intent === "decision" ? loadPortfolio() : Promise.resolve(null);
+    const portfolioP: Promise<PortfolioWithFrames> =
+      intent === "decision"
+        ? loadPortfolio()
+        : Promise.resolve({ portfolio: null, frames: new Map() });
 
     // El embedding de la pregunta es cuota: sólo para el dueño. Si falla
     // (cuota agotada), NO se aborta — se degrada a léxico + SQL, que sigue
@@ -121,14 +134,20 @@ export async function POST(req: Request) {
     // necesita un LLM para ser verdad.
     let decision: DecisionFacts | undefined;
     if (intent === "decision") {
+      const { portfolio, frames } = await portfolioP;
       decision = buildDecisionFacts({
         symbols: r.symbols,
-        portfolio: await portfolioP,
+        portfolio,
         facts: r.facts,
         bars: r.forward.bars,
         sellers: r.forward.sellers,
         deals: r.forward.deals,
         risk: r.forward.risk,
+        // El comunicado leído + el marco declarado: es lo que convierte
+        // "ingresos récord y guía elevada" en presión dura del lado
+        // AMPLIAR, con el mismo lector que el coach (2026-07-31).
+        earnings: r.earnings,
+        frames,
       });
     }
     const decisionOut = {
@@ -142,6 +161,7 @@ export async function POST(req: Request) {
         {
           mode: "search",
           intent,
+          focus,
           question,
           answer: null,
           sections: [],
@@ -178,11 +198,12 @@ export async function POST(req: Request) {
       ledger = extracted?.items ?? [];
     }
 
-    const a = await askArchive(r, question, { decision, ledger });
+    const a = await askArchive(r, question, { decision, ledger, focus });
     return NextResponse.json(
       {
         mode: "answer",
         intent,
+        focus,
         question,
         answer: a.answer || null,
         sections: a.sections,
@@ -208,6 +229,7 @@ export async function POST(req: Request) {
       {
         mode: "answer",
         intent,
+        focus,
         question,
         answer: null,
         sections: [],
@@ -239,28 +261,49 @@ export async function POST(req: Request) {
  * es justo el número sobre el que se apoyaría la postura. Mismo criterio
  * que /api/portfolio-review.
  */
-async function loadPortfolio(): Promise<Portfolio | null> {
+type PortfolioWithFrames = {
+  portfolio: Portfolio | null;
+  /** El MARCO declarado de cada símbolo (los ejes del coach), para leer la
+   *  atribución del comunicado con el mismo lector que el panel. `null` en
+   *  el mapa = posición sin clasificar, que también es información. */
+  frames: Map<string, Axes | null>;
+};
+
+async function loadPortfolio(): Promise<PortfolioWithFrames> {
   try {
     const session = await ensureSessionCookie();
     const rows = await getWatchlist(session);
-    const live = rows.filter((r) => r.shares !== null && r.shares > 0);
-    if (!live.length) return null;
-    const quotes = await getQuotesMap(live.map((r) => r.symbol)).catch(() => ({}));
-    return buildPortfolio(
-      rows.map((r) => ({
-        symbol: r.symbol,
-        name: r.name,
-        sector: r.sector,
-        shares: r.shares,
-        avgCost: r.avgCost,
-      })),
-      quotes,
+    const frames = new Map<string, Axes | null>(
+      rows.map((r) => [
+        r.symbol,
+        parseAxes({
+          madurez: r.frameMadurez,
+          capital: r.frameCapital,
+          ciclo: r.frameCiclo,
+        }),
+      ]),
     );
+    const live = rows.filter((r) => r.shares !== null && r.shares > 0);
+    if (!live.length) return { portfolio: null, frames };
+    const quotes = await getQuotesMap(live.map((r) => r.symbol)).catch(() => ({}));
+    return {
+      portfolio: buildPortfolio(
+        rows.map((r) => ({
+          symbol: r.symbol,
+          name: r.name,
+          sector: r.sector,
+          shares: r.shares,
+          avgCost: r.avgCost,
+        })),
+        quotes,
+      ),
+      frames,
+    };
   } catch (err) {
     console.warn(
       "[api/ask] cartera no disponible:",
       err instanceof Error ? err.message.slice(0, 120) : err,
     );
-    return null;
+    return { portfolio: null, frames: new Map() };
   }
 }

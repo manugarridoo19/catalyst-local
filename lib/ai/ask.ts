@@ -440,14 +440,41 @@ export type AskOptions = {
    *  falló llega vacío y esto sigue: la respuesta pierde profundidad en
    *  "lo que lo decide" pero conserva todo lo estructural. */
   ledger?: ForwardItem[];
+  /** Qué decisión se pregunta: entrar dinero o sacarlo. Obliga al veredicto
+   *  a responder ESA pregunta — "¿compro?" contestado con aguantar/recortar
+   *  es responder a una pregunta que nadie hizo (medido 2026-07-31). */
+  focus?: "entry" | "exit" | "general";
 };
+
+/** La línea que ata el veredicto a la pregunta. Va en el bloque de usuario,
+ *  justo bajo la QUESTION, porque es una instrucción sobre ESTA pregunta y
+ *  no una regla general del papel. */
+function focusLine(focus: AskOptions["focus"]): string {
+  if (focus === "entry") {
+    return (
+      "QUESTION TYPE: he is asking whether to PUT NEW MONEY IN (buy / add / enter). " +
+      "Your verdict must answer THAT question: AMPLIAR or ENTRAR if the case carries it, " +
+      "or an explicit no-compres with the reason and what would change it. " +
+      "Do NOT reframe it as hold-versus-trim — AGUANTAR only answers him if you " +
+      "explicitly say why you would not add at this point."
+    );
+  }
+  if (focus === "exit") {
+    return (
+      "QUESTION TYPE: he is asking whether to TAKE MONEY OUT (sell / trim / exit). " +
+      "Your verdict must answer THAT question: RECORTAR or SALIR if the case carries it, " +
+      "or an explicit no-vendas with the reason and what would change it."
+    );
+  }
+  return "";
+}
 
 export async function askArchive(
   r: Retrieval,
   question: string,
   opts: AskOptions = {},
 ): Promise<AskAnswer> {
-  const { decision, ledger = [] } = opts;
+  const { decision, ledger = [], focus = "general" } = opts;
   // Una pregunta de decisión con evidencia dura propia (peso, insiders,
   // una fecha de resultados) merece respuesta aunque el archivo de noticias
   // venga flojo: la mitad de la respuesta no sale de las noticias.
@@ -475,6 +502,7 @@ export async function askArchive(
 
   const userBlock = [
     `QUESTION: ${question}`,
+    shape === "decision" ? focusLine(focus) : "",
     "",
     shape === "decision" && decision ? formatDecision(decision, ledger) : "",
     "",
@@ -489,49 +517,74 @@ export async function askArchive(
     .filter(Boolean)
     .join("\n");
 
-  const res = await proseCompletion({
-    messages: [
-      { role: "system", content: SYSTEM_BY_SHAPE[shape] },
-      { role: "user", content: userBlock },
-    ],
-    temperature: 0.2,
-    maxTokens: MAX_TOKENS[shape],
-    tag: "ask",
-    jsonMode: true,
-    // Cuatro epígrafes con citas son ~1.900 chars de salida y el modelo de
-    // cabeza tarda ~24s en escribirlos: con los 25s por defecto se quedaba
-    // JUSTO fuera y contestaba el de reserva. Techo de pared para que un
-    // modelo lento no encadene un timeout por key (ver gemini.ts).
-    geminiTimeoutMs: shape === "prose" ? 25_000 : 50_000,
-    geminiOverallTimeoutMs: shape === "prose" ? 45_000 : 75_000,
-  });
-
-  // Rastro del modelo que REALMENTE respondió. La cadena de fallback es
-  // silenciosa por dentro (prose-chain sólo avisa al saltar de PROVEEDOR,
-  // no de modelo dentro de Gemini), así que sin esta línea no hay forma de
-  // auditar a posteriori por qué una respuesta salió firmada por el modelo
-  // de reserva — que es justo la queja que abrió esta sesión.
-  console.log(
-    `[ask] model=${res.model} shape=${shape} citas=${r.citations.length} ` +
-      `cuerpos=${r.bodiesAvailable} cosecha=${r.harvested}/${r.attempted} ` +
-      `comunicados=${r.earnings.length} ledger=${ledger.length} ` +
-      `presiones=${decision?.pressures.length ?? 0}`,
-  );
-
   let parsed: {
     answer?: string;
     sections?: Array<{ key?: string; title?: string; text?: string }>;
     used?: number[];
     coverage?: string;
-  };
-  try {
-    parsed = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""));
-  } catch {
-    throw new Error("ask: respuesta no parseable como JSON");
+  } = {};
+  let sections: AskSection[] = [];
+  let model = "none";
+
+  // DOS intentos, no uno. Medido el 2026-07-31 con la pregunta de compra de
+  // SOFI: 1 de 3 ejecuciones volvió con el JSON sin la sección "stance" —
+  // una respuesta de decisión SIN postura es exactamente la queja que abrió
+  // todo esto, y también cubre el JSON no parseable transitorio del modelo
+  // de reserva. El reintento sólo se paga cuando el primero falla.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await proseCompletion({
+      messages: [
+        { role: "system", content: SYSTEM_BY_SHAPE[shape] },
+        { role: "user", content: userBlock },
+      ],
+      temperature: 0.2,
+      maxTokens: MAX_TOKENS[shape],
+      tag: "ask",
+      jsonMode: true,
+      // Cuatro epígrafes con citas son ~1.900 chars de salida y el modelo de
+      // cabeza tarda ~24s en escribirlos: con los 25s por defecto se quedaba
+      // JUSTO fuera y contestaba el de reserva. Techo de pared para que un
+      // modelo lento no encadene un timeout por key (ver gemini.ts).
+      geminiTimeoutMs: shape === "prose" ? 25_000 : 50_000,
+      geminiOverallTimeoutMs: shape === "prose" ? 45_000 : 75_000,
+    });
+    model = res.model;
+
+    // Rastro del modelo que REALMENTE respondió. La cadena de fallback es
+    // silenciosa por dentro (prose-chain sólo avisa al saltar de PROVEEDOR,
+    // no de modelo dentro de Gemini), así que sin esta línea no hay forma de
+    // auditar a posteriori por qué una respuesta salió firmada por el modelo
+    // de reserva — que es justo la queja que abrió esta sesión.
+    console.log(
+      `[ask] model=${res.model} shape=${shape} intento=${attempt + 1} ` +
+        `citas=${r.citations.length} cuerpos=${r.bodiesAvailable} ` +
+        `cosecha=${r.harvested}/${r.attempted} comunicados=${r.earnings.length} ` +
+        `ledger=${ledger.length} presiones=${decision?.pressures.length ?? 0}`,
+    );
+
+    try {
+      parsed = JSON.parse(
+        res.content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""),
+      );
+    } catch {
+      if (attempt === 0) {
+        console.warn("[ask] JSON no parseable — reintento");
+        continue;
+      }
+      throw new Error("ask: respuesta no parseable como JSON");
+    }
+
+    sections = normalizeSections(parsed);
+    if (shape === "decision") {
+      sections = orderDecisionSections(sections);
+      if (sections.length && !sections.some((s) => s.key === "stance") && attempt === 0) {
+        console.warn("[ask] decisión sin sección de postura — reintento");
+        continue;
+      }
+    }
+    break;
   }
 
-  let sections = normalizeSections(parsed);
-  if (shape === "decision") sections = orderDecisionSections(sections);
   const answer = sections.map((s) => s.text).join("\n\n").trim();
   if (!answer || looksLikeScratchpad(answer)) {
     throw new Error("ask: respuesta vacía o con scratchpad");
@@ -584,7 +637,7 @@ export async function askArchive(
     sections: finalSections.length ? finalSections : sections,
     citations: cited,
     coverage,
-    model: res.model,
+    model,
   };
 }
 

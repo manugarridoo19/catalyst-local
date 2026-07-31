@@ -27,6 +27,7 @@ import {
   type SystematicSeller,
 } from "@/lib/ask/forward";
 import { DECISION_NOISE, type AskIntent } from "@/lib/ask/intent";
+import { parseAttributions, type Attribution } from "@/lib/coach/frames";
 import { COMMON_WORD_DENYLIST } from "@/lib/tickers/alias-denylist";
 import { mentionsTicker } from "@/lib/providers/google-news-tickers";
 
@@ -106,6 +107,13 @@ export type EarningsRead = {
   revenueEstimate: number | null;
   /** La sorpresa, YA CALCULADA. Ver `surprisePct`. */
   surprises: EarningsSurprise[];
+  /** Qué se movió y a qué lo atribuye la EMPRESA, del mismo extractor que
+   *  alimenta al coach (2026-07-31). Es lo que permite que el modo decisión
+   *  convierta "ingresos récord y guía elevada" en PRESIÓN DURA con lado —
+   *  sin esto, los fundamentales sólo entraban como citas blandas y la mesa
+   *  quedaba desequilibrada hacia recortar (beta, peso, ventas de insiders
+   *  sí eran duras; el trimestre excepcional no). */
+  attributions: Attribution[];
 };
 
 /** Real contra consenso de una métrica, con la base contable declarada.
@@ -640,13 +648,15 @@ async function earningsReads(symbols: string[]): Promise<EarningsRead[]> {
     revenueBasis: string | null;
     epsActual: number | null;
     epsBasis: string | null;
+    attribution: string | null;
   }>(
     await db.execute(sql`
       SELECT r.symbol, r.filing_date AS "filingDate", r.report_date AS "reportDate",
              r.headline, r.summary, r.read_between_lines AS "readBetweenLines",
              r.exhibit_url AS "exhibitUrl", e.eps, e.revenue,
              r.revenue_actual AS "revenueActual", r.revenue_basis AS "revenueBasis",
-             r.eps_actual AS "epsActual", r.eps_basis AS "epsBasis"
+             r.eps_actual AS "epsActual", r.eps_basis AS "epsBasis",
+             r.attribution
       FROM (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY filing_date DESC) AS rn
         FROM earnings_reports
@@ -702,8 +712,20 @@ async function earningsReads(symbols: string[]): Promise<EarningsRead[]> {
       epsEstimate: r.eps,
       revenueEstimate: r.revenue,
       surprises,
+      attributions: parseEarningsAttributions(r.attribution),
     };
   });
+}
+
+/** El JSON de atribución de la fila, tolerante a corrupto: una fila mala no
+ *  puede tumbar la pregunta — esa lectura simplemente no aporta presiones. */
+function parseEarningsAttributions(raw: string | null): Attribution[] {
+  if (!raw) return [];
+  try {
+    return parseAttributions(JSON.parse(raw));
+  } catch {
+    return [];
+  }
 }
 
 function parseSummary(raw: string): string[] {

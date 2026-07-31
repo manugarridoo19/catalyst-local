@@ -13,8 +13,14 @@
 // redactor no tenga que inferir la dirección (que es donde inventaría).
 
 import { concentrationFlags, type Portfolio } from "@/lib/portfolio";
-import type { RiskFact, StructuredFacts } from "@/lib/ask/retrieve";
+import type { EarningsRead, RiskFact, StructuredFacts } from "@/lib/ask/retrieve";
 import type { EarningsBar, PendingDeal, SystematicSeller } from "@/lib/ask/forward";
+import {
+  POSITIVE_SIGNALS,
+  SIGNAL_LABEL,
+  readingOf,
+  type Axes,
+} from "@/lib/coach/frames";
 
 /**
  * UMBRALES. Es la única parte de este archivo que es una PREFERENCIA y no
@@ -172,6 +178,16 @@ export function buildDecisionFacts(input: {
   sellers?: SystematicSeller[];
   deals?: PendingDeal[];
   risk?: RiskFact[];
+  /** Los comunicados YA LEÍDOS de estos símbolos, con la atribución del
+   *  propio 8-K. Es lo que equilibra la mesa (2026-07-31): sin ellos, el
+   *  lado AMPLIAR sólo podía alimentarse de compras de insiders y 13D, y
+   *  un trimestre excepcional entraba como cita blanda mientras la beta
+   *  entraba como hecho duro — el partner acababa siempre en aguantar. */
+  earnings?: EarningsRead[];
+  /** El MARCO declarado de cada posición (los ejes del coach). Decide el
+   *  lado de cada atribución con el MISMO lector que el panel del coach
+   *  (`readingOf`): las dos superficies no pueden discrepar sin saberlo. */
+  frames?: Map<string, Axes | null>;
   today?: Date;
 }): DecisionFacts {
   const { symbols, portfolio, facts } = input;
@@ -343,6 +359,44 @@ export function buildDecisionFacts(input: {
         symbol,
         date: f.lastPick.generatedAt,
         text: `tesis del último AI Pick de Catalyst: ${f.lastPick.thesis}`,
+      });
+    }
+  }
+
+  // ── El comunicado oficial, leído contra el marco ─────────────────────
+  //
+  // La atribución del 8-K (el mismo dato que alimenta al coach) se convierte
+  // en presión con lado usando `readingOf` — el ÚNICO lector de señales
+  // contra marco del proyecto. El mapeo severidad → lado es literal:
+  //
+  //   confirma  → add    la tesis cumpliéndose es el argumento para poner
+  //                      dinero nuevo, y viene de un filing ante la SEC.
+  //   mortal    → trim   golpea la raíz de la tesis declarada.
+  //   esperado  → hold   («esto que parece malo es lo que compraste» defiende
+  //                      la posición)... salvo señal POSITIVA con ciclo
+  //                      exógeno: viento de cola → neutral, no se apunta.
+  //   vigilar   → neutral no concluyente por definición.
+  //   null      → neutral sin marco declarado no hay lado que asignar; el
+  //                      texto lo dice para que se note la casilla vacía.
+  for (const er of input.earnings ?? []) {
+    if (!symbols.includes(er.symbol)) continue;
+    const axes = input.frames?.get(er.symbol) ?? null;
+    for (const a of er.attributions) {
+      const read = readingOf(axes, a.signal, a.layer, a.quote);
+      const side: Pressure["side"] =
+        read.severity === "confirma"
+          ? "add"
+          : read.severity === "mortal"
+            ? "trim"
+            : read.severity === "esperado"
+              ? POSITIVE_SIGNALS.has(a.signal)
+                ? "neutral"
+                : "hold"
+              : "neutral";
+      pressures.push({
+        symbol: er.symbol,
+        side,
+        text: `del comunicado oficial (${er.reportDate ?? er.filingDate}): ${SIGNAL_LABEL[a.signal]} — ${a.magnitude}. Leído contra tu marco: ${read.note}`,
       });
     }
   }
