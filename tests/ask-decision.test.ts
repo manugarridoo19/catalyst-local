@@ -51,9 +51,23 @@ describe("classifyIntent", () => {
     );
   });
 
-  it("una pregunta sin verbo de acción nunca es decisión", () => {
+  it("una consulta de archivo sin verbo de acción ni petición de opinión es archivo", () => {
     expect(classifyIntent("¿Qué se dijo de NVDA esta semana?")).toBe("archive");
     expect(classifyIntent("¿Hay algún 13D nuevo?")).toBe("archive");
+    // "a largo plazo" a secas NO basta: es vocabulario normal de una
+    // consulta de archivo sobre guía o estrategia de la empresa.
+    expect(classifyIntent("¿Cuál es la guía a largo plazo de MSFT?")).toBe("archive");
+  });
+
+  it("una petición de opinión clasifica como decisión SIN verbo de acción", () => {
+    // El caso que abrió la sesión del 2026-07-31: caía a archivo y el
+    // bibliotecario (prohibido opinar) respondía con la ficha del valor.
+    expect(classifyIntent("que te parece SOFI a largo plazo?")).toBe("decision");
+    expect(classifyIntent("¿Cómo ves a PLTR después de resultados?")).toBe("decision");
+    expect(classifyIntent("¿Te mojas con NVDA?")).toBe("decision");
+    expect(classifyIntent("¿Merece la pena SOFI a estos precios?")).toBe("decision");
+    expect(classifyIntent("what do you think of NVDA long term?")).toBe("decision");
+    expect(classifyIntent("your take on TSLA?")).toBe("decision");
   });
 });
 

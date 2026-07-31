@@ -51,6 +51,40 @@ const ACTION = [
 ];
 
 /**
+ * Peticiones de OPINIÓN: frases que piden un juicio SIN verbo de operación.
+ *
+ * El agujero medido (2026-07-31, "¿qué te parece SOFI a largo plazo?"): la
+ * conjunción de abajo usa el verbo de ACCIÓN como puerta, y una petición de
+ * opinión pura no lo lleva — caía a archivo y el bibliotecario respondía con
+ * la ficha del valor, que no contesta lo que se preguntó.
+ *
+ * Estas frases clasifican SOLAS, sin la conjunción, porque tienen la
+ * propiedad que a los verbos de acción les falta: no aparecen en titulares
+ * ni en preguntas de archivo ("¿qué se dijo de la compra de Iridium?" lleva
+ * "compra"; nadie le pregunta "¿qué te parece?" a un archivo esperando un
+ * dato). "A largo plazo" a secas queda FUERA a propósito: "¿cuál es la guía
+ * a largo plazo de MSFT?" es una consulta de archivo legítima.
+ */
+const OPINION = [
+  // Español
+  /\bque\s+te\s+parec(e|en)\b/,
+  /\bque\s+(opinas|piensas)\b/,
+  /\bcomo\s+(lo|la|los|las)\s+ves\b/,
+  /\bcomo\s+ves\b/,
+  /\btu\s+(opinion|lectura|tesis|postura|vision)\b/,
+  /\bte\s+mojas\b|\bmojate\b/,
+  /\balcista\s+o\s+bajista\b/,
+  /\b(merece|mereceria|vale|valdria)\s+la\s+pena\b/,
+  // Inglés
+  /\bwhat\s+do\s+you\s+think\b/,
+  /\byour\s+take\b/,
+  /\bthoughts\s+on\b/,
+  /\bhow\s+do\s+you\s+see\b/,
+  /\bbullish\s+or\s+bearish\b/,
+  /\bworth\s+it\b/,
+];
+
+/**
  * Marcas de PRIMERA PERSONA: "esto es dinero mío". Es la mitad que impide
  * el falso positivo que más importa — "What are insiders buying lately?" es
  * una de las tres preguntas de ejemplo de la propia UI y lleva un verbo de
@@ -98,6 +132,13 @@ export const DECISION_NOISE = new Set([
   "sell", "selling", "buy", "buying", "hold", "holding", "trim", "exit",
   "should", "worth", "keep", "keeping", "better", "profits", "position",
   "posicion", "posiciones", "cartera",
+  // Vocabulario de las preguntas de OPINIÓN: en "¿qué te parece SOFI a
+  // largo plazo?" las 6 plazas del canal léxico se las comían "parece",
+  // "largo" y "plazo" — ninguna nombra nada del mundo.
+  "parece", "parecen", "opinas", "piensas", "ves", "opinion", "lectura",
+  "postura", "tesis", "vision", "mojas", "mojate", "alcista", "bajista",
+  "largo", "plazo", "think", "thoughts", "take", "bullish", "bearish",
+  "term",
 ]);
 
 /** Minúsculas y sin tildes: los patrones de arriba se escriben una sola vez
@@ -111,17 +152,23 @@ export function normalizeQuestion(question: string): string {
 }
 
 /**
- * Decisión = hay un VERBO DE ACCIÓN sobre una posición **y** además o bien
- * la pregunta habla en primera persona o bien pide explícitamente un juicio.
+ * Decisión = una petición de OPINIÓN explícita (vale por sí sola), o bien
+ * un VERBO DE ACCIÓN sobre una posición **y** además o bien la pregunta
+ * habla en primera persona o bien pide explícitamente un juicio.
  *
  * La conjunción no es cautela gratuita, es lo que separa estos dos casos
  * reales que comparten el mismo verbo:
  *
  *   "What are insiders buying lately?"        → archivo (no es tu dinero)
  *   "¿es buena idea dejar correr $MSFT…?"     → decisión
+ *
+ * OPINION va por fuera de la conjunción: "¿qué te parece SOFI a largo
+ * plazo?" no lleva verbo de operación y aun así sólo admite una respuesta
+ * que se moje.
  */
 export function classifyIntent(question: string): AskIntent {
   const q = normalizeQuestion(question);
+  if (OPINION.some((re) => re.test(q))) return "decision";
   const hasAction = ACTION.some((re) => re.test(q));
   if (!hasAction) return "archive";
   const hasSelf = SELF.some((re) => re.test(q));
