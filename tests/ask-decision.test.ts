@@ -69,6 +69,26 @@ describe("classifyIntent", () => {
     expect(classifyIntent("what do you think of NVDA long term?")).toBe("decision");
     expect(classifyIntent("your take on TSLA?")).toBe("decision");
   });
+
+  it("la opinión pedida DE USTED también es decisión — la segunda regresión real", () => {
+    // 2026-07-31, segunda vez: el usuario le habla de usted al Ask. "¿Qué
+    // LE parece comprar SOFI a largo plazo?" llevaba además el verbo de
+    // acción "comprar", así que entró por la conjunción vieja (acción sin
+    // primera persona ni juicio reconocido) y cayó a archivo otra vez.
+    expect(classifyIntent("qué le parece comprar SOFI a largo plazo?")).toBe("decision");
+    expect(classifyIntent("¿Qué opina usted de NVDA?")).toBe("decision");
+    expect(classifyIntent("¿Cómo lo ve usted?")).toBe("decision");
+    expect(classifyIntent("¿Se moja con PLTR?")).toBe("decision");
+    expect(classifyIntent("¿Comprarías RKLB aquí?")).toBe("decision");
+    expect(classifyIntent("¿Compraría usted ZETA a estos precios?")).toBe("decision");
+    expect(classifyIntent("would you buy NVDA at these levels?")).toBe("decision");
+  });
+
+  it("la tercera persona NO es opinión: es una pregunta al archivo", () => {
+    // "¿Por qué compraría Buffett esta acción?" pregunta por un tercero.
+    expect(classifyIntent("¿Por qué compraría Berkshire esta acción?")).toBe("archive");
+    expect(classifyIntent("¿Qué opina el mercado de NVDA?")).toBe("archive");
+  });
 });
 
 describe("keywords", () => {

@@ -66,13 +66,25 @@ const ACTION = [
  * a largo plazo de MSFT?" es una consulta de archivo legítima.
  */
 const OPINION = [
-  // Español
-  /\bque\s+te\s+parec(e|en)\b/,
+  // Español — SIEMPRE en tú Y en usted. El fallo medido (2026-07-31,
+  // segunda vez): "¿qué LE parece comprar SOFI a largo plazo?" — el usuario
+  // le habla de usted al Ask y el detector sólo sabía "te parece". Y como
+  // "comprar" es verbo de acción, la pregunta entró por la conjunción
+  // (acción sin primera persona ni juicio) y cayó a archivo otra vez.
+  /\bque\s+(te|le|os|les)\s+parec(e|en|eria)\b/,
   /\bque\s+(opinas|piensas)\b/,
+  /\bque\s+(opina|piensa)\s+usted\b/,
   /\bcomo\s+(lo|la|los|las)\s+ves\b/,
   /\bcomo\s+ves\b/,
-  /\btu\s+(opinion|lectura|tesis|postura|vision)\b/,
-  /\bte\s+mojas\b|\bmojate\b/,
+  /\bcomo\s+(lo|la|los|las)?\s*ve\s+usted\b/,
+  /\b(tu|su)\s+(opinion|lectura|tesis|postura|vision)\b/,
+  /\bte\s+mojas\b|\bse\s+moja\b|\bmojate\b|\bmojese\b/,
+  // El condicional de SEGUNDA persona ES la petición de juicio: "¿comprarías?"
+  // pregunta qué harías tú, no qué pasó. La tercera persona queda FUERA a
+  // propósito: "¿por qué compraría Buffett esta acción?" es archivo — por
+  // eso la forma sin -s sólo entra pegada a "usted".
+  /\b(comprarias|venderias|aguantarias|recortarias|ampliarias|entrarias|saldrias|mantendrias)\b/,
+  /\b(compraria|venderia|aguantaria|recortaria|ampliaria|entraria|saldria|mantendria)\s+usted\b/,
   /\balcista\s+o\s+bajista\b/,
   /\b(merece|mereceria|vale|valdria)\s+la\s+pena\b/,
   // Inglés
@@ -80,6 +92,7 @@ const OPINION = [
   /\byour\s+take\b/,
   /\bthoughts\s+on\b/,
   /\bhow\s+do\s+you\s+see\b/,
+  /\bwould\s+you\s+(buy|sell|hold|trim|enter|exit|add)\b/,
   /\bbullish\s+or\s+bearish\b/,
   /\bworth\s+it\b/,
 ];
@@ -135,10 +148,13 @@ export const DECISION_NOISE = new Set([
   // Vocabulario de las preguntas de OPINIÓN: en "¿qué te parece SOFI a
   // largo plazo?" las 6 plazas del canal léxico se las comían "parece",
   // "largo" y "plazo" — ninguna nombra nada del mundo.
-  "parece", "parecen", "opinas", "piensas", "ves", "opinion", "lectura",
-  "postura", "tesis", "vision", "mojas", "mojate", "alcista", "bajista",
+  "parece", "parecen", "pareceria", "opinas", "piensas", "opina", "piensa",
+  "usted", "ves", "opinion", "lectura", "postura", "tesis", "vision",
+  "mojas", "moja", "mojate", "mojese", "alcista", "bajista",
+  "comprarias", "venderias", "aguantarias", "recortarias", "ampliarias",
+  "entrarias", "saldrias", "mantendrias", "compraria", "venderia",
   "largo", "plazo", "think", "thoughts", "take", "bullish", "bearish",
-  "term",
+  "term", "would",
 ]);
 
 /** Minúsculas y sin tildes: los patrones de arriba se escriben una sola vez
