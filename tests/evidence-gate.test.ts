@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { applyEvidenceGate, type PositionVerdict } from "@/lib/ai/portfolio-review";
+import {
+  applyEvidenceGate,
+  reviewPressures,
+  type PositionVerdict,
+} from "@/lib/ai/portfolio-review";
 import { buildPortfolio } from "@/lib/portfolio";
 import type { PortfolioRetrieval } from "@/lib/ask/portfolio";
 
@@ -189,5 +193,49 @@ describe("applyEvidenceGate — marcadores [n] escritos dentro del texto", () =>
     );
     expect(out[0].used).toEqual([]);
     expect(out[0].degraded).toBe(true);
+  });
+});
+
+describe("reviewPressures — el suelo compartido con /ask", () => {
+  // El caso que motivó la función: /ask decía AGUANTAR SOFI por la presión
+  // de recorte de la beta y la revisión recomendaba "reforzar" el mismo
+  // día — no por criterio, sino porque nunca recibió esa presión. Estas
+  // aserciones fijan que las dos superficies ven los mismos lados.
+  it("la beta alta de una posición viva empuja a recortar, igual que en /ask", () => {
+    const r = retrieval({
+      facts: [facts("AAA", { beta: 2.15 }), facts("BBB"), facts("CCC")],
+    });
+    const beta = reviewPressures(r).find((p) => p.text.includes("beta"));
+    expect(beta?.side).toBe("trim");
+    expect(beta?.symbol).toBe("AAA");
+  });
+
+  it("las compras netas de insiders empujan a AMPLIAR, no a aguantar", () => {
+    const r = retrieval({
+      facts: [
+        facts("AAA", { insiderNet30d: 2_000_000, insiderBuyers30d: 2 }),
+        facts("BBB"),
+        facts("CCC"),
+      ],
+    });
+    const ins = reviewPressures(r).find((p) => p.text.includes("insiders"));
+    expect(ins?.side).toBe("add");
+  });
+
+  it("sin derivada del interés corto medida, no se afirma estabilidad", () => {
+    // Este retrieval no trae shortChangePct: el adaptador pasa null y el
+    // texto debe OMITIR la comparación, no fabricar un "estable".
+    const r = retrieval({
+      facts: [facts("AAA", { daysToCover: 7.2 }), facts("BBB"), facts("CCC")],
+    });
+    const dtc = reviewPressures(r).find((p) => p.text.includes("days-to-cover"));
+    expect(dtc?.side).toBe("neutral");
+    expect(dtc?.text).not.toContain("estable");
+  });
+
+  it("cartera vacía devuelve cero presiones en vez de inventar contexto", () => {
+    const vacio = retrieval();
+    vacio.portfolio.positions = [];
+    expect(reviewPressures(vacio)).toEqual([]);
   });
 });

@@ -265,10 +265,15 @@ export function buildDecisionFacts(input: {
       // narrativa, que es exactamente lo que este bloque existe para no
       // hacer. La derivada sí se declara, porque distingue estructura de
       // gente tomando posición ahora.
+      // Con la derivada SIN MEDIR (shortChangePct null) no se dice nada:
+      // "estable" era una afirmación fabricada sobre un dato ausente, y la
+      // revisión de cartera —que no trae la derivada— la habría heredado.
       const deriva =
-        risk.shortChangePct != null && Math.abs(risk.shortChangePct) >= T.shortChangePct
-          ? `, y el interés corto ${risk.shortChangePct > 0 ? "subió" : "bajó"} ${Math.abs(risk.shortChangePct).toFixed(0)}% respecto a la liquidación anterior de FINRA`
-          : " y estable respecto a la liquidación anterior";
+        risk.shortChangePct == null
+          ? ""
+          : Math.abs(risk.shortChangePct) >= T.shortChangePct
+            ? `, y el interés corto ${risk.shortChangePct > 0 ? "subió" : "bajó"} ${Math.abs(risk.shortChangePct).toFixed(0)}% respecto a la liquidación anterior de FINRA`
+            : " y estable respecto a la liquidación anterior";
       pressures.push({
         symbol,
         side: "neutral",

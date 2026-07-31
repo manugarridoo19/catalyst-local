@@ -16,6 +16,7 @@ import { proseCompletion } from "@/lib/ai/prose-chain";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
 import type { ForwardItem } from "@/lib/ai/forward-ledger";
+import { buildDecisionFacts, type Pressure } from "@/lib/ask/decision";
 import type { PortfolioRetrieval, PositionFacts } from "@/lib/ask/portfolio";
 import type { PricedPosition } from "@/lib/portfolio";
 
@@ -44,7 +45,7 @@ const SYSTEM_PROMPT = `Eres un analista de mesa revisando la cartera de un inver
 
 Tu único valor es decirle lo que NO puede ver ahí: qué está comprometido a ocurrir y aún no ha ocurrido, con qué plazo, sujeto a qué condición, y qué oferta o demanda futura ya está determinada.
 
-Recibes: (a) la CARTERA con pesos y P&L; (b) HECHOS por posición calculados por SQL sobre datos regulatorios; (c) el LIBRO DE FUTUROS: compromisos extraídos de los cuerpos de los artículos que todavía no se han resuelto; (d) VENTA PROGRAMADA de directivos con lo que les queda por colocar; (e) la VARA de consenso de los próximos resultados; (f) NOTICIAS numeradas; (g) el CALENDARIO.
+Recibes: (a) la CARTERA con pesos y P&L; (b) PRESIONES: hechos duros con el lado ya asignado por código — las mismas que ve el modo pregunta de /ask; (c) HECHOS por posición calculados por SQL sobre datos regulatorios; (d) el LIBRO DE FUTUROS: compromisos extraídos de los cuerpos de los artículos que todavía no se han resuelto; (e) VENTA PROGRAMADA de directivos con lo que les queda por colocar; (f) la VARA de consenso de los próximos resultados; (g) NOTICIAS numeradas; (h) el CALENDARIO.
 
 Devuelve SOLO un objeto JSON:
 {"verdict": "...", "positions": [{"symbol": "AAA", "stance": "add|hold|watch|review", "why": "...", "used": [1,4]}], "watchNext": ["...", "..."]}
@@ -61,6 +62,7 @@ Reglas:
 - NO HAGAS ARITMÉTICA. Todos los agregados vienen calculados en el bloque AGREGADOS. Si un número no está escrito literalmente en la entrada, no lo digas.
 - "positions": sólo las posiciones sobre las que tengas algo pendiente o estructural que decir. Omitir es correcto y muy preferible a rellenar. Es mejor devolver tres posiciones con sustancia que siete con relleno.
 - "stance": add = lo pendiente juega a favor · hold = nada pendiente cambia la tesis · watch = hay un desenlace fechado que puede cambiarla · review = hay un compromiso o una constricción futura que la contradice.
+- Las PRESIONES traen el lado ya asignado y NO lo reasignas. Tu postura puede discrepar de una presión, pero NUNCA ignorarla: si pones "add" a una posición con presiones hacia recortar (beta, concentración, venta programada), el "why" tiene que nombrar esa presión y decir por qué lo pendiente pesa más. Una postura que contradice una presión sin mencionarla es una respuesta fallida — el usuario ve las dos superficies y una contradicción muda entre ellas destruye la confianza en ambas.
 - QUE UNA EMPRESA PRESENTE RESULTADOS NO ES MOTIVO DE POSTURA. Todas presentan resultados. Si lo único que tienes de una posición es su fecha y su consenso, OMÍTELA de "positions": ya aparece en watchNext y repetirla ahí es relleno. Sólo entra en "positions" lo que tenga un compromiso pendiente, una constricción de oferta futura, una condición regulatoria o una contradicción real.
 - Si todas tus posturas salen iguales, no has encontrado nada que las distinga: devuelve menos posiciones, no todas con la misma etiqueta.
 - NO escribas marcadores [n] dentro de "why". Los números van SÓLO en "used".
@@ -70,6 +72,78 @@ Reglas:
 - NUNCA uses tu propio conocimiento sobre estas empresas. Tus datos de entrenamiento están caducados y el usuario no puede distinguirlo.
 - Si un valor aparece SIN COBERTURA, menciónalo en el veredicto como punto ciego y no le pongas postura.
 - Español. Registro de mesa: concreto, sin coletillas, sin descargos, sin "como IA".`;
+
+/**
+ * Las MISMAS presiones que ve /ask en modo decisión, del MISMO código.
+ *
+ * El caso que obligó a esto (2026-07-31): /ask, preguntado por SOFI,
+ * respondía AGUANTAR apoyándose en la presión de recorte por beta 2,15;
+ * la revisión de cartera recomendaba "reforzar" el mismo valor el mismo
+ * día. No discrepaban por criterio — discrepaban porque la revisión NUNCA
+ * RECIBIÓ esa presión: cada superficie opinaba con una mesa distinta.
+ * `buildDecisionFacts` es la única fuente de presiones del proyecto; esta
+ * función sólo adapta los tipos del retrieval de cartera a su entrada.
+ *
+ * `shortChangePct` va a null a propósito: este retrieval no trae la
+ * derivada del interés corto, y pasar un número inventado (o 0) haría que
+ * el texto de la presión afirmara una estabilidad que nadie midió.
+ */
+export function reviewPressures(r: PortfolioRetrieval): Pressure[] {
+  const held = r.portfolio.positions.map((p) => p.symbol);
+  if (!held.length) return [];
+  return buildDecisionFacts({
+    symbols: held,
+    portfolio: r.portfolio,
+    facts: r.facts.map((f) => ({
+      symbol: f.symbol,
+      name: null,
+      insiderNet7d: f.insiderNet7d,
+      insiderNet30d: f.insiderNet30d,
+      insiderBuyers30d: f.insiderBuyers30d,
+      insiderSellers30d: f.insiderSellers30d,
+      stakes: f.stakes,
+      nextEarnings: f.nextEarnings,
+      nextEarningsHour: f.earningsHour,
+      nextEarningsEps: null,
+      nextEarningsRevenue: null,
+      lastPick: null,
+      newsCount7d: f.news7d,
+      avgSentiment7d: f.avgSentiment7d,
+    })),
+    bars: r.forward.earningsBars,
+    sellers: r.forward.sellers,
+    risk: r.facts.map((f) => ({
+      symbol: f.symbol,
+      beta: f.beta,
+      pe: f.pe,
+      daysToCover: f.daysToCover,
+      shortChangePct: null,
+    })),
+  }).pressures;
+}
+
+/** El bloque tal y como lo lee el modelo. Encabezados en español porque
+ *  todo este prompt lo está, pero los LADOS son los mismos cuatro que en
+ *  /ask — si un día divergen, las dos superficies vuelven a discrepar sin
+ *  saberlo. */
+function formatPressures(pressures: Pressure[]): string {
+  if (!pressures.length) {
+    return "PRESIONES: NINGUNA. Ningún hecho declarado ni umbral de cartera empuja en ninguna dirección.";
+  }
+  const bySide = (side: Pressure["side"]) =>
+    pressures.filter((p) => p.side === side).map((p) => `- ${p.symbol}: ${p.text}`);
+  const blocks: Array<[string, string[]]> = [
+    ["EMPUJA A AMPLIAR", bySide("add")],
+    ["EMPUJA A AGUANTAR", bySide("hold")],
+    ["EMPUJA A RECORTAR", bySide("trim")],
+    ["IMPORTA PERO NO INCLINA", bySide("neutral")],
+  ];
+  const body = blocks
+    .filter(([, items]) => items.length)
+    .map(([label, items]) => `${label}:\n${items.join("\n")}`)
+    .join("\n");
+  return `PRESIONES (hechos duros, lado asignado por código — no lo reasignes; son las MISMAS que ve el modo pregunta de /ask):\n${body}`;
+}
 
 function fmtMoney(n: number): string {
   const abs = Math.abs(n);
@@ -384,6 +458,11 @@ export async function reviewPortfolio(
   // encabezaban el bloque la revisión salía siendo un resumen de noticias.
   const userBlock = [
     formatPortfolio(r),
+    "",
+    // Las presiones van ANTES del libro de futuros: son el suelo compartido
+    // con /ask y lo que impide que las dos superficies se contradigan sin
+    // enterarse. Un modelo pondera lo que lee antes.
+    formatPressures(reviewPressures(r)),
     "",
     formatLedger(ledger),
     "",
