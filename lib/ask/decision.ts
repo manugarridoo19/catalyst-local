@@ -79,10 +79,16 @@ export type PositionContext = {
 
 /** Un hecho duro ya orientado. `neutral` = importa para decidir pero no
  *  empuja a ningún lado por sí solo (una plusvalía grande es argumento de
- *  los dos bandos según a quién le preguntes). */
+ *  los dos bandos según a quién le preguntes).
+ *
+ *  `add` existe desde 2026-07-31: "¿qué te parece una inversión en $SOFI a
+ *  largo plazo?" preguntaba por AMPLIAR y el esquema sólo conocía aguantar
+ *  y recortar — la respuesta no podía recomendar invertir más ni teniendo
+ *  los datos delante. Aguantar y ampliar no son el mismo lado: uno defiende
+ *  lo que hay, el otro pide dinero nuevo. */
 export type Pressure = {
   symbol: string;
-  side: "hold" | "trim" | "neutral";
+  side: "add" | "hold" | "trim" | "neutral";
   text: string;
 };
 
@@ -273,18 +279,24 @@ export function buildDecisionFacts(input: {
     if (!f) continue;
 
     // ── Lo declarado ante el regulador ──────────────────────────────────
+    //
+    // Compras netas y 13D/G van al lado AMPLIAR, no a aguantar: los dos son
+    // dinero nuevo entrando declarado ante la SEC — gente poniendo capital,
+    // no gente conservando el que tenía. Ponerlos en "aguantar" (como hasta
+    // el 2026-07-31) los infravendía: son el único hecho duro que puede
+    // sostener una recomendación de invertir más.
     const net = f.insiderNet30d;
     if (net !== null && Math.abs(net) >= T.insiderNetUsd) {
       pressures.push({
         symbol,
-        side: net > 0 ? "hold" : "trim",
+        side: net > 0 ? "add" : "trim",
         text: `insiders neto 30d ${money(net)} en mercado abierto (${f.insiderBuyers30d} compradores / ${f.insiderSellers30d} vendedores)`,
       });
     }
     for (const s of f.stakes) {
       pressures.push({
         symbol,
-        side: "hold",
+        side: "add",
         text: `13D/G de ${s.filer ?? "declarante no identificado"}${s.pct !== null ? ` con ${s.pct}% del capital` : ""} declarado el ${s.filedAt} — hay un tercero acumulando con intención declarada`,
       });
     }

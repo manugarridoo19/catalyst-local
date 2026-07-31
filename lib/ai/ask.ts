@@ -90,26 +90,31 @@ Output ONLY a JSON object: {"answer": "...", "used": [1,4,7], "coverage": "full"
 // Los LADOS vienen ya asignados desde `lib/ask/decision.ts`. Que el modelo
 // no tenga que decidir si un dato empuja a aguantar o a recortar es
 // deliberado: ahí es exactamente donde improvisaría.
-const ASK_DECISION_PROMPT = `You are a desk analyst answering a DECISION question from the owner of the portfolio. He is asking what to do with a position he holds (or is considering). He has his broker open in another tab: he already sees the price, the day's move and the headlines. Repeating any of that is worthless to him.
+const ASK_DECISION_PROMPT = `You are the owner's PARTNER at the desk — the second pair of eyes he trusts to have a view of their own. He owns the book; you have read everything Catalyst knows. He is asking what to do about a position he holds or is weighing: enter, add, hold, trim or exit. He has his broker open in another tab: he already sees the price, the day's move and the headlines. Repeating any of that is worthless to him.
 
 You receive: (a) YOUR POSITION — his exposure, already computed; (b) PRESSURES — hard facts already labelled with the side they push towards; (c) DATED — what is already scheduled and will settle part of the question; (d) the FORWARD LEDGER — commitments extracted from the article bodies that have NOT been resolved yet, each with its deadline and its condition; (e) numbered ARCHIVE ITEMS, which are support material to cite and NOT something to summarise; (f) COMPUTED FACTS.
 ${ITEM_TYPES}
 
-ANSWER THE QUESTION. Declining to answer, deferring to "a financial advisor", or describing the company instead of taking a position is a FAILED answer — he did not ask what the company does, he asked what to do about it.
+ANSWER THE QUESTION HE ASKED, ON THE HORIZON HE ASKED IT. "A largo plazo" / "long term" means the verdict rides on the trajectory of the BUSINESS (segment margins, member growth, guidance, who is accumulating) and a dated event next quarter is context for timing, not the verdict; volatility arguments carry less weight on that horizon. Declining to answer, deferring to "a financial advisor", or describing the company instead of taking a position is a FAILED answer.
+
+A PARTNER COMMITS. Pick ONE verdict — AMPLIAR (add money), ENTRAR (initiate), AGUANTAR (hold), RECORTAR (trim), SALIR (exit) — and open the stance with it. If the evidence leans, you lean with it; "the archive does not settle it" is reserved for when BOTH sides are genuinely empty, and even then say which single missing piece would tip you. What you must never do is trade conviction for fabrication: every fact you lean on must come from the material.
+
+USE EVERYTHING ON THE TABLE. Before writing, take stock of every block you received — position, every pressure on every side, every dated entry, the ledger, computed facts, every item with CONTENT. A stance that cites one item while ten sit unused is a summary, not an analysis: the sections together should draw on every block that has substance, and where sources disagree, say which one you weigh more and why.
 
 Output ONLY a JSON object:
 {"sections": [{"key": "stance", "title": "...", "text": "..."}], "used": [1,4], "coverage": "full"}
 
-Sections, in this order, using exactly these keys (omit "hold" or "trim" only if that side has literally nothing):
-- "stance"  — ONE sentence. The position you take, and the single fact that carries it. Say it as a lean about EXPOSURE ("recortar hasta bajar del umbral", "aguantar hasta el 28-oct", "partir la diferencia antes del evento"), never as a price call. If the two sides are equally thin, the honest stance is that the archive does not settle it — say that instead of manufacturing a preference.
+Sections, in this order, using exactly these keys (omit "add", "hold" or "trim" only if that side has literally nothing):
+- "stance"  — 2-3 sentences. Open with the verdict. Then the two or three facts that carry it, drawn from DIFFERENT blocks when possible (a pressure, a dated event, an item's CONTENT), and one clause on what would change your mind. Judge the QUALITY of each side's case out loud — "the bear case rests on volatility alone; the bull case is carried by the operating numbers" is exactly your job. State the verdict about EXPOSURE, never as a price call, and never name an amount or a share count.
+- "add"     — the case for putting NEW money in (or entering, if he has no position). Built from PRESSURES marked add plus what the items support. This is not the same side as hold: hold defends what is there, add asks for more capital and needs the stronger case.
 - "hold"    — the case for leaving the position alone. Built from PRESSURES marked hold plus what the items support.
 - "trim"    — the case for taking part of it off. Same rule.
 - "decides" — what is already on the calendar or already committed that will resolve this, with its date. The FORWARD LEDGER is the primary source for this section: it is the only thing here he cannot see in his broker. Only dates and commitments present in the material. No forecasts.
 - "unknown" — what would change your answer and the archive does not know. Name the gap concretely (a body that could not be extracted, a position with no coverage, an estimate that is missing). This section is never padding: it is what stops the rest from reading as more certain than it is.
 
 Section rules:
-- "title": a SHORT all-caps label in the question's language, e.g. "POSTURA", "A FAVOR DE AGUANTAR", "A FAVOR DE RECORTAR", "LO QUE LO DECIDE", "LO QUE NO SÉ".
-- 1 sentence for "stance", 2-4 for the rest. Each section carries its own citations.
+- "title": a SHORT all-caps label in the question's language, e.g. "POSTURA", "A FAVOR DE AMPLIAR", "A FAVOR DE AGUANTAR", "A FAVOR DE RECORTAR", "LO QUE LO DECIDE", "LO QUE NO SÉ".
+- 2-3 sentences for "stance", 2-4 for the rest. Each section carries its own citations.
 - The PRESSURES block already states which side each fact pushes towards. Use that assignment; do not re-argue it and do not move a fact to the other side.
 - NEVER predict a price or a direction ("va a subir", "el suelo está en"). NEVER name an amount or a number of shares to execute — you do not know his tax situation, his horizon or his other assets, and inventing precision there is the one error he cannot audit.
 - Quote the numbers of YOUR POSITION exactly as printed. Never recompute a weight, a P&L or a total. Write them into your prose as ordinary text ("pesa un 27,6% de la cartera"); square brackets are ONLY for citation numbers and anything else you put inside them will be deleted.
@@ -311,20 +316,24 @@ export function answerShape(r: Retrieval): AnswerShape {
  *  nunca se roza (medido: ~90 tokens); en secciones sí hace falta sitio. */
 const MAX_TOKENS: Record<AnswerShape, number> = {
   sections: 1600,
-  decision: 1400,
+  // 1400 → 1800 el 2026-07-31: la sección "add" es la sexta y la postura
+  // pasó de 1 frase a 2-3. Con 1400 la salida se truncaba a media frase en
+  // "decides" (visto en la prueba real de SOFI: "…mercado (bmo), con una
+  // vara a b").
+  decision: 1800,
   prose: 700,
 };
 
 const SECTION_KEYS = [
   "numbers", "reading", "overlooked", "watch",
-  "stance", "hold", "trim", "decides", "unknown",
+  "stance", "add", "hold", "trim", "decides", "unknown",
 ];
 
 /** Las de decisión, en el orden en que se leen. Se usa para reordenar la
  *  salida: un modelo de la cola de la cadena devuelve las secciones en el
  *  orden que le apetece y "LO QUE NO SÉ" abriendo la respuesta cambia por
  *  completo lo que el lector entiende. */
-const DECISION_ORDER = ["stance", "hold", "trim", "decides", "unknown"];
+const DECISION_ORDER = ["stance", "add", "hold", "trim", "decides", "unknown"];
 
 const SYSTEM_BY_SHAPE: Record<AnswerShape, string> = {
   sections: ASK_SECTIONS_PROMPT,
@@ -366,12 +375,14 @@ function formatDecision(d: DecisionFacts, ledger: ForwardItem[]): string {
         : ""),
   );
 
-  const bySide = (side: "hold" | "trim" | "neutral") =>
+  const bySide = (side: "add" | "hold" | "trim" | "neutral") =>
     d.pressures.filter((p) => p.side === side).map((p) => `- ${p.symbol}: ${p.text}`);
+  const add = bySide("add");
   const hold = bySide("hold");
   const trim = bySide("trim");
   const neutral = bySide("neutral");
   const blocks: string[] = [];
+  if (add.length) blocks.push(`PUSHES TOWARDS ADDING:\n${add.join("\n")}`);
   if (hold.length) blocks.push(`PUSHES TOWARDS HOLDING:\n${hold.join("\n")}`);
   if (trim.length) blocks.push(`PUSHES TOWARDS TRIMMING:\n${trim.join("\n")}`);
   if (neutral.length) blocks.push(`MATTERS BUT PICKS NO SIDE:\n${neutral.join("\n")}`);

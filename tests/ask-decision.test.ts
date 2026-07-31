@@ -154,9 +154,10 @@ describe("orderDecisionSections", () => {
     const out = orderDecisionSections([
       { key: "unknown", title: "LO QUE NO SÉ", text: "c" },
       { key: "trim", title: "RECORTAR", text: "b" },
+      { key: "add", title: "AMPLIAR", text: "d" },
       { key: "stance", title: "POSTURA", text: "a" },
     ]);
-    expect(out.map((s) => s.key)).toEqual(["stance", "trim", "unknown"]);
+    expect(out.map((s) => s.key)).toEqual(["stance", "add", "trim", "unknown"]);
   });
 
   it("conserva las claves desconocidas al final en vez de tirarlas", () => {
@@ -290,6 +291,31 @@ describe("buildDecisionFacts", () => {
     });
     const ins = alto.pressures.find((p) => p.text.includes("insiders"));
     expect(ins?.side).toBe("trim");
+  });
+
+  it("dinero nuevo declarado ante la SEC empuja a AMPLIAR, no a aguantar", () => {
+    // Compras netas de insiders y un 13D son capital ENTRANDO. En "hold"
+    // (como hasta el 2026-07-31) el lado ampliar se quedaba siempre vacío y
+    // la respuesta nunca podía recomendar invertir más — el fallo de la
+    // pregunta "¿qué te parece una inversión en $SOFI a largo plazo?".
+    const compras = buildDecisionFacts({
+      symbols: ["SOFI"],
+      portfolio: null,
+      facts: [facts({ symbol: "SOFI", insiderNet30d: 2_500_000, insiderBuyers30d: 2 })],
+    });
+    expect(compras.pressures.find((p) => p.text.includes("insiders"))?.side).toBe("add");
+
+    const stake = buildDecisionFacts({
+      symbols: ["SOFI"],
+      portfolio: null,
+      facts: [
+        facts({
+          symbol: "SOFI",
+          stakes: [{ filer: "Fondo X", pct: 6.1, filedAt: "2026-07-20" }],
+        }),
+      ],
+    });
+    expect(stake.pressures.find((p) => p.text.includes("13D/G"))?.side).toBe("add");
   });
 
   it("unos resultados inminentes van a 'lo que lo decide' Y presionan", () => {

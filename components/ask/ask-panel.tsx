@@ -28,12 +28,14 @@ function money(n: number): string {
 }
 
 const SIDE_LABEL: Record<string, string> = {
+  add: "a favor de ampliar",
   hold: "a favor de aguantar",
   trim: "a favor de recortar",
   neutral: "importa, no inclina",
 };
 
 const SIDE_TONE: Record<string, string> = {
+  add: "text-sky-700 dark:text-sky-300",
   hold: "text-emerald-700 dark:text-emerald-300",
   trim: "text-amber-700 dark:text-amber-300",
   neutral: "text-muted-foreground",
@@ -136,7 +138,7 @@ export function AskPanel() {
  */
 function DecisionBlocks({ res }: { res: AskResponse }) {
   const held = res.position.filter((p) => p.held);
-  const sides = (["trim", "hold", "neutral"] as const).map((side) => ({
+  const sides = (["add", "hold", "trim", "neutral"] as const).map((side) => ({
     side,
     items: res.pressures.filter((p) => p.side === side),
   }));
