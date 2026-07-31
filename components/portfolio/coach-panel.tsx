@@ -23,6 +23,7 @@ const SEVERITY_STYLE: Record<string, string> = {
   mortal: "border-rose-600/40 text-rose-700 dark:text-rose-300",
   vigilar: "border-amber-600/40 text-amber-700 dark:text-amber-300",
   esperado: "border-emerald-600/40 text-emerald-700 dark:text-emerald-300",
+  confirma: "border-sky-600/40 text-sky-700 dark:text-sky-300",
 };
 
 export function CoachPanel() {

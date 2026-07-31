@@ -68,7 +68,22 @@ release usually says which ("driven by", "primarily reflects", "due to").
 
   "signal" — exactly one of: margen_comprimido, capex_disparado,
   nucleo_desacelera, guidance_recortada, hito_incumplido, cuota_perdida,
-  insider_vendiendo, deuda_creciendo. Skip anything that fits none of these.
+  insider_vendiendo, deuda_creciendo, nucleo_acelera, margen_expandido,
+  guidance_elevada. Skip anything that fits none of these.
+
+  The last three are POSITIVE signals and they matter as much as the
+  negative ones: a reader tracking whether their thesis is EXECUTING needs
+  "cloud revenue accelerated to 26% growth" extracted with the same rigor as
+  a margin squeeze. A strong quarter should produce positive entries — an
+  empty array claims a QUIET quarter, and reporting only the cracks of an
+  exceptional quarter misrepresents the document.
+
+  "nucleo_desacelera" / "nucleo_acelera" refer to the PRIMARY business — the
+  main revenue engine, the segment the company leads its own release with. A
+  SECONDARY segment declining while the primary engine grows is NOT
+  nucleo_desacelera (note it in readBetweenLines instead); the same in
+  reverse for nucleo_acelera. If the release reports several segments, ask
+  which one the thesis of owning this company rides on — that is the núcleo.
 
   "layer" — where the movement belongs, exactly one of:
     "nucleo"        the established business: its revenue, its growth, its
@@ -97,7 +112,8 @@ no sentence discusses it — in that case "quote" is null and "magnitude" carrie
 the two figures being compared.
 
 Report only movements the document actually states, worse OR better. Two to
-four entries is normal; an empty array is correct for a quiet quarter.
+five entries is normal; an empty array is correct ONLY for a genuinely quiet
+quarter — a release with record figures and raised guidance is not one.
 
 DO NOT judge severity, and do not say whether any of this is good or bad for
 an investor. Whether a margin squeeze is expected or alarming depends on what
@@ -235,8 +251,11 @@ export async function generateEarningsReport(
     // 900 con cuatro campos más se acercaba al techo, y un JSON truncado no
     // degrada: se pierde el comunicado entero (el repo ya se comió esto con
     // "batch unparseable"). El cap es un tope, no un gasto — subido a 1800
-    // al añadir `attribution`, que son 2-4 objetos con cita literal dentro.
-    maxTokens: 1800,
+    // al añadir `attribution` (2-4 objetos con cita literal) y a 2600 el
+    // 2026-07-31 al ampliar el vocabulario con señales positivas: hasta 5
+    // entradas con cita, y el truncado se manifestó como "unparseable" en
+    // la primera regeneración de MSFT.
+    maxTokens: 2600,
     jsonMode: true,
     tag: "earnings",
   });

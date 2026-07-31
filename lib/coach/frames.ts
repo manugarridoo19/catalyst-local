@@ -92,8 +92,14 @@ export const AXIS_HINT = {
  *
  *  `esperado` NO es "sin importancia": es una afirmación fuerte y útil —
  *  «esto que parece malo es lo que compraste». Es justo lo que un detector
- *  por umbral no sabe decir. */
-export type Severity = "esperado" | "vigilar" | "mortal";
+ *  por umbral no sabe decir.
+ *
+ *  `confirma` (2026-07-31) es el espejo que faltaba: «la tesis se está
+ *  cumpliendo donde importa». Sin él, el coach sólo sabía callar o alarmar
+ *  — un trimestre excepcional producía únicamente sus dos grietas menores,
+ *  sin contrapeso, y la lectura agregada salía bajista por construcción
+ *  (caso MSFT medido: resultados récord → dos "mortal" y nada más). */
+export type Severity = "confirma" | "esperado" | "vigilar" | "mortal";
 
 export const SIGNALS = [
   "margen_comprimido",
@@ -104,8 +110,26 @@ export const SIGNALS = [
   "cuota_perdida",
   "insider_vendiendo",
   "deuda_creciendo",
+  // Señales POSITIVAS (2026-07-31). El prompt del extractor siempre pidió
+  // "movements worse OR better", pero el vocabulario sólo nombraba lo
+  // peor: el modelo no puede emitir lo que el esquema no contempla (mismo
+  // fallo de vocabulario sesgado que ya se midió en la atribución, en
+  // espejo). Tres bastan: núcleo, margen y guidance son las tres cosas que
+  // una tesis puede estar cumpliendo.
+  "nucleo_acelera",
+  "margen_expandido",
+  "guidance_elevada",
 ] as const;
 export type Signal = (typeof SIGNALS)[number];
+
+/** Las señales que afirman que algo va MEJOR. Se usan para elegir la nota:
+ *  un "esperado" positivo no es «esto que parece malo es lo que compraste»
+ *  sino «viento de cola del ciclo — no lo confundas con la tesis». */
+export const POSITIVE_SIGNALS = new Set<Signal>([
+  "nucleo_acelera",
+  "margen_expandido",
+  "guidance_elevada",
+]);
 
 export const SIGNAL_LABEL: Record<Signal, string> = {
   margen_comprimido: "margen comprimido",
@@ -116,6 +140,9 @@ export const SIGNAL_LABEL: Record<Signal, string> = {
   cuota_perdida: "cuota de mercado perdida",
   insider_vendiendo: "directivos vendiendo de forma sistemática",
   deuda_creciendo: "deuda creciendo",
+  nucleo_acelera: "el negocio principal acelera",
+  margen_expandido: "margen expandido",
+  guidance_elevada: "guidance elevada",
 };
 
 // ─── Atajos ──────────────────────────────────────────────────────────────
@@ -280,6 +307,23 @@ export function severityOf(axes: Axes | null, signal: Signal): Severity | null {
 
     case "insider_vendiendo":
       return "vigilar";
+
+    // ── Positivas ─────────────────────────────────────────────────────
+    // La misma asimetría que sus espejos negativos, en la otra dirección:
+    // con ciclo EXÓGENO un buen trimestre puede ser el ciclo soplando a
+    // favor y no la empresa — afirmar "confirma" sería el mismo error que
+    // afirmar "mortal" cuando frena (la rama que rompía META). `esperado`
+    // aquí significa «viento de cola: disfrútalo sin apuntártelo».
+    case "nucleo_acelera":
+    case "margen_expandido":
+      return ciclo === "exogeno" ? "esperado" : "confirma";
+
+    case "guidance_elevada":
+      // La guidance es la DIRECCIÓN hablando de futuro, no el ciclo
+      // hablando del presente: elevar el año completo con ciclo exógeno
+      // sigue siendo la empresa comprometiéndose. Con recuperación es lo
+      // más fuerte que puede pasar (la tesis ES el plan, y va adelantado).
+      return "confirma";
   }
 }
 
@@ -295,6 +339,9 @@ export function readingOf(
   axes: Axes | null,
   signal: Signal,
   layer: Layer | null,
+  /** La frase literal donde la empresa atribuye el movimiento. `null` = la
+   *  capa es inferencia del extractor. Decide si un mortal se puede AFIRMAR. */
+  quote: string | null = null,
 ): { severity: Severity | null; note: string } {
   const sev = severityOf(axes, signal);
   if (sev === null || axes === null) {
@@ -304,13 +351,46 @@ export function readingOf(
     };
   }
 
+  if (sev === "confirma") {
+    return {
+      severity: sev,
+      note: `${porQue(axes, signal)}: la tesis cumpliéndose donde importa — ${coreOf(axes)}`,
+    };
+  }
   if (sev === "esperado") {
+    // Un "esperado" positivo con ciclo exógeno no es «esto que parece malo
+    // es lo que compraste» sino su reverso: el ciclo sopla a favor y no se
+    // puede apuntar a la tesis — el mismo agnosticismo que hace `vigilar`
+    // a nucleo_desacelera en esa rama.
+    if (POSITIVE_SIGNALS.has(signal)) {
+      return {
+        severity: sev,
+        note: `${porQue(axes, signal)}: viento de cola del ciclo — no lo confundas con la tesis cumpliéndose`,
+      };
+    }
     return { severity: sev, note: `${porQue(axes, signal)}: es lo esperado, no una grieta` };
   }
   if (sev === "mortal") {
+    // ── Gate de cita ─────────────────────────────────────────────────
+    // Misma doctrina que los falsadores: un `occurred: true` sin cita se
+    // degrada en código. "Golpea la tesis en su raíz" es el veredicto más
+    // duro del panel y no puede descansar en una capa que el extractor
+    // INFIRIÓ: sin la frase de la empresa se baja a vigilar y se dice por
+    // qué. El tipo `Attribution` prometía este marcado desde el día uno
+    // ("una atribución sin cita se acepta, pero se marca") y nadie lo
+    // implementó — los dos "mortal" de MSFT del 29-07 tenían quote: null.
+    if (!quote) {
+      return {
+        severity: "vigilar",
+        note:
+          `${porQue(axes, signal)}: apuntaría a la raíz de la tesis, pero la atribución es una ` +
+          `lectura del extractor, no una declaración de la empresa — sin esa frase no se afirma. ` +
+          `Compruébalo en el comunicado antes de actuar${marcoDesfasado(axes, signal, layer)}`,
+      };
+    }
     return {
       severity: sev,
-      note: `${porQue(axes, signal)}: golpea la tesis en su raíz — ${coreOf(axes)}`,
+      note: `${porQue(axes, signal)}: golpea la tesis en su raíz — ${coreOf(axes)}${marcoDesfasado(axes, signal, layer)}`,
     };
   }
   // El caso intermedio es donde la CAPA manda: la misma señal pesa distinto
@@ -330,6 +410,29 @@ export function readingOf(
   return { severity: sev, note: `${porQue(axes, signal)}: conviene seguirlo, sin ser concluyente` };
 }
 
+/**
+ * La pregunta que un umbral no sabe hacer: ¿y si lo desfasado es el MARCO?
+ *
+ * Un capex disparado que la empresa atribuye a inversión deliberada, en una
+ * posición declarada como "capex bajo", admite dos lecturas y el coach no
+ * puede elegir por ti: o la empresa ha dejado de ser lo que compraste (la
+ * tesis está golpeada) o sigue siéndolo y es tu CLASIFICACIÓN la que se
+ * quedó vieja (caso MSFT 2026: declarada compounder de capex bajo mientras
+ * invierte 35,8B$/trimestre en IA con el mercado revalorándola). Afirmar lo
+ * primero sin plantear lo segundo convertía una casilla desactualizada en
+ * una recomendación de venta.
+ */
+function marcoDesfasado(a: Axes, signal: Signal, layer: Layer | null): string {
+  if (signal === "capex_disparado" && a.capital === "bajo" && layer === "inversion") {
+    return (
+      ". Y una pregunta antes de actuar: si esta inversión es deliberada y va a sostenerse, " +
+      "lo desfasado puede ser tu MARCO (declaraste capex bajo), no la empresa — " +
+      "reclasifícala como capital intensivo o acepta esta lectura, pero decide tú cuál de las dos"
+    );
+  }
+  return "";
+}
+
 /** Qué EJE concreto está mandando en esta lectura. Sin esto, el panel dice
  *  "esperado" y el usuario no sabe por cuál de las tres cosas que declaró
  *  — que es justo lo que hay que poder discutirle al coach. */
@@ -345,9 +448,15 @@ function porQue(a: Axes, signal: Signal): string {
         : `en una empresa que ${AXIS_LABEL.madurez[a.madurez]}`;
     case "nucleo_desacelera":
     case "guidance_recortada":
+    case "nucleo_acelera":
+    case "margen_expandido":
       return a.ciclo === "exogeno"
         ? "con un ciclo que la empresa no controla"
         : `en una empresa que ${AXIS_LABEL.madurez[a.madurez]}`;
+    case "guidance_elevada":
+      // Aunque el ciclo sea exógeno, elevar guidance es la dirección
+      // comprometiéndose con el futuro — el eje que manda es la madurez.
+      return `en una empresa que ${AXIS_LABEL.madurez[a.madurez]}`;
     default:
       return `en una empresa que ${AXIS_LABEL.madurez[a.madurez]}`;
   }

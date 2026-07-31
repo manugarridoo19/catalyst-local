@@ -152,7 +152,9 @@ export async function loadContrasts(
       thesisHorizon: isTradeHorizon(r.thesis_horizon) ? r.thesis_horizon : null,
       thesisAnnotatedLater: r.thesis_annotated_later === true,
       readings: attributions.map((a) => {
-        const read = readingOf(axes, a.signal, a.layer);
+        // El quote decide si un "mortal" se puede afirmar: sin la frase de
+        // la empresa, la capa es inferencia y el veredicto baja a vigilar.
+        const read = readingOf(axes, a.signal, a.layer, a.quote);
         return { attribution: a, severity: read.severity, note: read.note };
       }),
       reportDate: r.report_date,
@@ -169,13 +171,14 @@ const SEVERITY_RANK: Record<string, number> = {
   mortal: 0,
   vigilar: 1,
   esperado: 2,
+  confirma: 3,
 };
 
 export function sortContrasts(list: PositionContrast[]): PositionContrast[] {
   const worst = (c: PositionContrast) =>
     Math.min(
-      ...c.readings.map((r) => SEVERITY_RANK[r.severity ?? ""] ?? 3),
-      3,
+      ...c.readings.map((r) => SEVERITY_RANK[r.severity ?? ""] ?? 4),
+      4,
     );
   return [...list].sort((a, b) => {
     const d = worst(a) - worst(b);

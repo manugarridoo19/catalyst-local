@@ -186,6 +186,82 @@ describe("readingOf — la capa desempata lo intermedio", () => {
   });
 });
 
+describe("readingOf — el gate de cita sobre lo mortal", () => {
+  // El caso MSFT del 2026-07-31: dos "mortal" con quote null — la capa era
+  // inferencia del extractor, no declaración de la empresa — y el panel
+  // afirmaba "golpea la tesis en su raíz" con total confianza. Misma
+  // doctrina que los falsadores: la afirmación más dura exige la cita.
+  it("mortal CON la frase de la empresa se afirma", () => {
+    const r = readingOf(
+      PRESETS.compounder,
+      "capex_disparado",
+      "inversion",
+      "capital expenditures increased to fund datacenter expansion",
+    );
+    expect(r.severity).toBe("mortal");
+    expect(r.note).toContain("raíz");
+  });
+
+  it("mortal SIN cita se degrada a vigilar y lo dice", () => {
+    const r = readingOf(PRESETS.compounder, "capex_disparado", "inversion", null);
+    expect(r.severity).toBe("vigilar");
+    expect(r.note).toContain("no se afirma");
+  });
+
+  it("capex en marco de capex bajo pregunta si lo desfasado es el MARCO", () => {
+    // La otra mitad del caso MSFT: declarada compounder de capex bajo
+    // mientras invierte 35,8B$/trimestre. El coach no puede elegir entre
+    // "tesis golpeada" y "clasificación vieja" — tiene que plantear las dos.
+    const sinCita = readingOf(PRESETS.compounder, "capex_disparado", "inversion", null);
+    expect(sinCita.note).toContain("MARCO");
+    const conCita = readingOf(
+      PRESETS.compounder,
+      "capex_disparado",
+      "inversion",
+      "driven by record investment in AI infrastructure",
+    );
+    expect(conCita.severity).toBe("mortal");
+    expect(conCita.note).toContain("MARCO");
+  });
+});
+
+describe("señales positivas — el espejo que faltaba", () => {
+  // Sin ellas, un trimestre excepcional producía SOLO sus grietas menores y
+  // el coach salía bajista por construcción (MSFT: resultados récord → dos
+  // "mortal" y nada más en el panel).
+  it("el núcleo acelerando confirma la tesis… salvo que el ciclo sople a favor", () => {
+    // El par en desacuerdo, como capex esperado/mortal: si estas dos
+    // convergen, la señal positiva ha dejado de leer el marco.
+    expect(severityOf(PRESETS.compounder, "nucleo_acelera")).toBe("confirma");
+    expect(severityOf(META, "nucleo_acelera")).toBe("esperado");
+    expect(readingOf(META, "nucleo_acelera", "nucleo").note).toContain("viento de cola");
+  });
+
+  it("elevar guidance es la dirección comprometiéndose: confirma incluso con ciclo", () => {
+    expect(severityOf(PRESETS.ciclica, "guidance_elevada")).toBe("confirma");
+    expect(severityOf(PRESETS.turnaround, "guidance_elevada")).toBe("confirma");
+  });
+
+  it("ninguna señal positiva puede salir mortal ni vigilar", () => {
+    for (const madurez of ["cosechando", "construyendo", "recuperandose"] as const) {
+      for (const capital of ["alto", "bajo"] as const) {
+        for (const ciclo of ["exogeno", "secular"] as const) {
+          for (const s of ["nucleo_acelera", "margen_expandido", "guidance_elevada"] as const) {
+            const sev = severityOf({ madurez, capital, ciclo }, s);
+            expect(sev === "confirma" || sev === "esperado").toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it("la nota de confirma dice QUÉ se está cumpliendo, no un aplauso genérico", () => {
+    const r = readingOf(PRESETS.compounder, "nucleo_acelera", "nucleo");
+    expect(r.severity).toBe("confirma");
+    expect(r.note).toContain("cumpliéndose");
+  });
+});
+
 describe("verdictHorizonsFor — qué plazo admite veredicto de precio", () => {
   it("largo no admite ninguno", () => {
     expect(verdictHorizonsFor("largo")).toEqual([]);
