@@ -15,7 +15,15 @@ import type {
   SentimentScore,
 } from "@/lib/types";
 import { categorizeHeuristic, type NewsCategory } from "@/lib/categorizer";
-import { addToPosition, reducePosition } from "@/lib/portfolio";
+import {
+  addToPosition,
+  journalCash,
+  reducePosition,
+  type JournalCash,
+  type TradeLike,
+} from "@/lib/portfolio";
+import { getProfile } from "@/lib/providers/finnhub";
+import { claimableSessionIds } from "@/lib/session";
 
 // IN-list para `news.category` reutilizado por live feed y News tab. Toma
 // un array de categorías + una flag `allowNull` (incluye filas sin
@@ -454,6 +462,16 @@ export async function setPosition(
       WITH upd AS (
         UPDATE watchlist SET shares = ${shares}, avg_cost = ${avgCost}
          WHERE user_session = ${session} AND symbol = ${symbol}
+           -- Sin cambio real no hay nada que anotar. El diario existe para
+           -- que las acciones no salten entre dos filas sin operación que lo
+           -- explique; una línea 'adjust' que deja la posición EXACTAMENTE
+           -- igual no explica nada y ensucia el registro con ruido que luego
+           -- hay que leer (abrir el editor y guardar sin tocar bastaba para
+           -- generarla). IS DISTINCT FROM y no <>: los dos campos son
+           -- NULLABLE y con <> una fila sin coste nunca se compararía
+           -- consigo misma.
+           AND (shares IS DISTINCT FROM ${shares}
+                OR avg_cost IS DISTINCT FROM ${avgCost})
         RETURNING id
       )
       INSERT INTO position_trades
@@ -465,7 +483,13 @@ export async function setPosition(
       RETURNING id
     `),
   );
-  return rows.length > 0;
+  if (rows.length > 0) return true;
+  // Cero filas significa DOS cosas distintas desde que el UPDATE exige un
+  // cambio real: o el símbolo no está en la watchlist (404 legítimo) o los
+  // valores ya eran ésos y no había nada que escribir. Sin distinguirlas,
+  // guardar el editor sin tocar nada devolvía «no está en tu lista» sobre un
+  // valor que sí está — un error inventado por una operación innecesaria.
+  return (await readPosition(session, symbol)) !== null;
 }
 
 /**
@@ -729,12 +753,98 @@ export async function getTrades(
   );
 }
 
-export async function addToWatchlist(session: string, symbol: string) {
-  await db.insert(tickers).values({ symbol }).onConflictDoNothing();
+/** La caja del diario, calculada EN EL SERVIDOR y sobre el diario COMPLETO.
+ *  `getTrades` corta a 200 porque se pinta entero; sumar sobre ese corte
+ *  hacía que «P&L realizado» y la caja dejaran de ser la cifra de toda la
+ *  vida del diario a partir de la operación 201, sin ningún síntoma (audit
+ *  2026-08-01). La aritmética NO se duplica en SQL: se traen las columnas
+ *  mínimas (TradeLike) de todas las filas y se pasa por `journalCash`, que
+ *  es la única definición de estas cuentas en el proyecto. El diario es de
+ *  un solo usuario real: traerlo entero para agregar es más barato que
+ *  mantener dos aritméticas que pueden divergir. */
+export async function getJournalCash(session: string): Promise<JournalCash> {
+  const rows = unwrapRows<TradeLike>(
+    await db.execute(sql`
+      SELECT side, shares, price,
+             realized_pnl AS "realizedPnl",
+             to_char(created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "createdAt"
+      FROM position_trades
+      WHERE user_session = ${session}
+    `),
+  );
+  return journalCash(rows);
+}
+
+/** Cuántos símbolos sigue ya esta sesión. Para el tope por sesión de la
+ *  ruta: `watchlist` no tiene caducidad y el Worker público acepta
+ *  escrituras anónimas, así que sin techo el depósito de 512 MB de Neon
+ *  —el mismo en el que la ingesta de embeddings se pausa a 380— se puede
+ *  llenar desde fuera. */
+export async function countWatchlist(session: string): Promise<number> {
+  const rows = unwrapRows<{ n: number }>(
+    await db.execute(
+      sql`SELECT COUNT(*)::int AS n FROM watchlist WHERE user_session = ${session}`,
+    ),
+  );
+  return rows[0]?.n ?? 0;
+}
+
+/**
+ * Añade un símbolo a la watchlist de la sesión.
+ *
+ * EL SÍMBOLO TIENE QUE SER REAL antes de tocar `tickers`. Antes esto hacía
+ * un `INSERT INTO tickers … ON CONFLICT DO NOTHING` incondicional, y como la
+ * ruta es anónima y sólo valida `[A-Z0-9.\-]{1,10}`, cualquiera podía
+ * inventarse filas en la tabla del UNIVERSO desde el Worker público. Eso no
+ * se quedaba ahí: `getTopTickersForFetch` prioriza lo que esté en alguna
+ * watchlist, así que 50 símbolos basura desplazaban a la watchlist real de
+ * las 50 plazas de fetch per-ticker del cron, y `loadKnownSymbols()` —el
+ * filtro de la ingesta de SEC EDGAR— se los tragaba también.
+ *
+ * El camino legítimo NO paga por ello: si el símbolo ya está en `tickers`
+ * (el caso normal — el pipeline mete todo lo que menciona un proveedor) no
+ * se llama a nadie. Sólo un símbolo NUEVO se confirma, con UNA llamada a
+ * `getProfile` de Finnhub, que es el proveedor más barato que tenemos y ya
+ * devuelve el nombre y el logo con los que se crea bien la fila.
+ *
+ * Ante un fallo de Finnhub se responde `unconfirmed` y NO se crea nada: es
+ * mejor que el usuario reintente a que un corte del proveedor abra otra vez
+ * la puerta del universo.
+ */
+export async function addToWatchlist(
+  session: string,
+  symbol: string,
+): Promise<"ok" | "unknown_symbol" | "unconfirmed"> {
+  const known = unwrapRows<{ ok: number }>(
+    await db.execute(sql`SELECT 1 AS ok FROM tickers WHERE symbol = ${symbol} LIMIT 1`),
+  ).length;
+
+  if (!known) {
+    let profile: Awaited<ReturnType<typeof getProfile>> = null;
+    try {
+      profile = await getProfile(symbol);
+    } catch {
+      return "unconfirmed";
+    }
+    if (!profile || profile.ticker.toUpperCase() !== symbol) {
+      return "unknown_symbol";
+    }
+    await db
+      .insert(tickers)
+      .values({
+        symbol,
+        name: profile.name || null,
+        logoUrl: profile.logo || null,
+        source: "watchlist",
+      })
+      .onConflictDoNothing();
+  }
+
   await db
     .insert(watchlist)
     .values({ userSession: session, symbol })
     .onConflictDoNothing();
+  return "ok";
 }
 
 export async function removeFromWatchlist(session: string, symbol: string) {
@@ -804,15 +914,35 @@ export async function getTopTickersForFetch(
   const cached = topTickersCache.get(limit);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
+  // El tramo de watchlist va acotado a las sesiones del DUEÑO cuando se
+  // conocen. La consulta antigua era `SELECT DISTINCT symbol FROM watchlist`
+  // sin filtro de sesión, así que la watchlist de cualquier anónimo del
+  // Worker público se colaba en el primer criterio de orden y desplazaba a
+  // la real de las plazas de fetch.
+  //
+  // FAIL-OPEN deliberado: `claimableSessionIds()` sale de
+  // CLAIMABLE_SESSION_IDS / LOCAL_DEFAULT_SESSION_ID, y el cron de GitHub
+  // Actions —que es justo quien llama a esta función— NO tiene ninguna de
+  // las dos. Si ahí el filtro se aplicara en vacío, la watchlist del usuario
+  // perdería su prioridad de golpe, que es peor que el abuso que se está
+  // tapando. Con la lista vacía se conserva el comportamiento de siempre; la
+  // puerta de verdad es `addToWatchlist`, que ya no deja entrar símbolos sin
+  // confirmar en `tickers`.
+  const owners = [...claimableSessionIds()];
+  const watchScope = owners.length
+    ? sql`SELECT DISTINCT symbol FROM watchlist WHERE user_session IN (${sql.join(
+        owners.map((s) => sql`${s}`),
+        sql`, `,
+      )})`
+    : sql`SELECT DISTINCT symbol FROM watchlist`;
+
   const result = unwrapRows<{ symbol: string; name: string | null }>(
     await db.execute(sql`
       SELECT t.symbol, t.name FROM tickers t
       LEFT JOIN (
         SELECT ticker, COUNT(*) AS n FROM news_tickers GROUP BY ticker
       ) c ON c.ticker = t.symbol
-      LEFT JOIN (
-        SELECT DISTINCT symbol FROM watchlist
-      ) w ON w.symbol = t.symbol
+      LEFT JOIN (${watchScope}) w ON w.symbol = t.symbol
       ORDER BY
         (w.symbol IS NOT NULL) DESC,
         (t.source = 'seed') DESC,

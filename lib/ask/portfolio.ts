@@ -106,6 +106,13 @@ export type EarningsCluster = {
   date: string;
   symbols: string[];
   weightPct: number;
+  /** Símbolos del cluster que NO se pudieron valorar y por tanto NO están
+   *  dentro de `weightPct`. Va en el tipo por la misma razón que
+   *  `unpricedSymbols` en `buildPortfolio`: quien pinte el porcentaje está
+   *  obligado a decir sobre cuánto se calculó. Contarlos como 0% hacía que
+   *  «el 12% de la cartera reporta ese día» fuera exacto y falso a la vez
+   *  justo el día que el proveedor de precios fallaba. */
+  unpricedSymbols: string[];
 };
 
 /** Agregados de cartera que el LLM NO debe calcular por su cuenta. */
@@ -310,6 +317,14 @@ function newsQuery(syms: SQL) {
   // noticias a 20 días, así que las citas siguen siendo verificables.
   // Ordenar por impacto y no por fecha es deliberado: en una revisión de
   // cartera interesa lo que MUEVE la tesis, no lo último que se publicó.
+  //
+  // El prefiltro `symbols && ARRAY[...]` NO es redundante con el
+  // `s.sym IN (...)` de abajo: es el ÚNICO de los dos que puede usar el GIN
+  // news_embeddings_symbols_idx (la misma forma que retrieve.ts). Filtrar
+  // solo sobre el alias del unnest obligaba a expandir el array de TODAS
+  // las filas de la ventana antes de descartar. El IN se queda porque el
+  // overlap deja pasar filas por cualquier símbolo del array y `s.sym` debe
+  // seguir siendo uno de los pedidos.
   return db.execute(sql`
     SELECT sym, news_id AS "newsId", headline, summary, url, source, symbols,
            impact, sentiment, "publishedAt"
@@ -322,7 +337,8 @@ function newsQuery(syms: SQL) {
              ) AS rn
       FROM news_embeddings ne
       CROSS JOIN LATERAL unnest(ne.symbols) AS s(sym)
-      WHERE s.sym IN (${syms})
+      WHERE ne.symbols && ARRAY[${syms}]::text[]
+        AND s.sym IN (${syms})
         AND ne.published_at >= now() - interval '${sql.raw(String(NEWS_WINDOW_DAYS))} days'
     ) t
     WHERE rn <= ${NEWS_PER_SYMBOL}
@@ -580,13 +596,23 @@ export function citationNumberFor(r: PortfolioRetrieval): (newsId: number) => nu
  * resultado aproximadamente correcto en la primera prueba real, que es
  * exactamente el modo de fallo peligroso: parece bien y nadie lo revisa.
  * Si el número va a salir en pantalla, lo calcula el código.
+ *
+ * Exportada SOLO para el test que fija la beta reescalada y el cluster con
+ * `unpricedSymbols`: son de los pocos números que llegan a pantalla sin
+ * pasar por el LLM y nada más los protegía de una regresión.
  */
-function deriveAggregates(
+export function deriveAggregates(
   facts: PositionFacts[],
   portfolio: Portfolio,
 ): DerivedAggregates {
+  // `weightPct` es null cuando la posición no se pudo valorar (429 del
+  // proveedor de precios). El mapa guarda SÓLO lo valorable, y quien lo
+  // consulte distingue "pesa 0" de "no se sabe" — que es la diferencia entre
+  // un agregado correcto y uno inventado.
   const weightOf = new Map(
-    portfolio.positions.map((p) => [p.symbol, p.weightPct ?? 0]),
+    portfolio.positions
+      .filter((p) => p.weightPct !== null)
+      .map((p) => [p.symbol, p.weightPct as number]),
   );
 
   // Beta ponderada SOLO sobre el peso que tiene beta conocida, y se
@@ -601,12 +627,24 @@ function deriveAggregates(
     betaSum += f.beta * w;
   }
 
-  const clusters = new Map<string, { symbols: string[]; weightPct: number }>();
+  const clusters = new Map<
+    string,
+    { symbols: string[]; weightPct: number; unpricedSymbols: string[] }
+  >();
   for (const f of facts) {
     if (!f.nextEarnings) continue;
-    const cur = clusters.get(f.nextEarnings) ?? { symbols: [], weightPct: 0 };
+    const cur = clusters.get(f.nextEarnings) ?? {
+      symbols: [],
+      weightPct: 0,
+      unpricedSymbols: [],
+    };
     cur.symbols.push(f.symbol);
-    cur.weightPct += weightOf.get(f.symbol) ?? 0;
+    const w = weightOf.get(f.symbol);
+    // Sin peso conocido NO suma cero: sale declarado aparte. Sumar 0 dejaba
+    // el porcentaje por debajo de la verdad sin ninguna señal de que faltaba
+    // un nombre, y el prompt lo presenta como cifra cerrada.
+    if (w === undefined) cur.unpricedSymbols.push(f.symbol);
+    else cur.weightPct += w;
     clusters.set(f.nextEarnings, cur);
   }
 

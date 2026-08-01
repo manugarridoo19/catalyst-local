@@ -155,6 +155,17 @@ export async function runFalsifierChecks(opts?: {
        WHERE f.status = 'aprobado'
          AND f.tripped_at IS NULL
          AND (f.checked_accession IS NULL OR f.checked_accession <> u.accession)
+         -- Sólo símbolos que el usuario SIGUE teniendo en la lista.
+         -- thesis_falsifiers no tiene FK contra watchlist (los falsadores
+         -- son un criterio escrito y no se borran solos), así que sin esto se
+         -- pagaba una llamada LLM por cada comunicado nuevo de una empresa
+         -- que ya se vendió y se quitó de la lista — y el resultado no se
+         -- pintaba en ninguna parte, porque /api/coach sólo lee posiciones
+         -- con shares > 0.
+         AND EXISTS (
+           SELECT 1 FROM watchlist w
+            WHERE w.user_session = f.user_session AND w.symbol = f.symbol
+         )
        ORDER BY f.symbol, f.id
     `),
   );
@@ -224,6 +235,36 @@ export async function runFalsifierChecks(opts?: {
            WHERE id = ${id}
         `);
       }
+    }
+
+    // El grupo ENTERO queda marcado contra este filing, no sólo los índices
+    // que el modelo devolvió. El prompt pide "una entrada por condición,
+    // mismo orden, mismo número", pero omitir una es un fallo de formato
+    // frecuente — y un solo índice ausente dejaba a TODO el grupo elegible
+    // en la siguiente pasada, así que el mismo comunicado se re-pagaba en
+    // cada tick del cron indefinidamente. Justo lo que `checked_accession`
+    // existe para impedir ("un filing se paga UNA vez por símbolo").
+    //
+    // Marcarlo es defendible porque la llamada SÍ ocurrió y devolvió algo
+    // utilizable: el prompt DEFAULTEA A FALSE ("I cannot tell from this
+    // document" es false), así que la ausencia de una entrada se lee igual
+    // que la entrada que habría venido. Nunca se marca cuando la llamada
+    // falló entera: ése es el `continue` de arriba.
+    const omitidos = g.ids.filter(
+      (_, i) => !results.some((r) => r.index === i),
+    );
+    if (omitidos.length) {
+      console.warn(
+        `[coach] ${g.symbol}: el modelo omitió ${omitidos.length}/${g.ids.length} condiciones — se marcan como comprobadas contra ${g.accession} para no re-pagar el mismo filing cada tick`,
+      );
+      await db.execute(sql`
+        UPDATE thesis_falsifiers
+           SET checked_accession = ${g.accession}
+         WHERE id IN (${sql.join(
+           omitidos.map((id) => sql`${id}`),
+           sql`, `,
+         )})
+      `);
     }
   }
 

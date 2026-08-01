@@ -2,7 +2,11 @@ import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { etDateString } from "@/lib/providers/yahoo";
 import { getAdjCloseSeries, fmpFallbackUsed } from "@/lib/signals/prices";
-import { findBaselineDate, horizonReturn } from "@/lib/signals/outcomes";
+import {
+  benchmarkReturn,
+  findBaselineDate,
+  horizonReturn,
+} from "@/lib/signals/outcomes";
 import { MEASURED_HORIZONS, RIPE_CALENDAR_DAYS } from "@/lib/coach/horizon";
 
 // Mide TUS operaciones contra los precios posteriores. Node-only (pega a
@@ -74,6 +78,16 @@ async function loadPending(maxTrades: number): Promise<PendingTrade[]> {
       -- es una decisión de mercado, así que medirla contra el precio
       -- posterior fabricaría aciertos y errores que nadie tomó.
       WHERE t.side <> 'adjust'
+        -- Sólo lo que se sigue vigilando. position_trades es append-only y
+        -- no tiene FK contra watchlist (el diario sobrevive a propósito a
+        -- que quites el valor de la lista), así que sin esto se seguían
+        -- pidiendo precios a Yahoo por símbolos que el usuario ya no tiene ni
+        -- mira — y el resultado no se pinta en ningún sitio, porque el panel
+        -- del coach sólo lee posiciones con shares > 0.
+        AND EXISTS (
+          SELECT 1 FROM watchlist w
+           WHERE w.user_session = t.user_session AND w.symbol = t.symbol
+        )
         AND t.outcome_attempts < ${MAX_ATTEMPTS}
         AND (t.last_outcome_at IS NULL
           OR t.last_outcome_at < now() - (${RETRY_HOURS} || ' hours')::interval)
@@ -142,9 +156,20 @@ export async function runTradeOutcomesCron(opts?: {
     ),
   );
 
+  // Mismo criterio que el job gemelo del Lab: sin benchmark no se mide, y la
+  // pasada se aborta entera en vez de escribir el exceso a null. Aquí pesa
+  // incluso más que allí porque `judgeTrade` degrada `basis` de "benchmark"
+  // a "mercado" cuando falta, y eso cambia el VEREDICTO que se le enseña al
+  // usuario: vender antes de una caída del 6% no es puntería si el mercado
+  // entero cayó un 6% esa semana. No tocar `outcome_attempts` ni
+  // `last_outcome_at` deja las operaciones pendientes y el siguiente tick
+  // reintenta.
   const benchmark = await getAdjCloseSeries(BENCHMARK_SYMBOL, oldest);
   if (!benchmark.dates.length) {
-    console.warn("[coach] benchmark SPY no disponible — outcomes sin exceso");
+    console.warn(
+      "[coach] benchmark SPY no disponible — pasada abortada SIN medir nada; reintento en el próximo tick",
+    );
+    return empty();
   }
 
   let outcomesFilled = 0;
@@ -173,15 +198,15 @@ export async function runTradeOutcomesCron(opts?: {
             if (already.has(h)) continue;
             const point = horizonReturn(series, base, h, todayEt);
             if (!point) continue;
-            const bench =
-              benchmark.dates.length &&
-              benchmark.closes.has(point.baselineDate) &&
-              benchmark.closes.has(point.targetDate)
-                ? (benchmark.closes.get(point.targetDate)! /
-                    benchmark.closes.get(point.baselineDate)! -
-                    1) *
-                  100
-                : null;
+            // Misma función que el Lab, no una copia: comparar tus decisiones
+            // con las señales exige que el exceso salga de la misma aritmética.
+            const bench = benchmarkReturn(benchmark, point);
+            if (bench === null) {
+              console.warn(
+                `[coach] operación ${tr.id}/${h}d: SPY sin cierre en ${point.baselineDate}→${point.targetDate} — horizonte NO medido`,
+              );
+              continue;
+            }
             try {
               await db.execute(sql`
                 INSERT INTO trade_outcomes (trade_id, horizon, baseline_date,

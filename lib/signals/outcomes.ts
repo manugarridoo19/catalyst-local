@@ -100,6 +100,28 @@ export function horizonReturn(
   };
 }
 
+/**
+ * Retorno del benchmark entre las DOS MISMAS fechas del punto medido.
+ *
+ * Vive aquí y se exporta por el mismo motivo que `horizonReturn`: el job del
+ * coach mide las operaciones del usuario con esta aritmética y compararlas
+ * con las señales sólo tiene sentido si es literalmente la misma función.
+ *
+ * `null` = no se puede calcular. El caller NO debe escribir la fila con el
+ * exceso a null: `signal_outcomes`/`trade_outcomes` no se revisitan nunca
+ * (ON CONFLICT DO NOTHING + el set de horizontes ya rellenos), así que un
+ * null aquí es permanente y contamina toda estadística de exceso posterior.
+ */
+export function benchmarkReturn(
+  benchmark: AdjCloseSeries,
+  point: { baselineDate: string; targetDate: string },
+): number | null {
+  const base = benchmark.closes.get(point.baselineDate);
+  const target = benchmark.closes.get(point.targetDate);
+  if (!base || !target) return null;
+  return (target / base - 1) * 100;
+}
+
 // ─── Job ─────────────────────────────────────────────────────────────────
 
 function ripeCondition() {
@@ -203,9 +225,35 @@ export async function runSignalOutcomesCron(opts?: {
   );
 
   // SPY una sola vez por pasada — el benchmark de todos los eventos.
+  //
+  // SIN BENCHMARK NO SE MIDE NADA, y la pasada se aborta entera. Antes se
+  // seguía adelante escribiendo `benchmark_return_pct = null`, y esa fila ya
+  // no se revisitaba jamás: el `ON CONFLICT DO NOTHING` de más abajo y el
+  // `already.has(h)` la daban por hecha para siempre. El resultado era una
+  // pérdida SILENCIOSA — `getSignalStats` calcula `avg_excess` con AVG (que
+  // ignora NULLs) pero reporta `n = COUNT(*)` sobre todas las filas, así que
+  // los priors que calibran PICKS_SYSTEM_PROMPT afirmaban un exceso sobre
+  // SPY con una muestra que no era la suya. El exceso es la cifra que de
+  // verdad importa (un +2% a 30d con el mercado subiendo 3% no es señal, es
+  // beta): una medición a medias no es media medición, es una medición mala.
+  //
+  // Abortar y no medir sin benchmark deja el horizonte PENDIENTE y no toca
+  // `outcome_attempts`, así que ni se abandona un evento sano por una caída
+  // de Yahoo ni se marca `last_outcome_at` — el guard global de 20h no se
+  // arma y el siguiente tick (10 min) reintenta. Los eventos vuelven solos.
   const benchmark = await getAdjCloseSeries(BENCHMARK_SYMBOL, oldest);
   if (!benchmark.dates.length) {
-    console.warn("[signals] benchmark SPY unavailable — outcomes sin excess");
+    console.warn(
+      "[signals] benchmark SPY no disponible — pasada abortada SIN medir nada (el exceso vs SPY es parte de la semántica congelada); reintento en el próximo tick",
+    );
+    return {
+      eventsProcessed: 0,
+      outcomesFilled: 0,
+      symbols: 0,
+      abandoned: 0,
+      fmpCalls: fmpFallbackUsed(),
+      durationMs: Date.now() - t0,
+    };
   }
 
   let outcomesFilled = 0;
@@ -234,15 +282,20 @@ export async function runSignalOutcomesCron(opts?: {
             if (already.has(h)) continue;
             const point = horizonReturn(series, base, h, todayEt);
             if (!point) continue;
-            const bench =
-              benchmark.dates.length &&
-              benchmark.closes.has(point.baselineDate) &&
-              benchmark.closes.has(point.targetDate)
-                ? (benchmark.closes.get(point.targetDate)! /
-                    benchmark.closes.get(point.baselineDate)! -
-                    1) *
-                  100
-                : null;
+            // Las DOS fechas exactas, o no se escribe la fila. La serie de
+            // SPY cubre todo el rango (se pidió desde el evento más antiguo
+            // de la pasada), así que un hueco aquí es un día en que SPY no
+            // cotizó y el símbolo sí — no se arregla reintentando, y el
+            // horizonte se queda pendiente hasta agotar los 10 intentos.
+            // Lo que NO se hace es escribirlo con el exceso a null: sería
+            // dar por medido lo que no lo está.
+            const bench = benchmarkReturn(benchmark, point);
+            if (bench === null) {
+              console.warn(
+                `[signals] evento ${ev.id}/${h}d: SPY sin cierre en ${point.baselineDate}→${point.targetDate} — horizonte NO medido`,
+              );
+              continue;
+            }
             try {
               await db.execute(sql`
                 INSERT INTO signal_outcomes (event_id, horizon, baseline_date,

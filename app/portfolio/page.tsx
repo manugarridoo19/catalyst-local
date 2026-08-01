@@ -1,7 +1,7 @@
 import { Header } from "@/components/header";
 import { PortfolioTable } from "@/components/portfolio/portfolio-table";
 import { CoachPanel } from "@/components/portfolio/coach-panel";
-import { getTrades, getWatchlist } from "@/lib/db/queries";
+import { getJournalCash, getTrades, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import { getQuotesMap } from "@/lib/providers/finnhub";
 import { parseAxes } from "@/lib/coach/frames";
@@ -24,9 +24,13 @@ export const revalidate = 0;
 
 export default async function PortfolioPage() {
   const session = await getSessionId();
-  const [rows, trades] = await Promise.all([
+  // `journal` se agrega en el servidor sobre el diario COMPLETO; `trades`
+  // es el corte de 200 que se pinta. Con `null` (BD caída) el componente
+  // degrada a calcular sobre el corte, que es el comportamiento antiguo.
+  const [rows, trades, journal] = await Promise.all([
     getWatchlist(session).catch(() => []),
     getTrades(session).catch(() => []),
+    getJournalCash(session).catch(() => null),
   ]);
   const symbols = rows.map((r) => r.symbol);
   const quotes = symbols.length
@@ -70,6 +74,7 @@ export default async function PortfolioPage() {
             }))}
             initialQuotes={quotes}
             initialTrades={trades}
+            initialJournal={journal}
           />
 
           <section>

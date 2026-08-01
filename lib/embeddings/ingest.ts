@@ -34,6 +34,10 @@ import {
 const MIN_IMPACT = 3;
 /** Longitud del acompañamiento al titular cuando no hay resumen IA. */
 const BODY_SNIPPET = 400;
+/** Techo del troceado. Deliberadamente POR DEBAJO de `EMBED_MAX_BATCH` (el
+ *  máximo que acepta la API, que coincide con el límite por minuto): un lote
+ *  igual al límite sólo entra con el cubo del minuto intacto. */
+const EMBED_CHUNK_CEILING = 50;
 
 const MODEL_TAG = `${EMBED_MODEL}/${EMBED_DIMS}`;
 
@@ -90,9 +94,22 @@ async function dbSizeMb(): Promise<number> {
 
 /**
  * Retención: la fila de news muere a los 20 días pero el snapshot vive
- * EMBED_RETENTION_DAYS (90 por defecto) — ésa es la ventana consultable.
+ * EMBED_RETENTION_DAYS (60 por defecto) — ésa es la ventana consultable.
  * Excepción: lo que dio origen a una señal del Lab no se purga nunca; es
  * la evidencia de un track record que sí es permanente.
+ *
+ * LA EXCEPCIÓN SE COMPARA CONTRA `source_news_id`, NO CONTRA `news_id`, y
+ * ésa es toda la diferencia entre que funcione y que sea decorativa:
+ * `news_id` tiene FK `SET NULL` y las noticias se purgan a los 20 días, así
+ * que cuando una fila cumple los 60 su `news_id` lleva 40 siendo NULL. Con
+ * `se.ref_id = NULL::text` la comparación evalúa a NULL, el NOT EXISTS es
+ * TRUE y la fila caía igual que cualquier otra — la evidencia del ÚNICO
+ * kind al que se le prometió retención infinita se borraba sin excepción y
+ * sin síntoma (la señal seguía en /lab con su titular, sólo dejaba de ser
+ * verificable). `source_news_id` no tiene FK a propósito: sobrevive.
+ *
+ * El filtro por kind no es opcional: `ref_id` es polimórfico (un id de
+ * `ai_picks` conservaría una noticia ajena que nunca originó nada).
  */
 async function purgeExpired(): Promise<number> {
   // 60d y no 90: medido 2026-07-21 con 1.820 filas reales, ~4,5 kB/fila con
@@ -106,7 +123,7 @@ async function purgeExpired(): Promise<number> {
       AND NOT EXISTS (
         SELECT 1 FROM signal_events se
         WHERE se.kind = 'analyst_upgrade'
-          AND se.ref_id = e.news_id::text
+          AND se.ref_id = e.source_news_id::text
       )
   `);
   return (res as { rowCount?: number }).rowCount ?? 0;
@@ -198,9 +215,14 @@ export async function runEmbedIngest(
   // ingesta 2h el 2026-07-21 (429 `EmbedContentRequestsPerMinute...`, limit 100).
   // Trocear además hace el tick RESUMABLE: lo ya embebido se guarda aunque el
   // trozo siguiente se quede sin cuota.
+  // El tope duro es EMBED_CHUNK_CEILING (50), NO `EMBED_MAX_BATCH` (100):
+  // acotar contra el máximo de la API permitía que `EMBED_CHUNK=100` pidiera
+  // exactamente el límite por minuto, que es el lote que ya tumbó la ingesta
+  // 2h el 2026-07-21. El techo tiene que quedar por DEBAJO del límite, no en
+  // el límite.
   const chunkSize = Math.min(
     Math.max(envInt("EMBED_CHUNK", 50), 1),
-    EMBED_MAX_BATCH,
+    EMBED_CHUNK_CEILING,
   );
   let embedded = 0;
   let quotaHit = false;
@@ -249,16 +271,24 @@ async function insertChunk(
       sql`, `,
     )}]::text[]`;
     try {
-      await db.execute(sql`
+      // `source_news_id` duplica `news_id` al nacer y NO tiene FK: es lo que
+      // sigue identificando el origen cuando la purga de news pone `news_id`
+      // a NULL, y de lo que depende la excepción de retención del Lab.
+      const res = await db.execute(sql`
         INSERT INTO news_embeddings
-          (news_id, headline, summary, url, source, symbols, impact, sentiment,
-           published_at, embedding, model)
-        VALUES (${c.id}, ${c.headline}, ${snapshotSummary}, ${c.url}, ${c.source},
-                ${symbols}, ${c.impact}, ${c.sentiment},
+          (news_id, source_news_id, headline, summary, url, source, symbols,
+           impact, sentiment, published_at, embedding, model)
+        VALUES (${c.id}, ${c.id}, ${c.headline}, ${snapshotSummary}, ${c.url},
+                ${c.source}, ${symbols}, ${c.impact}, ${c.sentiment},
                 ${c.published_at}, ${vec}::halfvec, ${MODEL_TAG})
         ON CONFLICT (news_id) DO NOTHING
       `);
-      embedded++;
+      // El contador va por filas REALMENTE escritas: con `DO NOTHING`, un
+      // reintento sobre lo ya embebido devuelve rowCount 0 y contarlo como
+      // éxito inflaba `embedded` — la misma cifra que decide si el tick se
+      // marca como `quota` y la que se lee en los logs para saber si la
+      // ingesta avanza.
+      embedded += (res as { rowCount?: number }).rowCount ?? 0;
     } catch (err) {
       console.warn(
         `[embed] insert ${c.id} falló:`,

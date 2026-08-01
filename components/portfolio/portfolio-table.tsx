@@ -69,14 +69,19 @@ export function PortfolioTable({
   initialItems,
   initialQuotes,
   initialTrades,
+  initialJournal,
 }: {
   initialItems: PortfolioItem[];
   initialQuotes: QuotesMap;
   initialTrades: PositionTrade[];
+  /** Caja del diario agregada EN EL SERVIDOR sobre el diario completo
+   *  (getJournalCash). `null` sólo si la BD falló al servir la página. */
+  initialJournal: JournalCash | null;
 }) {
   const [items, setItems] = useState(initialItems);
   const [quotes, setQuotes] = useState<QuotesMap>(initialQuotes);
   const [trades, setTrades] = useState(initialTrades);
+  const [journal, setJournal] = useState(initialJournal);
   const [editing, setEditing] = useState<string | null>(null);
   const [buying, setBuying] = useState<string | null>(null);
   const [selling, setSelling] = useState<string | null>(null);
@@ -167,7 +172,16 @@ export function PortfolioTable({
   // El diario ENTERO, no el de una fila: es lo que responde "he vendido, ¿y
   // el dinero?". Antes esta cuenta no existía en ningún sitio y la venta
   // sólo se veía como una caída del valor de la cartera.
-  const cash = useMemo(() => journalCash(trades), [trades]);
+  //
+  // La cifra buena es la del SERVIDOR (`journal`): se agrega sobre TODAS
+  // las filas del diario, mientras que `trades` es el corte de 200 que se
+  // pinta — sumar sobre el corte dejaba fuera lo anterior a la operación
+  // 201 sin síntoma (audit 2026-08-01). El cálculo local queda sólo como
+  // degradación si el servidor no la pudo servir.
+  const cash = useMemo(
+    () => journal ?? journalCash(trades),
+    [journal, trades],
+  );
 
   return (
     <div className="flex flex-col gap-5">
@@ -281,9 +295,10 @@ export function PortfolioTable({
                     setBuying(null);
                     setSelling((cur) => (cur === pos.symbol ? null : pos.symbol));
                   }}
-                  onSaved={(next, nextTrades) => {
+                  onSaved={(next, nextTrades, nextJournal) => {
                     setItems(next);
                     if (nextTrades) setTrades(nextTrades);
+                    if (nextJournal) setJournal(nextJournal);
                     setEditing(null);
                   }}
                 />
@@ -306,7 +321,7 @@ export function PortfolioTable({
             comisiones ni las compras anteriores a{" "}
             {cash.since ? cash.since.slice(0, 10) : "hoy"}.
           </p>
-          <TradeLog trades={trades} showSymbol onAnnotated={setTrades} />
+          <TradeLog trades={trades} cash={cash} showSymbol onAnnotated={setTrades} />
         </section>
       ) : null}
 
@@ -508,7 +523,11 @@ function Row({
   onToggleEdit: () => void;
   onToggleBuy: () => void;
   onToggleSell: () => void;
-  onSaved: (items: PortfolioItem[], trades?: PositionTrade[]) => void;
+  onSaved: (
+    items: PortfolioItem[],
+    trades?: PositionTrade[],
+    journal?: JournalCash,
+  ) => void;
 }) {
   return (
     <>
@@ -661,7 +680,11 @@ function SellSome({
 }: {
   item: PortfolioItem;
   price: number | null;
-  onSaved: (items: PortfolioItem[], trades?: PositionTrade[]) => void;
+  onSaved: (
+    items: PortfolioItem[],
+    trades?: PositionTrade[],
+    journal?: JournalCash,
+  ) => void;
   onCancel: () => void;
 }) {
   const [qty, setQty] = useState("");
@@ -713,6 +736,7 @@ function SellSome({
       const data = (await r.json().catch(() => ({}))) as {
         items?: PortfolioItem[];
         trades?: PositionTrade[];
+        journal?: JournalCash;
         error?: string;
         shares?: number | null;
       };
@@ -725,7 +749,7 @@ function SellSome({
         return;
       }
       if (r.status === 409) {
-        if (data.items) onSaved(data.items, data.trades);
+        if (data.items) onSaved(data.items, data.trades, data.journal);
         setErr("La posición cambió en otro sitio. Revisa el dato y repite.");
         return;
       }
@@ -733,7 +757,7 @@ function SellSome({
         setErr("No se pudo registrar la venta");
         return;
       }
-      onSaved(data.items, data.trades);
+      onSaved(data.items, data.trades, data.journal);
       onCancel();
     } catch {
       setErr("Error de red");
@@ -861,10 +885,15 @@ function SellSome({
  */
 function TradeLog({
   trades,
+  cash,
   showSymbol = false,
   onAnnotated,
 }: {
   trades: PositionTrade[];
+  /** Caja agregada por el SERVIDOR sobre el diario completo. La pasa el
+   *  diario global; sin ella (instancia por fila) se agrega el corte local
+   *  con la misma función. */
+  cash?: JournalCash | null;
   /** El diario global mezcla valores, así que ahí el símbolo es obligatorio;
    *  dentro de una fila sería repetir la cabecera en cada línea. */
   showSymbol?: boolean;
@@ -888,8 +917,13 @@ function TradeLog({
       </p>
     );
   }
-  const realizado = trades.reduce((acc, t) => acc + (t.realizedPnl ?? 0), 0);
-  const alguno = trades.some((t) => t.realizedPnl !== null);
+  // La cuenta sale de `journalCash` — la única definición del P&L realizado
+  // en el proyecto — y NUNCA de un reduce propio con `?? 0`: convertir null
+  // en 0 afirmaba "no ganaste nada" sobre ventas cuya verdad es "no se
+  // sabe", y omitía el marcador de parcialidad que el tipo declara
+  // obligatorio. El diario global recibe la caja del SERVIDOR (diario
+  // completo) vía `cash`; una instancia por fila agrega su propio corte.
+  const box = cash ?? journalCash(trades);
 
   return (
     <div className="rounded-sm border border-border/50 bg-background/40 px-3 py-2">
@@ -900,10 +934,18 @@ function TradeLog({
         <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-muted-foreground/50">
           {showSymbol ? "" : "diario de operaciones"}
         </span>
-        {alguno ? (
+        {box.realized !== null ? (
           <span className="font-mono text-[10px] text-muted-foreground">
             realizado:{" "}
-            <span className={toneClass(realizado)}>{signedMoney(realizado)}</span>
+            <span className={toneClass(box.realized)}>
+              {signedMoney(box.realized)}
+            </span>
+            {box.realizedUnknownSales > 0 ? (
+              <span className="text-muted-foreground/60">
+                {" "}
+                · parcial ({box.realizedUnknownSales} sin coste)
+              </span>
+            ) : null}
           </span>
         ) : null}
       </div>
@@ -1348,7 +1390,11 @@ function BuyMore({
 }: {
   item: PortfolioItem;
   price: number | null;
-  onSaved: (items: PortfolioItem[]) => void;
+  onSaved: (
+    items: PortfolioItem[],
+    trades?: PositionTrade[],
+    journal?: JournalCash,
+  ) => void;
   onCancel: () => void;
 }) {
   const [mode, setMode] = useState<"shares" | "amount">("shares");
@@ -1410,6 +1456,8 @@ function BuyMore({
       });
       const data = (await r.json().catch(() => ({}))) as {
         items?: PortfolioItem[];
+        trades?: PositionTrade[];
+        journal?: JournalCash;
         error?: string;
       };
       if (r.status === 409) {
@@ -1424,7 +1472,10 @@ function BuyMore({
         setErr("No se pudo registrar la compra");
         return;
       }
-      onSaved(data.items);
+      // La API ya devolvía `trades` y este formulario los tiraba: la compra
+      // no aparecía en el diario hasta recargar. Con `journal` la caja se
+      // actualiza con la cifra del servidor, no con el corte local.
+      onSaved(data.items, data.trades, data.journal);
       onCancel();
     } catch {
       setErr("Error de red");
