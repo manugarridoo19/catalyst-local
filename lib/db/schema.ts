@@ -96,9 +96,16 @@ export const news = pgTable(
     uniqueIndex("news_url_unique").on(t.url),
     uniqueIndex("news_hash_unique").on(t.hash),
     index("news_published_idx").on(t.publishedAt),
-    // Filtro del feed por categoría (tabs Earnings/M&A/Analyst/Guidance/...).
-    // Sin este índice la query era seq-scan sobre ~20k filas + index post-filter.
-    index("news_category_idx").on(t.category),
+    // Filtro del feed por categoría + orden por fecha en UNA pasada (tabs
+    // Earnings/M&A/Analyst/Guidance/...). El prefijo cubre también el filtro
+    // por categoría a secas, así que sustituye al viejo news_category_idx.
+    index("news_category_published_idx").on(t.category, t.publishedAt.desc()),
+    // Ingesta insider: claimPendingFilings filtra por este predicado dos
+    // veces cada 10 min (GH cron + refresher). Parcial: solo indexa los
+    // filings SEC aún sin parsear, que en régimen son un puñado de filas.
+    index("news_insider_pending_idx")
+      .on(t.publishedAt.desc())
+      .where(sql`source = 'sec-edgar' AND insider_parsed_at IS NULL`),
   ],
 );
 
@@ -138,10 +145,10 @@ export const newsScores = pgTable("news_scores", {
   scoredAt: timestamp("scored_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-}, (t) => [
-  // Filtro "High impact" del feed (impact >= 4). Sin índice era seq-scan.
-  index("news_scores_impact_idx").on(t.impact),
-]);
+});
+// (news_scores_impact_idx se retiró en el audit 2026-08-01: la rama
+// `minImpact` de getFeed no tiene ningún llamador — era coste de escritura
+// puro. Si el filtro "High impact" vuelve a la UI, recrearlo.)
 
 // Watchlist single-user en v1 — userSession es una cookie.
 //
@@ -294,11 +301,21 @@ export const positionTrades = pgTable(
     lastOutcomeAt: timestamp("last_outcome_at", { withTimezone: true }),
   },
   (t) => [
-    // El diario se lee SIEMPRE por (sesión, símbolo) y en orden inverso.
-    index("position_trades_session_symbol_idx").on(
+    // Última operación por símbolo del coach: DISTINCT ON (symbol) ORDER BY
+    // symbol ASC, created_at DESC — dirección mixta, un índice ASC puro no
+    // puede servirlo ni leído al revés. Sustituye al viejo índice todo-ASC.
+    index("position_trades_session_symbol_created_desc_idx").on(
       t.userSession,
       t.symbol,
-      t.createdAt,
+      t.createdAt.desc(),
+    ),
+    // El diario de /portfolio (getTrades): WHERE user_session ORDER BY
+    // created_at DESC, id DESC — sin símbolo, así que el compuesto de arriba
+    // no lo cubre.
+    index("position_trades_session_created_idx").on(
+      t.userSession,
+      t.createdAt.desc(),
+      t.id.desc(),
     ),
   ],
 );
@@ -655,6 +672,10 @@ export const fundStakes = pgTable(
   (t) => [
     uniqueIndex("fund_stakes_filing_unique").on(t.filingUrl),
     index("fund_stakes_filed_idx").on(t.filedAt),
+    // Lecturas por símbolo (retrieve/portfolio): simétrico al compuesto que
+    // insider_trades ya tenía; sin él, un símbolo sin stakes recorría
+    // filed_at hacia atrás por toda la tabla.
+    index("fund_stakes_symbol_filed_idx").on(t.symbol, t.filedAt.desc()),
   ],
 );
 
@@ -789,6 +810,14 @@ export const newsEmbeddings = pgTable(
     newsId: integer("news_id").references(() => news.id, {
       onDelete: "set null",
     }),
+    // Copia INMUTABLE del id de la noticia origen, SIN FK a propósito: la
+    // excepción de purga (lo que originó una señal analyst_upgrade no se
+    // purga nunca) compara ref_id contra este campo. Compararlo contra
+    // news_id era código muerto — news se purga a 20d, el SET NULL lo
+    // borraba, y a los 60d la fila caía como cualquier otra (audit
+    // 2026-08-01). Filas anteriores al backfill con news_id ya NULL quedan
+    // sin origen recuperable: la excepción no las puede proteger.
+    sourceNewsId: integer("source_news_id"),
     headline: text("headline").notNull(),
     summary: text("summary"),
     url: text("url").notNull(),
@@ -816,6 +845,56 @@ export const newsEmbeddings = pgTable(
     uniqueIndex("news_embeddings_news_unique").on(t.newsId),
     index("news_embeddings_published_idx").on(t.publishedAt),
     index("news_embeddings_symbols_idx").using("gin", t.symbols),
+    // ANCLADO aquí desde el audit 2026-08-01: existía solo en el SQL de la
+    // migración 0016, así que un `drizzle-kit push` (que diffea schema.ts
+    // contra la BD viva) lo habría BORRADO y el retrieval vectorial de /ask
+    // habría caído a scan completo sin ningún error.
+    index("news_embeddings_hnsw_idx").using(
+      "hnsw",
+      t.embedding.op("halfvec_cosine_ops"),
+    ),
+    // lexicalSearch (ILIKE con comodín inicial) — único canal del anónimo.
+    // Requiere la extensión pg_trgm (la crea la migración).
+    index("news_embeddings_headline_trgm_idx").using(
+      "gin",
+      t.headline.op("gin_trgm_ops"),
+    ),
+    index("news_embeddings_summary_trgm_idx").using(
+      "gin",
+      t.summary.op("gin_trgm_ops"),
+    ),
+  ],
+);
+
+/**
+ * Cooldowns de keys de proveedores LLM, COMPARTIDOS entre procesos.
+ *
+ * Los tres escritores (GH cron, scorer local, refresher local) mantenían
+ * cada uno su pool en memoria: cada proceso redescubría a diario las mismas
+ * keys agotadas pagando una petición muerta por combinación. El consumidor
+ * es lib/providers/cooldown-store.ts (activado con PROVIDER_COOLDOWN_STORE=1
+ * en daemons y cron — NUNCA en el Worker, que no puntúa y pagaría la
+ * latencia a cambio de nada).
+ *
+ * `label` y no la key: esto se persiste, y una key en una tabla es una key
+ * filtrada. `model` vacío = la key entera (cuota sin dimensión de modelo).
+ * `scope` separa el cooldown de embeddings del de chat (invariante duro).
+ */
+export const providerCooldowns = pgTable(
+  "provider_cooldowns",
+  {
+    scope: text("scope").notNull(),
+    label: text("label").notNull(),
+    model: text("model").notNull().default(""),
+    cooledUntil: timestamp("cooled_until", { withTimezone: true }).notNull(),
+    reason: text("reason"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.scope, t.label, t.model] }),
+    index("provider_cooldowns_live").on(t.scope, t.cooledUntil),
   ],
 );
 

@@ -225,6 +225,13 @@
       "when": 1785440751456,
       "tag": "0031_absurd_komodo",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785611427897,
+      "tag": "0032_nervous_cassandra_nova",
+      "breakpoints": true
     }
   ]
 }
