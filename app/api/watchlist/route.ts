@@ -3,6 +3,8 @@ import {
   addLotToPosition,
   addToWatchlist,
   annotateTrade,
+  countWatchlist,
+  getJournalCash,
   getTrades,
   getWatchlist,
   reduceLotFromPosition,
@@ -11,6 +13,7 @@ import {
   setPosition,
 } from "@/lib/db/queries";
 import { ensureSessionCookie } from "@/lib/session";
+import { isWorkersRuntime, rateLimited } from "@/lib/ask/gate";
 import { HORIZONS } from "@/lib/coach/horizon";
 import { CAPITAL, CICLO, MADUREZ } from "@/lib/coach/frames";
 import { z } from "zod";
@@ -123,16 +126,40 @@ const axesSchema = symbolSchema.extend({
     .nullable(),
 });
 
+// Tope de símbolos por sesión. No es una regla de producto (una watchlist
+// real tiene 5-30 nombres): es que `watchlist` no caduca y el Worker público
+// acepta escrituras anónimas, así que sin techo se puede llenar desde fuera
+// el mismo depósito de 512 MB en el que la ingesta de embeddings se pausa a
+// 380 — y eso pararía la ventana consultable de /ask.
+const MAX_WATCHLIST_SYMBOLS = 100;
+
+/** Freno común de las ramas que ESCRIBEN. Las lecturas no pasan por aquí:
+ *  el rail de la watchlist refresca cada 60s y castigarlo no protege nada. */
+function writeThrottled(req: Request): NextResponse | null {
+  if (isWorkersRuntime && rateLimited(req)) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429 });
+  }
+  return null;
+}
+
 export async function GET() {
   const session = await ensureSessionCookie();
-  const [items, trades] = await Promise.all([
+  // `journal` va aparte de `trades`: la lista se corta a 200 para pintar,
+  // pero la caja del diario se agrega en el servidor sobre TODAS las filas
+  // (getJournalCash) — sumar sobre el corte dejaba fuera lo anterior a la
+  // operación 201 sin síntoma.
+  const [items, trades, journal] = await Promise.all([
     getWatchlist(session),
     getTrades(session),
+    getJournalCash(session),
   ]);
-  return NextResponse.json({ items, trades });
+  return NextResponse.json({ items, trades, journal });
 }
 
 export async function POST(req: Request) {
+  const throttled = writeThrottled(req);
+  if (throttled) return throttled;
+
   const session = await ensureSessionCookie();
   const body = await req.json().catch(() => ({}));
   const parsed = symbolSchema.safeParse(body);
@@ -142,7 +169,23 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  await addToWatchlist(session, parsed.data.symbol);
+  if ((await countWatchlist(session)) >= MAX_WATCHLIST_SYMBOLS) {
+    return NextResponse.json(
+      { error: "watchlist_full", max: MAX_WATCHLIST_SYMBOLS },
+      { status: 422 },
+    );
+  }
+  const r = await addToWatchlist(session, parsed.data.symbol);
+  if (r === "unknown_symbol") {
+    // 422 y no 400: la petición está bien formada, lo que no existe es el
+    // valor. El símbolo no entra en `tickers` — ver addToWatchlist.
+    return NextResponse.json({ error: "unknown_symbol" }, { status: 422 });
+  }
+  if (r === "unconfirmed") {
+    // No se pudo preguntar al proveedor. 503 porque es transitorio y el
+    // cliente debe reintentar, no corregir el símbolo.
+    return NextResponse.json({ error: "unconfirmed_symbol" }, { status: 503 });
+  }
   const items = await getWatchlist(session);
   return NextResponse.json({ items });
 }
@@ -151,13 +194,32 @@ export async function POST(req: Request) {
 // 404 si no está: es una señal real (el cliente y el servidor discrepan
 // sobre qué hay en la lista), no algo que deba crearse por el camino.
 export async function PATCH(req: Request) {
+  const throttled = writeThrottled(req);
+  if (throttled) return throttled;
+
   const session = await ensureSessionCookie();
-  const body = await req.json().catch(() => ({}));
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+
+  // La rama se elige por la PRESENCIA de la clave, no por si su contenido
+  // valida. Con la cascada anterior, un `add` malformado (un `price`
+  // negativo, por ejemplo) no casaba con `lotSchema`, seguía cayendo y
+  // terminaba en `positionSchema`, así que el cliente recibía
+  // `invalid_position` con issues sobre `shares` y `avgCost` — campos que
+  // nunca había enviado. Ahora cada verbo falla contando lo suyo.
+  const op = (["axes", "annotate", "add", "sell"] as const).find(
+    (k) => body !== null && typeof body === "object" && k in body,
+  );
 
   // Los ejes van primero junto a la clasificación: ninguno de los dos toca
   // acciones ni coste, así que no comparten la guarda optimista.
-  const fr = axesSchema.safeParse(body);
-  if (fr.success) {
+  if (op === "axes") {
+    const fr = axesSchema.safeParse(body);
+    if (!fr.success) {
+      return NextResponse.json(
+        { error: "invalid_axes", issues: fr.error.issues },
+        { status: 400 },
+      );
+    }
     const ok = await setAxes(session, fr.data.symbol, fr.data.axes);
     if (!ok) {
       return NextResponse.json({ error: "not_in_watchlist" }, { status: 404 });
@@ -165,10 +227,16 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ items: await getWatchlist(session) });
   }
 
-  // Clasificar va PRIMERO: no toca la posición, así que no comparte ni el
-  // 404 de watchlist ni la guarda optimista de las otras dos ramas.
-  const ann = annotateSchema.safeParse(body);
-  if (ann.success) {
+  // Clasificar: no toca la posición, así que no comparte ni el 404 de
+  // watchlist ni la guarda optimista de las otras dos ramas.
+  if (op === "annotate") {
+    const ann = annotateSchema.safeParse(body);
+    if (!ann.success) {
+      return NextResponse.json(
+        { error: "invalid_annotate", issues: ann.error.issues },
+        { status: 400 },
+      );
+    }
     const ok = await annotateTrade(
       session,
       ann.data.annotate.tradeId,
@@ -187,8 +255,14 @@ export async function PATCH(req: Request) {
   // Dos operaciones por el mismo verbo, distinguidas por la presencia de
   // `add`. Comparten el 404 y el refresco de la lista, que es lo único que
   // tenían en común de verdad.
-  const lot = lotSchema.safeParse(body);
-  if (lot.success) {
+  if (op === "add") {
+    const lot = lotSchema.safeParse(body);
+    if (!lot.success) {
+      return NextResponse.json(
+        { error: "invalid_add", issues: lot.error.issues },
+        { status: 400 },
+      );
+    }
     const r = await addLotToPosition(session, lot.data.symbol, {
       ...lot.data.add,
       thesis: lot.data.add.thesis ?? null,
@@ -207,13 +281,15 @@ export async function PATCH(req: Request) {
         { status: 409 },
       );
     }
-    const [items, trades] = await Promise.all([
+    const [items, trades, journal] = await Promise.all([
       getWatchlist(session),
       getTrades(session),
+      getJournalCash(session),
     ]);
     return NextResponse.json({
       items,
       trades,
+      journal,
       position: {
         shares: r.shares,
         avgCost: r.avgCost,
@@ -222,8 +298,14 @@ export async function PATCH(req: Request) {
     });
   }
 
-  const sell = sellSchema.safeParse(body);
-  if (sell.success) {
+  if (op === "sell") {
+    const sell = sellSchema.safeParse(body);
+    if (!sell.success) {
+      return NextResponse.json(
+        { error: "invalid_sell", issues: sell.error.issues },
+        { status: 400 },
+      );
+    }
     const r = await reduceLotFromPosition(session, sell.data.symbol, {
       ...sell.data.sell,
       thesis: sell.data.sell.thesis ?? null,
@@ -244,13 +326,15 @@ export async function PATCH(req: Request) {
       const items = await getWatchlist(session);
       return NextResponse.json({ error: "stale_position", items }, { status: 409 });
     }
-    const [items, trades] = await Promise.all([
+    const [items, trades, journal] = await Promise.all([
       getWatchlist(session),
       getTrades(session),
+      getJournalCash(session),
     ]);
     return NextResponse.json({
       items,
       trades,
+      journal,
       position: {
         shares: r.shares,
         avgCost: r.avgCost,
@@ -272,14 +356,18 @@ export async function PATCH(req: Request) {
   if (!ok) {
     return NextResponse.json({ error: "not_in_watchlist" }, { status: 404 });
   }
-  const [items, trades] = await Promise.all([
+  const [items, trades, journal] = await Promise.all([
     getWatchlist(session),
     getTrades(session),
+    getJournalCash(session),
   ]);
-  return NextResponse.json({ items, trades });
+  return NextResponse.json({ items, trades, journal });
 }
 
 export async function DELETE(req: Request) {
+  const throttled = writeThrottled(req);
+  if (throttled) return throttled;
+
   const session = await ensureSessionCookie();
   const url = new URL(req.url);
   const symbol = url.searchParams.get("symbol");

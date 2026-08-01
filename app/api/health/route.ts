@@ -1,22 +1,37 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
-import { db } from "@/lib/db";
+import { db, unwrapRows } from "@/lib/db";
 import { getKeyPoolStatus } from "@/lib/providers/openrouter";
 import { getGeminiPoolStatus } from "@/lib/providers/gemini";
 import { groqCooldownStatus } from "@/lib/providers/groq";
+import { finnhubCooldownMs } from "@/lib/providers/finnhub";
+import { isWorkersRuntime, rateLimited } from "@/lib/ask/gate";
 
 // Endpoint público de health-check para monitoring. No expone secretos, solo
 // agregados que necesita el alerting (GitHub Actions / cron-job.org / etc).
-
+//
+// La consulta NO es barata pese al comentario histórico de "una sola query":
+// son ocho agregados, uno de ellos un anti-join sobre `news` entera que
+// ningún índice cubre, más `pg_database_size()`. Cubo de rate limit PROPIO
+// (30/min) y no el común: el sondeo de monitorización llega cada 2h, así que
+// le sobra de largo, y separarlo evita que consuma el presupuesto de las
+// preguntas del dueño (o al revés, que un pico de /ask silencie el monitor).
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 // Función rápida, una sola query — no necesita 60s budget.
 export const maxDuration = 10;
 
+// 60s de caché de borde: el monitor sondea cada 2h y un humano recargando la
+// página de estado no necesita recontar la tabla `news` en cada F5.
+const HEALTH_CACHE = "public, s-maxage=60, stale-while-revalidate=120";
+
 /** Plan free de Neon: 0.5 GB de almacenamiento para toda la base. */
 const NEON_FREE_MB = 512;
 
-export async function GET() {
+export async function GET(req: Request) {
+  if (isWorkersRuntime && rateLimited(req, "health")) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429 });
+  }
   try {
     const r = await db.execute(sql`
       SELECT
@@ -45,7 +60,16 @@ export async function GET() {
         (SELECT ran_at FROM job_state WHERE key = 'funds-sweep')::timestamptz AS funds_sweep_at,
         (SELECT ran_at FROM job_state WHERE key = 'earnings-sweep')::timestamptz AS earnings_sweep_at
     `);
-    const row = ((r as { rows?: Record<string, unknown>[] }).rows ?? (r as unknown as Record<string, unknown>[]))[0];
+    // `unwrapRows` en vez del desempaquetado a mano: es la regla del
+    // proyecto para todo `db.execute` crudo, y la versión manual lanzaba un
+    // TypeError si la consulta no devolvía filas.
+    const row = unwrapRows<Record<string, unknown>>(r)[0];
+    if (!row) {
+      return NextResponse.json(
+        { ok: false, error: "health query returned no rows" },
+        { status: 500 },
+      );
+    }
 
     const lastPublished = row.last_published_at ? new Date(row.last_published_at as string) : null;
     const lastInserted = row.last_inserted_at ? new Date(row.last_inserted_at as string) : null;
@@ -87,6 +111,13 @@ export async function GET() {
     const openrouterPool = getKeyPoolStatus();
     const geminiPool = getGeminiPoolStatus();
     const groqCooldowns = groqCooldownStatus();
+    // Finnhub es UNA key, no un pool, así que `available` es un booleano y no
+    // un recuento como en openrouter/gemini. Importa que se vea: con la key
+    // enfriada `fh()` ya ni pregunta (lanza FinnhubError 429), así que un
+    // enfriamiento largo deja sin quotes al rail de la watchlist y sin precios
+    // en vivo a la revisión de cartera — y desde fuera eso se parece a un
+    // fallo de la app, no a un límite del proveedor.
+    const finnhubCooling = finnhubCooldownMs();
 
     return NextResponse.json({
       ok: true,
@@ -150,8 +181,19 @@ export async function GET() {
         groq: {
           cooldowns: groqCooldowns,
         },
+        finnhub: {
+          available: finnhubCooling === 0,
+          // Segundos, como los cooldowns de groq — la misma unidad para la
+          // misma clase de dato evita tener que mirar el código para saber
+          // si un 60 son ms, segundos o minutos.
+          secondsRemaining: Math.ceil(finnhubCooling / 1000),
+          cooldownUntil:
+            finnhubCooling > 0
+              ? new Date(now + finnhubCooling).toISOString()
+              : null,
+        },
       },
-    });
+    }, { headers: { "Cache-Control": HEALTH_CACHE } });
   } catch (err) {
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : String(err) },

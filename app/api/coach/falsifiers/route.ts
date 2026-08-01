@@ -49,6 +49,14 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  // Las ramas de decidir y escribir a mano no gastan proveedor, pero SÍ
+  // escriben filas sin techo desde un endpoint anónimo — el mismo depósito
+  // de 512 MB de Neon que pausa la ingesta de embeddings a 380. El freno va
+  // antes de ramificar; la de proponer añade además el gate de cuota.
+  if (isWorkersRuntime && rateLimited(req)) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429 });
+  }
+
   const session = await ensureSessionCookie();
   const body = await req.json().catch(() => ({}));
 

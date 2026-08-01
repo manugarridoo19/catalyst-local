@@ -91,7 +91,14 @@ async function fetchViaProxy(
   const json = (await res.json()) as {
     dates?: string[];
     closes?: Record<string, number>;
+    error?: string;
   };
+  // Un `error` en el cuerpo es un FALLO, no una serie vacía, aunque venga con
+  // 200. La ruta ya devuelve 502 desde 2026-08-01, pero el campo se sigue
+  // mirando: mientras el Worker desplegado sea anterior al arreglo, esto es
+  // lo único que distingue "Yahoo nos bloqueó" de "este símbolo no cotiza", y
+  // confundirlos gasta un intento del evento en el Signal Lab.
+  if (json.error) throw new Error(`proxy: ${json.error.slice(0, 120)}`);
   return {
     dates: json.dates ?? [],
     closes: new Map(Object.entries(json.closes ?? {})),

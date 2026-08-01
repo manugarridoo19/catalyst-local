@@ -91,7 +91,15 @@ export async function POST(req: Request) {
     // de un precio de ayer. Si un símbolo falla vuelve como null y
     // `buildPortfolio` lo saca del denominador en vez de contarlo como 0.
     const quotes = await getQuotesMap(live.map((r) => r.symbol)).catch(() => ({}));
-    const r = await retrievePortfolio(rows.map(toPosition), quotes);
+    // `harvest: allowLlm`, igual que /api/ask. Sin esto la cosecha de
+    // cuerpos corría SIEMPRE —hasta 20s de fetches salientes a concurrencia
+    // 4, más una fila en `article_extracts` por artículo— aunque el gate ya
+    // hubiera decidido que esta sesión no puede gastar. Un anónimo que se
+    // montara posiciones en su propia sesión convertía el endpoint en un
+    // proxy de descargas, que es justo lo que /ask evita por escrito.
+    const r = await retrievePortfolio(rows.map(toPosition), quotes, {
+      harvest: allowLlm,
+    });
 
     let review: PortfolioReview | null = null;
     let ledger: ForwardItem[] = [];

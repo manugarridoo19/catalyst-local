@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { getArticleDetail, isWorkersRuntime } from "@/lib/articles/enrich";
-import { SESSION_COOKIE, claimableSessionIds } from "@/lib/session";
+import { getArticleDetail } from "@/lib/articles/enrich";
+import { guardSpend, llmAllowed } from "@/lib/ask/gate";
 
 // GET /api/article/123 → ArticleDetail (texto extraído + resumen IA),
 // cacheado en article_extracts. Primera llamada de una noticia: extrae la
@@ -13,18 +12,15 @@ import { SESSION_COOKIE, claimableSessionIds } from "@/lib/session";
 // del dueño (allowlist de claim) genera resúmenes IA on-click en el
 // Worker; los anónimos reciben el texto extraído (y los impact>=4 ya
 // vienen pre-enriquecidos por el cron). En el daemon/Node no cambia nada.
+// El gate era una copia local de `llmAllowed`; ahora se comparte con el
+// resto de rutas que gastan (lib/ask/gate.ts). Además pasa por el cubo de
+// rate limit: extraer un artículo es un fetch saliente aunque no gaste LLM,
+// y los ids son enumerables.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function llmAllowed(): Promise<boolean> {
-  if (!isWorkersRuntime) return true;
-  const jar = await cookies();
-  const sid = jar.get(SESSION_COOKIE)?.value?.trim().toLowerCase() ?? "";
-  return sid !== "" && claimableSessionIds().has(sid);
-}
-
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
   const { id: raw } = await ctx.params;
@@ -32,6 +28,10 @@ export async function GET(
   if (!Number.isInteger(id) || id <= 0) {
     return NextResponse.json({ error: "invalid_id" }, { status: 400 });
   }
+  // `degrade`: el anónimo sigue recibiendo el texto extraído, que es el
+  // comportamiento documentado — lo que no obtiene es el resumen IA.
+  const denied = await guardSpend(req, { mode: "degrade" });
+  if (denied) return denied;
   try {
     const detail = await getArticleDetail(id, { allowLlm: await llmAllowed() });
     if (!detail) {
