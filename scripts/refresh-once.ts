@@ -44,21 +44,26 @@ async function main() {
   }
 
   // Earnings calendar de la watchlist (staleness 20h → ~1 fetch/símbolo/día).
-  try {
-    const { runRefreshEarningsCron } = await import(
-      "../lib/cron/refresh-earnings"
-    );
-    const e = await runRefreshEarningsCron();
-    if (e.refreshed > 0) {
-      console.log(
-        `[refresh-once] earnings refreshed ${e.refreshed}/${e.symbols} symbols (${e.events} events)`,
+  // Con SKIP_SWEEPS=1 lo lleva sólo el cron de GH: la marca por símbolo en
+  // job_state ya impide la doble llamada, pero desde aquí ni siquiera vale la
+  // pena preguntar a la BD por ello en cada tick.
+  if (process.env.SKIP_SWEEPS !== "1") {
+    try {
+      const { runRefreshEarningsCron } = await import(
+        "../lib/cron/refresh-earnings"
+      );
+      const e = await runRefreshEarningsCron();
+      if (e.refreshed > 0) {
+        console.log(
+          `[refresh-once] earnings refreshed ${e.refreshed}/${e.symbols} symbols (${e.events} events)`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[refresh-once] earnings refresh failed:",
+        err instanceof Error ? err.message : err,
       );
     }
-  } catch (err) {
-    console.warn(
-      "[refresh-once] earnings refresh failed:",
-      err instanceof Error ? err.message : err,
-    );
   }
 
   // AI Picks: misma cadencia efectiva que el brief (~4-6/día).

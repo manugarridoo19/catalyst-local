@@ -12,6 +12,9 @@ import { hashUrl } from "@/lib/hash";
 
 const parser = new Parser({
   timeout: 12_000,
+  // El `timeout` de rss-parser sólo rechaza la promesa; éste llega a
+  // `http.get` y aborta la petición de verdad.
+  requestOptions: { timeout: 12_000 },
   headers: {
     "User-Agent":
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
@@ -73,7 +76,9 @@ function buildQuery(t: TickerQuery): string {
   return `$${sym} stock`;
 }
 
-async function fetchOne(t: TickerQuery): Promise<NormalizedNewsItem[]> {
+// `null` = la consulta FALLÓ (distinto de `[]`, que es "Google News respondió
+// y no hay nada"), para que el agregador pueda contar fuentes caídas.
+async function fetchOne(t: TickerQuery): Promise<NormalizedNewsItem[] | null> {
   const url = new URL("https://news.google.com/rss/search");
   url.searchParams.set("q", buildQuery(t));
   url.searchParams.set("hl", "en-US");
@@ -111,9 +116,30 @@ async function fetchOne(t: TickerQuery): Promise<NormalizedNewsItem[]> {
           apiTickers: confirmed ? [t.symbol.toUpperCase()] : [],
         };
       });
-  } catch {
-    return [];
+  } catch (err) {
+    // Con el catch desnudo que había aquí, un bloqueo de Google News (429 /
+    // 403 a la IP del runner) dejaba los 25 símbolos en `[]` y el cron sólo
+    // decía `gnewsTickers: 0`. Es la fuente que cubre los tickers de la
+    // watchlist: su muerte tiene que verse.
+    maybeLogGnewsError(t.symbol, err);
+    return null;
   }
+}
+
+// Throttle por símbolo (mismo patrón que finnhub.ts): si Google News está
+// bloqueando, fallan los 25 y no hacen falta 25 líneas idénticas por tick.
+const lastErrorLog = new Map<string, number>();
+const ERROR_LOG_TTL_MS = 5 * 60 * 1000;
+function maybeLogGnewsError(symbol: string, err: unknown) {
+  const now = Date.now();
+  const prev = lastErrorLog.get(symbol);
+  if (prev && now - prev < ERROR_LOG_TTL_MS) return;
+  lastErrorLog.set(symbol, now);
+  console.warn(
+    `[gnews] ${symbol} failed: ${
+      err instanceof Error ? err.message.slice(0, 160) : err
+    }`,
+  );
 }
 
 function cleanTitle(t: string): string {
@@ -128,14 +154,21 @@ export async function fetchGoogleNewsByTicker(
 ): Promise<NormalizedNewsItem[]> {
   const out: NormalizedNewsItem[] = [];
   const queue = [...tickers];
+  let failed = 0;
   const workers = Array.from({ length: concurrency }, async () => {
     while (queue.length) {
       const t = queue.shift();
       if (!t) break;
       const items = await fetchOne(t);
-      out.push(...items);
+      if (items === null) failed++;
+      else out.push(...items);
     }
   });
   await Promise.all(workers);
+  if (failed) {
+    console.warn(
+      `[gnews] ${failed}/${tickers.length} consultas fallaron este tick`,
+    );
+  }
   return out;
 }

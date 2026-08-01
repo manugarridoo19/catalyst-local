@@ -19,7 +19,12 @@ async function main() {
   console.log("[cron] result:", JSON.stringify(result, null, 2));
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main()
+  // Salida explícita, igual que el resto de scripts: Pusher y el driver de
+  // Neon dejan handles abiertos y sin esto el proceso se queda colgado tras
+  // haber terminado el trabajo.
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });

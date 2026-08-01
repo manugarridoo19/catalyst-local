@@ -64,6 +64,11 @@
          (100/min/key, cada texto cuenta) se paga doble sin ganar nada. -->
     <key>EMBED_ENABLED</key>
     <string>0</string>
+    <!-- Cooldowns de keys LLM compartidos entre los 3 escritores vía la
+         tabla provider_cooldowns (lib/providers/cooldown-store.ts, audit
+         2026-08-01). Solo en procesos que puntúan — NUNCA en el Worker. -->
+    <key>PROVIDER_COOLDOWN_STORE</key>
+    <string>1</string>
     <!-- max-http-header-size: Yahoo Finance responde headers >16KB
          (CSP+cookies) y undici los rechaza con UND_ERR_HEADERS_OVERFLOW,
          rompiendo la extracción de artículos (2026-07-18). -->

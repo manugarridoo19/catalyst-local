@@ -38,6 +38,21 @@ import type { ExtractedTicker, NormalizedNewsItem } from "@/lib/types";
 // today; ticker pages 15 días; el buffer extra (>15d) cubre lookback
 // para usuarios que naveguen ticker pages al borde de la ventana.
 
+// SKIP_SWEEPS=1 (plist del refresher, 2026-08-01) — mismo patrón que
+// SKIP_BRIEFS y EMBED_ENABLED=0: el fan-out de NOTICIAS sí interesa en los dos
+// escritores (el dedupe por hash lo hace gratis y el feed avanza cada 10min
+// aunque GitHub throttlee), pero los barridos que cuelgan de él no. Lo que se
+// apaga aquí es trabajo que el cron de GH ya hace y que desde el Mac sólo
+// duplica presupuesto: el enricher gasta cuota de Finnhub —la misma que el
+// freno compartido reparte— y las purgas de retención son DELETEs que dan el
+// mismo resultado corran una o dos veces cada 10 minutos.
+//
+// La ingesta insider NO entra en el flag: desde que reclama en la propia
+// SELECT, dos escritores se reparten los filings en vez de repetirlos, y con
+// el Mac despierto eso es el doble de capacidad de parseo, no el doble de
+// coste.
+const SKIP_SWEEPS = process.env.SKIP_SWEEPS === "1";
+
 export type CronResult = {
   fetched: {
     finnhub: number;
@@ -62,9 +77,21 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   // guía el barrido per-ticker (Finnhub/Google News); knownSymbols filtra
   // SEC EDGAR a las empresas que ya seguimos (y se reutiliza en la
   // extracción, fase 3 — no se recarga).
+  // `knownSymbols` NO puede degradar a conjunto vacío: `fetchSecFilings`
+  // interpretaba "vacío" como "modo test, emite todos" y un blip de Neon
+  // convertía EDGAR en un firehose (hasta 160 filings de cualquier cotizada
+  // US por tick), que además creaba tickers nuevos, quemaba el enricher y
+  // gastaba la cuota de scoring durante los 20 días de retención. Ahora un
+  // fallo se ve y aborta el tick; el siguiente llega en 10 minutos.
   const [topTickers, knownSymbols] = await Promise.all([
-    getTopTickersForFetch(50).catch(() => []),
-    loadKnownSymbols().catch(() => new Set<string>()),
+    getTopTickersForFetch(50).catch((e) => {
+      console.warn(
+        "[cron] top tickers failed (barrido per-ticker vacío este tick):",
+        e instanceof Error ? e.message : e,
+      );
+      return [];
+    }),
+    loadKnownSymbols(),
   ]);
 
   // 2) Fetch en paralelo (un proveedor caído no tumba el cron).
@@ -146,7 +173,31 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   for (const { tickers: ts } of itemsWithTickers) {
     for (const t of ts) allSymbols.add(t.symbol);
   }
-  await upsertTickers([...allSymbols], "cron");
+  // Reintento + no propagar. Medido el 2026-08-01: dos `NeonDbError` /
+  // `fetch failed` en este upsert mataron el proceso con exit 1 y tiraron
+  // ~1.900 noticias ya traídas de seis proveedores (~2 min de trabajo). Es
+  // una sentencia idempotente, así que reintentarla es seguro.
+  //
+  // Si el reintento tampoco pasa, seguimos igualmente: los chunks de
+  // `insertNewsBatch` cuyos símbolos falten fallarán por FK y se contarán en
+  // `insertFailures` (aislamiento por chunk), pero el resto del tick —purga,
+  // retención insider, el propio `enrichPendingTickers`— sí corre, y sobre
+  // todo el proceso no se va con exit 1.
+  try {
+    await upsertTickers([...allSymbols], "cron");
+  } catch (e) {
+    console.warn(
+      "[cron] upsertTickers failed, reintentando una vez:",
+      e instanceof Error ? e.message : e,
+    );
+    await new Promise((r) => setTimeout(r, 1000));
+    await upsertTickers([...allSymbols], "cron").catch((e2) =>
+      console.warn(
+        "[cron] upsertTickers falló también en el reintento (el tick sigue):",
+        e2 instanceof Error ? e2.message : e2,
+      ),
+    );
+  }
 
   // 5) Insertar noticias nuevas en chunks transaccionales.
   // Antes era un loop secuencial item-a-item (~100-300ms × 400 items =
@@ -203,7 +254,9 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   }
 
   // 8) Enriquecer tickers pendientes (background-ish, mismo cron).
-  const enriched = await enrichPendingTickers();
+  const enriched = SKIP_SWEEPS
+    ? { processed: 0, succeeded: 0 }
+    : await enrichPendingTickers();
 
   // 8b) Parseo estructurado insider (Form 4 → insider_trades, 13D/G →
   // fund_stakes). Autocurativo: lee de BD los filings sin intentar de las
@@ -234,13 +287,15 @@ export async function runRefreshNewsCron(): Promise<CronResult> {
   // limpian news_tickers y news_scores automáticamente. Además purga las
   // noticias SIN score de >5 días (ya no vale la pena puntuarlas — recorta
   // el backlog de scoring a lo accionable).
-  await deleteOldNews(RETENTION_DAYS);
-  await deleteUnscoredOlderThan(UNSCORED_RETENTION_DAYS);
-  // Retención propia de datos insider (90d trades / 180d stakes) — las
-  // tablas no cascadean con news a propósito.
-  await deleteOldInsiderData().catch((e) =>
-    console.warn("[cron] insider retention failed:", e instanceof Error ? e.message : e),
-  );
+  if (!SKIP_SWEEPS) {
+    await deleteOldNews(RETENTION_DAYS);
+    await deleteUnscoredOlderThan(UNSCORED_RETENTION_DAYS);
+    // Retención propia de datos insider (90d trades / 180d stakes) — las
+    // tablas no cascadean con news a propósito.
+    await deleteOldInsiderData().catch((e) =>
+      console.warn("[cron] insider retention failed:", e instanceof Error ? e.message : e),
+    );
+  }
 
   return {
     fetched: {

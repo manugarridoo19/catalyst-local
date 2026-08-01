@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { getEarningsCalendar } from "@/lib/providers/finnhub";
+import { jobRanWithin, markJobRun } from "@/lib/cron/job-state";
 
 // Refresca la cache de próximos earnings (tabla earnings_events) para los
 // símbolos en watchlist. Un símbolo se considera fresco 20h — con el
@@ -18,8 +19,15 @@ export type EarningsRefreshResult = {
 };
 
 export async function runRefreshEarningsCron(): Promise<EarningsRefreshResult> {
-  // Símbolos de watchlist cuya cache falta o está rancia.
-  const stale = unwrapRows<{ symbol: string }>(
+  // Símbolos de watchlist cuya cache falta o está rancia. La frescura se mide
+  // por `fetched_at` de sus filas, pero eso deja fuera al símbolo SIN filas:
+  // cuando Finnhub responde "no hay earnings en 90 días" —el estado normal
+  // entre un reporte y la publicación del siguiente calendario— no queda
+  // ninguna fila que fechar, así que el símbolo salía rancio en el tick
+  // siguiente y se re-consultaba cada 10 minutos desde los DOS escritores
+  // (~288 llamadas/día por símbolo, no la "1/símbolo/día" de la cabecera).
+  // La marca por símbolo en `job_state` cierra ese hueco.
+  const candidates = unwrapRows<{ symbol: string }>(
     await db.execute(sql`
       SELECT DISTINCT w.symbol
       FROM watchlist w
@@ -31,6 +39,12 @@ export async function runRefreshEarningsCron(): Promise<EarningsRefreshResult> {
       ORDER BY w.symbol
     `),
   );
+  const stale: { symbol: string }[] = [];
+  for (const c of candidates) {
+    if (!(await jobRanWithin(`earnings-cal:${c.symbol}`, STALE_HOURS))) {
+      stale.push(c);
+    }
+  }
   const totalRows = unwrapRows<{ c: number }>(
     await db.execute(sql`SELECT COUNT(DISTINCT symbol)::int AS c FROM watchlist`),
   );
@@ -42,15 +56,30 @@ export async function runRefreshEarningsCron(): Promise<EarningsRefreshResult> {
     while (cursor < stale.length) {
       const { symbol } = stale[cursor++];
       const cal = await getEarningsCalendar(symbol, HORIZON_DAYS);
-      // null = el fetch falló (429/red). NO tocamos la cache: conservamos
-      // las filas buenas y reintentamos el símbolo el próximo tick.
+      // null = el fetch falló (429/red). NO tocamos la cache ni la marca:
+      // conservamos las filas buenas y reintentamos el símbolo el próximo
+      // tick.
       if (cal === null) continue;
-      // Reemplazo completo por símbolo: borra fechas pasadas/movidas y
-      // marca frescura aunque el símbolo no tenga earnings en el horizonte
-      // (fila sentinel no — usamos fetched_at de las filas; si no hay
-      // filas, el símbolo se re-consulta cada tick, aceptable: la llamada
-      // es barata y el caso "sin earnings en 90d" es raro en equities).
-      await db.execute(sql`DELETE FROM earnings_events WHERE symbol = ${symbol}`);
+      // La marca de INTENTO va aunque `cal` venga vacío — es justo el caso
+      // que antes se re-consultaba sin fin.
+      await markJobRun(`earnings-cal:${symbol}`);
+      // Reemplazo completo por símbolo (borra fechas pasadas/movidas) en UNA
+      // sentencia: el DELETE y los INSERT sueltos dejaban al símbolo sin
+      // ninguna fila entre medias, y con dos escritores concurrentes ese
+      // hueco lo puede leer /portfolio, la revisión o los picks. Aquí el
+      // DELETE sólo borra lo que NO viene en la respuesta nueva, así que en
+      // ningún instante hay un estado "sin earnings" que no sea real.
+      const incoming = cal.map((e) => e.date);
+      const keep =
+        incoming.length > 0
+          ? sql`AND date <> ALL(${sql`ARRAY[${sql.join(
+              incoming.map((d) => sql`${d}`),
+              sql`, `,
+            )}]::text[]`})`
+          : sql``;
+      await db.execute(
+        sql`DELETE FROM earnings_events WHERE symbol = ${symbol} ${keep}`,
+      );
       for (const e of cal) {
         await db.execute(sql`
           INSERT INTO earnings_events

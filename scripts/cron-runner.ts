@@ -13,6 +13,21 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 config({ path: ".env" });
 
+// Sub-jobs opcionales que fallaron en este tick. Cada uno se traga su error a
+// propósito (un 13F roto no puede dejar sin puntuar las noticias), pero hasta
+// el 2026-08-01 eso significaba que un job MUERTO era invisible: warn suelto
+// entre cientos de líneas, workflow en verde y el health-monitor mirando sólo
+// insertedAgeMin/scoredAgeMin/authorBriefAgeMin. La línea resumen del final es
+// greppable y sale siempre que haya algo roto.
+const failures: string[] = [];
+function noteFailure(job: string, err: unknown): void {
+  failures.push(job);
+  console.warn(
+    `[cron-runner] ${job} failed:`,
+    err instanceof Error ? err.message : err,
+  );
+}
+
 async function main() {
   const t0 = Date.now();
   const { runRefreshNewsCron } = await import("../lib/cron/refresh-news");
@@ -52,10 +67,7 @@ async function main() {
         : "[cron-runner] brief still fresh — skipped",
     );
   } catch (err) {
-    console.warn(
-      "[cron-runner] brief generation failed (keeping previous):",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("brief", err);
   }
 
   // Earnings calendar de la watchlist (Finnhub, ~1 fetch/símbolo/día).
@@ -70,10 +82,7 @@ async function main() {
       );
     }
   } catch (err) {
-    console.warn(
-      "[cron-runner] earnings refresh failed:",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("earnings-calendar", err);
   }
 
   // AI Picks: mismo patrón que el brief (age check 4h, fallo no tumba).
@@ -86,10 +95,7 @@ async function main() {
         : "[cron-runner] picks still fresh — skipped",
     );
   } catch (err) {
-    console.warn(
-      "[cron-runner] picks generation failed (keeping previous):",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("picks", err);
   }
 
   // Smart Money digest (sección /insider): age check 6h, fallo no tumba.
@@ -104,10 +110,7 @@ async function main() {
         : "[cron-runner] insider digest still fresh — skipped",
     );
   } catch (err) {
-    console.warn(
-      "[cron-runner] insider digest failed (keeping previous):",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("insider-digest", err);
   }
 
   // 13F de los fondos curados. Trimestral: casi todas las pasadas salen por
@@ -122,10 +125,7 @@ async function main() {
       );
     }
   } catch (err) {
-    console.warn(
-      "[cron-runner] fund holdings failed:",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("fund-holdings-13f", err);
   }
 
   // Comunicados de resultados de la watchlist (8-K item 2.02 → exhibit 99.1).
@@ -140,10 +140,7 @@ async function main() {
       );
     }
   } catch (err) {
-    console.warn(
-      "[cron-runner] earnings reports failed:",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("earnings-reports", err);
   }
 
   // Short interest de FINRA. Va ANTES de la detección de señales para que el
@@ -160,10 +157,7 @@ async function main() {
       );
     }
   } catch (err) {
-    console.warn(
-      "[cron-runner] short interest failed:",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("short-interest", err);
   }
 
   // Signal Lab — registro PROSPECTIVO de señales. Va después de picks e
@@ -179,10 +173,7 @@ async function main() {
       );
     }
   } catch (err) {
-    console.warn(
-      "[cron-runner] signal detection failed:",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("signal-detect", err);
   }
 
   // Outcomes: mide señales maduras contra los precios posteriores. Chunked
@@ -203,10 +194,7 @@ async function main() {
       );
     }
   } catch (err) {
-    console.warn(
-      "[cron-runner] signal outcomes failed:",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("signal-outcomes", err);
   }
 
   // Lo mismo para las operaciones del usuario. Job separado del anterior a
@@ -226,10 +214,7 @@ async function main() {
       );
     }
   } catch (err) {
-    console.warn(
-      "[cron-runner] trade outcomes failed:",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("coach-outcomes", err);
   }
 
   // Comprueba los falsadores aprobados contra el último comunicado de cada
@@ -247,12 +232,20 @@ async function main() {
       );
     }
   } catch (err) {
-    console.warn(
-      "[cron-runner] falsifier checks failed:",
-      err instanceof Error ? err.message : err,
-    );
+    noteFailure("falsifiers", err);
   }
 
+  // Resumen de sub-jobs rotos. NO se convierte en exit 1 a propósito: los
+  // fallos por cuota LLM agotada (brief/picks/digest) son régimen normal en
+  // este proyecto, y un workflow rojo cada día enseña a ignorarlo. La alarma
+  // de verdad la da catalyst-health.yml, que desde 2026-08-01 vigila también
+  // la EDAD de los barridos (fundsSweepAgeMin / earningsSweepAgeMin): un job
+  // que lleva días sin completar sí se ve ahí, y sin falsos positivos.
+  if (failures.length) {
+    console.warn(
+      `[cron-runner] failedJobs=${failures.length} (${failures.join(", ")})`,
+    );
+  }
   console.log(`[cron-runner] total ${Date.now() - t0}ms`);
 }
 

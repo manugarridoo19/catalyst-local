@@ -403,8 +403,31 @@ export async function enrichTopStories(newsIds: number[], cap = 4): Promise<numb
   const targets = newsIds.slice(0, cap);
   if (!targets.length) return 0;
   const results = await Promise.allSettled(
-    targets.map((id) => getArticleDetail(id)),
+    // `allowRescore:false` por el mismo motivo que en `harvestBodies`: esto
+    // es un camino MASIVO del cron (corre en cada tick de score-orphans, en
+    // el cron de GH y en cada vuelta del bucle de drain-scoring), no un
+    // click. Y aquí el re-scoring era especialmente absurdo: los ítems que
+    // llegan los acaba de puntuar `scoreNewsBatch` segundos antes en este
+    // mismo tick, y `rescoreWorthwhile` deja pasar TODO filing de sec-edgar,
+    // así que cada uno gastaba una segunda llamada del mismo pool que puntúa
+    // las noticias frescas. El resumen IA (allowLlm) sí se mantiene: es lo
+    // que hace instantáneo el click del usuario, que es para lo que existe
+    // este pre-enrich.
+    targets.map((id) => getArticleDetail(id, { allowRescore: false })),
   );
+  let failed = 0;
+  for (const r of results) {
+    if (r.status === "rejected") {
+      failed++;
+      console.warn(
+        "[article] pre-enrich falló:",
+        r.reason instanceof Error ? r.reason.message.slice(0, 140) : r.reason,
+      );
+    }
+  }
+  if (failed) {
+    console.warn(`[article] pre-enrich: ${failed}/${targets.length} fallidos`);
+  }
   return results.filter(
     (r) => r.status === "fulfilled" && r.value?.status === "ok",
   ).length;

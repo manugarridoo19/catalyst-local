@@ -202,6 +202,16 @@ export async function runScoreOrphansCron(): Promise<OrphanResult> {
         }
       } catch (err) {
         failed++;
+        // El intento cuenta también cuando lo que falla es la ESCRITURA: sin
+        // esto, una fila que rompe siempre el insert nunca llegaba a
+        // MAX_ATTEMPTS (sólo se incrementaba a los omitidos por el LLM), el
+        // claim caducaba a los 10min y volvía a ocupar un hueco de lote cada
+        // tick, indefinidamente.
+        await db
+          .execute(
+            sql`UPDATE news SET scoring_attempts = scoring_attempts + 1 WHERE id = ${r.id}`,
+          )
+          .catch(() => {});
         console.warn(
           `[score-orphans] failed news ${r.id}:`,
           err instanceof Error ? err.message : err,

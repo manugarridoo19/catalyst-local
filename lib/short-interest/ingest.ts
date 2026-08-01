@@ -3,13 +3,21 @@
 //
 // Cadencia: como mucho una pasada al día, y aun así casi siempre sale sin
 // hacer nada. El dato se publica DOS VECES AL MES, así que preguntar más a
-// menudo no puede traer nada nuevo — el guard mira nuestra propia tabla
-// (mismo criterio que el job de outcomes: la cadencia se deduce de los datos,
-// sin tabla de "últimas ejecuciones").
+// menudo no puede traer nada nuevo.
+//
+// El guard va por `job_state` (hora del INTENTO), no por `MAX(fetched_at)` de
+// nuestra propia tabla, que es lo que había hasta el 2026-08-01. `fetched_at`
+// sólo avanza cuando se ALMACENAN filas, así que ~28 de cada 30 días el guard
+// no enganchaba y cada tick del cron se comía 1-2 POST a FINRA (timeout 30s
+// cada uno) sondeando quincenas que aún no existen, para acabar en
+// "up-to-date". Es exactamente el fallo que documenta CLAUDE.md para el
+// barrido de 13F. El parecido con el job de outcomes era engañoso: allí
+// `last_outcome_at` se marca TAMBIÉN en fallo, aquí no.
 
 import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { loadKnownSymbols } from "@/lib/db/queries";
+import { jobRanWithin, markJobRun } from "@/lib/cron/job-state";
 import {
   candidateSettlementDates,
   fetchShortInterestSnapshot,
@@ -27,6 +35,7 @@ export type ShortInterestResult = {
 
 /** Horas mínimas entre pasadas. */
 const RETRY_HOURS = 20;
+const JOB_KEY = "short-interest-sweep";
 
 async function latestStoredDate(): Promise<string | null> {
   return (
@@ -35,18 +44,6 @@ async function latestStoredDate(): Promise<string | null> {
         sql`SELECT MAX(settlement_date) AS d FROM short_interest`,
       ),
     )[0]?.d ?? null
-  );
-}
-
-async function ranRecently(): Promise<boolean> {
-  return (
-    unwrapRows<{ recent: boolean | null }>(
-      await db.execute(sql`
-        SELECT (MAX(fetched_at) > now() - (${RETRY_HOURS} || ' hours')::interval)
-          AS recent
-        FROM short_interest
-      `),
-    )[0]?.recent === true
   );
 }
 
@@ -110,7 +107,13 @@ export async function runShortInterestIngest(
   if (process.env.SHORT_INTEREST_ENABLED === "0") {
     return done({ skipped: "disabled" });
   }
-  if (!opts.force && (await ranRecently())) return done({ skipped: "recent" });
+  if (!opts.force && (await jobRanWithin(JOB_KEY, RETRY_HOURS))) {
+    return done({ skipped: "recent" });
+  }
+  // Se marca ANTES de sondear: lo que hay que recordar es el INTENTO. Si se
+  // marcara sólo al almacenar, las pasadas que no encuentran quincena nueva
+  // —que son casi todas— volverían a sondear FINRA en el tick siguiente.
+  await markJobRun(JOB_KEY);
 
   const stored = await latestStoredDate();
 

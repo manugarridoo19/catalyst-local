@@ -100,7 +100,12 @@ export async function prewarmPortfolioBodies(): Promise<{
   // Se marca ANTES de trabajar, igual que el resto de barridos del proyecto:
   // si la pasada muere a mitad, la siguiente espera su hora en vez de
   // reintentar en el tick de dentro de 10 minutos con las mismas fuentes
-  // lentas que acaban de fallar.
+  // lentas que acaban de fallar. Y antes del guard de almacenamiento, no
+  // después: con la BD por encima del tope, salir sin marcar hacía que
+  // `pg_database_size` se consultara en CADA tick de los dos escritores en
+  // vez de una vez por hora.
+  await markJobRun(JOB_KEY);
+
   const dbMb = await dbSizeMb();
   if (dbMb > MAX_DB_MB) {
     console.warn(
@@ -108,8 +113,6 @@ export async function prewarmPortfolioBodies(): Promise<{
     );
     return { skipped: `bd ${dbMb.toFixed(0)}MB` };
   }
-
-  await markJobRun(JOB_KEY);
 
   // Toda la watchlist, con las posiciones VIVAS primero. El orden importa
   // porque `MAX_FETCHES` recorta por la cola: si el presupuesto no llega

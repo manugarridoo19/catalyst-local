@@ -89,4 +89,14 @@ jobs:
           PUSHER_KEY: ${{ secrets.PUSHER_KEY }}
           PUSHER_SECRET: ${{ secrets.PUSHER_SECRET }}
           PUSHER_CLUSTER: ${{ secrets.PUSHER_CLUSTER }}
+          # Sesiones del dueño: getTopTickersForFetch prioriza SOLO estas
+          # watchlists (audit 2026-08-01 — sin el filtro, una sesión anónima
+          # del Worker público podía colarse en la rotación de fetch). Con el
+          # secret vacío el filtro es fail-open y se conserva el
+          # comportamiento anterior.
+          CLAIMABLE_SESSION_IDS: ${{ secrets.CLAIMABLE_SESSION_IDS }}
+          # Cooldowns de keys LLM compartidos entre los 3 escritores vía
+          # provider_cooldowns (lib/providers/cooldown-store.ts). Solo en
+          # procesos que puntúan — NUNCA en el Worker.
+          PROVIDER_COOLDOWN_STORE: "1"
         run: pnpm cron:remote

@@ -25,7 +25,17 @@ async function main() {
   let attempted = 0;
   for (const t of pending) {
     attempted++;
-    const profile = await getProfile(t.symbol);
+    // getProfile LANZA en fallo de petición (429/red) desde 2026-08-01: aquí
+    // se salta el símbolo y se reintenta en otra pasada del backfill.
+    let profile;
+    try {
+      profile = await getProfile(t.symbol);
+    } catch (err) {
+      console.warn(
+        `[backfill] ${t.symbol} saltado: ${err instanceof Error ? err.message : err}`,
+      );
+      continue;
+    }
     if (profile && (profile.logo || profile.name)) {
       await db
         .update(tickers)

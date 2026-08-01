@@ -1,5 +1,8 @@
+import { sql } from "drizzle-orm";
 import type { NormalizedNewsItem } from "@/lib/types";
 import { hashUrl } from "@/lib/hash";
+import { db } from "@/lib/db";
+import { createRateLimiter } from "@/lib/providers/rate-limit";
 import { getYahooQuote } from "@/lib/providers/yahoo";
 
 const BASE = "https://finnhub.io/api/v1";
@@ -8,6 +11,65 @@ function key() {
   const k = process.env.FINNHUB_API_KEY;
   if (!k) throw new Error("FINNHUB_API_KEY is not set");
   return k;
+}
+
+/** Error de transporte/HTTP de Finnhub. Existe para que el llamante pueda
+ *  distinguir "la API respondió que no hay dato" de "no pudimos preguntar":
+ *  el enricher marcaba `enriched_at` en los dos casos y un 429 dejaba al
+ *  ticker sin nombre ni logo PARA SIEMPRE (la query de pendientes es
+ *  `enriched_at IS NULL`). */
+export class FinnhubError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = "FinnhubError";
+  }
+}
+
+// --- Freno de tasa COMPARTIDO -------------------------------------------
+// Finnhub free = 60 req/min para toda la key. Hasta el 2026-08-01 cada
+// camino tenía su propia concurrencia local (company-news 8, enricher 4,
+// quotes 5, earnings 3) calculada contra un presupuesto que NADIE hacía
+// cumplir: el refresher acumuló 7.048 respuestas 429 en 50 ticks, TODAS de
+// /quote, porque el Signal Lab pedía ~141 precios de golpe. El freno vive
+// aquí porque `fh()` es el único punto por el que pasan los cinco caminos.
+//
+// Cubo de fichas (`lib/providers/rate-limit.ts`): ráfaga hasta el cupo y
+// MAX_RPM sostenidas. El porqué del algoritmo está allí; lo que importa aquí
+// es que el cupo es el de la key entera, compartido por los cinco caminos.
+//
+// El tope de 30 req/s de Finnhub no hace falta acotarlo por separado: ningún
+// llamante pasa de 8 peticiones en vuelo (company-news 8, quotes 5, enricher
+// 4, earnings 3), así que la ráfaga nunca puede acercarse.
+const MAX_RPM = Math.max(1, Number(process.env.FINNHUB_MAX_RPM ?? 55));
+const limiter = createRateLimiter({ maxPerMinute: MAX_RPM });
+
+// Enfriamiento tras un 429, mismo patrón que los pools de OpenRouter/Gemini:
+// sin esto un 429 se trataba igual que un 500 (throw y a otra cosa) y el
+// tick seguía martilleando la API ya saturada durante minutos.
+//
+// En memoria del módulo, como los demás proveedores hoy: cada proceso lo
+// redescubre. Si algún día se activa `lib/providers/cooldown-store.ts` (hoy
+// inerte, le falta la tabla), esto entra ahí con scope 'finnhub'.
+const DEFAULT_COOLDOWN_MS = 60_000;
+let cooldownUntil = 0;
+
+/** Ms que quedan de enfriamiento por 429. 0 = key disponible. Para /api/health. */
+export function finnhubCooldownMs(): number {
+  return Math.max(0, cooldownUntil - Date.now());
+}
+
+function applyRateLimit(res: Response): void {
+  // `Retry-After` puede venir en segundos; si no viene, un minuto es la
+  // ventana natural del límite de Finnhub (60/min).
+  const retryAfter = Number(res.headers.get("retry-after"));
+  const ms =
+    Number.isFinite(retryAfter) && retryAfter > 0
+      ? retryAfter * 1000
+      : DEFAULT_COOLDOWN_MS;
+  cooldownUntil = Math.max(cooldownUntil, Date.now() + ms);
 }
 
 type FinnhubNews = {
@@ -29,6 +91,16 @@ async function fh<T>(
   const url = new URL(`${BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   url.searchParams.set("token", key());
+  // Con la key enfriada ni se pregunta: seguir pidiendo durante un 429 es lo
+  // que convertía una ráfaga en miles de líneas de log y cero datos.
+  const cooling = finnhubCooldownMs();
+  if (cooling > 0) {
+    throw new FinnhubError(
+      `Finnhub ${path} skipped: key enfriada ${Math.ceil(cooling / 1000)}s por 429`,
+      429,
+    );
+  }
+  await limiter.reserve();
   const res = await fetch(url.toString(), {
     headers: { "User-Agent": "catalyst-local/0.1" },
     // Sin timeout, una conexión colgada retiene el tick del cron entero
@@ -36,7 +108,11 @@ async function fh<T>(
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
-    throw new Error(`Finnhub ${path} failed: ${res.status} ${res.statusText}`);
+    if (res.status === 429) applyRateLimit(res);
+    throw new FinnhubError(
+      `Finnhub ${path} failed: ${res.status} ${res.statusText}`,
+      res.status,
+    );
   }
   return res.json() as Promise<T>;
 }
@@ -50,9 +126,20 @@ export async function fetchGeneralNews(): Promise<NormalizedNewsItem[]> {
     CATEGORIES.map((cat) => fh<FinnhubNews[]>("/news", { category: cat })),
   );
   const out: NormalizedNewsItem[] = [];
-  for (const r of results) {
-    if (r.status === "fulfilled") out.push(...r.value.map(toNormalized));
-  }
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") {
+      out.push(...r.value.map(toNormalized));
+    } else {
+      // Sin este log el motor del feed podía morir entero en silencio: la
+      // promesa sale `fulfilled` con `[]`, así que el warn de refresh-news
+      // no dispara y `fetched.finnhub: 0` es indistinguible de "hoy no hubo
+      // noticias generales".
+      console.warn(
+        `[finnhub] general/${CATEGORIES[i]} failed:`,
+        r.reason instanceof Error ? r.reason.message : r.reason,
+      );
+    }
+  });
   return out;
 }
 
@@ -161,14 +248,17 @@ export type FinnhubProfile = {
   logo: string;
 };
 
+/**
+ * `null` = Finnhub respondió y NO tiene perfil de ese símbolo (foreign, OTC).
+ * LANZA si la petición falló (429, red, timeout): son cosas distintas y el
+ * enricher necesita distinguirlas — marcar `enriched_at` tras un 429 deja al
+ * ticker sin nombre, sin logo y sin alias para siempre. Los llamantes que no
+ * puedan reintentar ya traen su propio `.catch(() => null)`.
+ */
 export async function getProfile(symbol: string): Promise<FinnhubProfile | null> {
-  try {
-    const p = await fh<FinnhubProfile>("/stock/profile2", { symbol });
-    if (!p || !p.ticker) return null;
-    return p;
-  } catch {
-    return null;
-  }
+  const p = await fh<FinnhubProfile>("/stock/profile2", { symbol });
+  if (!p || !p.ticker) return null;
+  return p;
 }
 
 export type FinnhubQuote = {
@@ -288,5 +378,52 @@ export async function getQuotesMap(
     }
   }
   await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+  await writeQuotesCache(out);
   return out;
+}
+
+/**
+ * Vuelca lo cotizado a `quotes_cache`. Esta función es el ÚNICO embudo de
+ * quotes del proyecto, así que es el sitio donde la caché se puede llenar.
+ *
+ * Hasta el 2026-08-01 la tabla no la escribía NADIE (lo decía ya un
+ * comentario en /api/portfolio-review), así que la lectura con frescura de
+ * 15min de `lib/signals/detect.ts` fallaba siempre y el 100% de los
+ * candidatos caía al fetch — la otra mitad de la tormenta de 429.
+ *
+ * Best-effort a propósito: `symbol` tiene FK a `tickers` y aquí entran
+ * símbolos de watchlist que pueden no estar en el universo todavía. Un fallo
+ * al cachear no puede tumbar la respuesta de precios de nadie.
+ */
+async function writeQuotesCache(
+  quotes: Record<string, CompactQuote | null>,
+): Promise<void> {
+  const rows = Object.entries(quotes).filter(
+    (e): e is [string, CompactQuote] => e[1] !== null,
+  );
+  if (!rows.length) return;
+  try {
+    const values = sql.join(
+      rows.map(
+        ([sym, q]) =>
+          sql`(${sym}::text, ${String(q.price)}::text, ${String(q.changePercent)}::text)`,
+      ),
+      sql`, `,
+    );
+    await db.execute(sql`
+      INSERT INTO quotes_cache (symbol, last_price, change_pct, updated_at)
+      SELECT v.symbol, v.last_price, v.change_pct, now()
+      FROM (VALUES ${values}) AS v(symbol, last_price, change_pct)
+      WHERE EXISTS (SELECT 1 FROM tickers t WHERE t.symbol = v.symbol)
+      ON CONFLICT (symbol) DO UPDATE SET
+        last_price = EXCLUDED.last_price,
+        change_pct = EXCLUDED.change_pct,
+        updated_at = now()
+    `);
+  } catch (err) {
+    console.warn(
+      "[finnhub] quotes_cache write failed:",
+      err instanceof Error ? err.message.slice(0, 140) : err,
+    );
+  }
 }

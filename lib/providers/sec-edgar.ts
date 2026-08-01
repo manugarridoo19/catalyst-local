@@ -29,16 +29,25 @@ const FILING_COUNT = 40; // por tipo y tick
 
 const parser = new Parser({
   timeout: 12_000,
+  // `timeout` de rss-parser sólo RECHAZA la promesa; el que aborta de verdad
+  // la petición es el de `http.get`, y va por aquí. Sin él, un feed lento
+  // seguía leyendo y acumulando XML hasta que el proceso hacía exit.
+  requestOptions: { timeout: 12_000 },
   headers: { "User-Agent": SEC_UA, Accept: "application/atom+xml, application/xml" },
 });
 
-// CIK (10 dígitos, zero-padded) → ticker. Cache módulo con TTL largo.
-let cikMap: Map<string, string> | null = null;
-let cikMapAt = 0;
+// Índices de `company_tickers.json`. Los DOS se construyen en la misma pasada
+// y comparten TTL: el fichero pesa ~1MB y antes cada índice tenía su propio
+// fetch (el JSDoc de `getCikForSymbol` decía que reutilizaba esta caché y no
+// era verdad), así que se bajaba dos veces por proceso — y en GH Actions cada
+// run es un proceso nuevo, o sea que no hay caché que lo amortice.
+type CikIndexes = { byCik: Map<string, string>; bySymbol: Map<string, string> };
+let cikIndexes: CikIndexes | null = null;
+let cikIndexesAt = 0;
 const CIK_MAP_TTL = 24 * 3600_000;
 
-async function getCikMap(): Promise<Map<string, string>> {
-  if (cikMap && Date.now() - cikMapAt < CIK_MAP_TTL) return cikMap;
+async function getCikIndexes(): Promise<CikIndexes> {
+  if (cikIndexes && Date.now() - cikIndexesAt < CIK_MAP_TTL) return cikIndexes;
   const res = await fetch(TICKERS_MAP_URL, {
     headers: { "User-Agent": SEC_UA },
     signal: AbortSignal.timeout(12_000),
@@ -48,15 +57,23 @@ async function getCikMap(): Promise<Map<string, string>> {
     string,
     { cik_str: number; ticker: string; title: string }
   >;
-  const m = new Map<string, string>();
+  const byCik = new Map<string, string>();
+  const bySymbol = new Map<string, string>();
   for (const v of Object.values(raw)) {
     const cik = String(v.cik_str).padStart(10, "0");
     // Un CIK puede tener varias clases; nos quedamos con el primer ticker.
-    if (!m.has(cik)) m.set(cik, v.ticker.toUpperCase());
+    if (!byCik.has(cik)) byCik.set(cik, v.ticker.toUpperCase());
+    // Al revés la clave es el TICKER, así que cada clase (GOOG/GOOGL) apunta
+    // a su mismo CIK. Es lo correcto para "dame los filings de este símbolo".
+    bySymbol.set(v.ticker.toUpperCase(), cik);
   }
-  cikMap = m;
-  cikMapAt = Date.now();
-  return m;
+  cikIndexes = { byCik, bySymbol };
+  cikIndexesAt = Date.now();
+  return cikIndexes;
+}
+
+async function getCikMap(): Promise<Map<string, string>> {
+  return (await getCikIndexes()).byCik;
 }
 
 /** User-Agent obligatorio de la SEC, compartido con los consumidores del
@@ -64,36 +81,12 @@ async function getCikMap(): Promise<Map<string, string>> {
 export const SEC_USER_AGENT = SEC_UA;
 
 /**
- * ticker → CIK (10 dígitos con ceros). Reutiliza el MISMO fetch cacheado que
- * `getCikMap`, sólo que indexado al revés: `company_tickers.json` pesa ~1MB y
- * bajarlo dos veces por tener dos índices sería absurdo.
- *
- * Ojo con las clases múltiples: un CIK puede tener varios tickers (GOOG/GOOGL)
- * y aquí la clave es el TICKER, así que cada clase apunta a su mismo CIK. Es
- * lo correcto para "dame los filings de este símbolo".
+ * ticker → CIK (10 dígitos con ceros). Reutiliza de verdad el mismo fetch
+ * cacheado que `getCikMap` — los dos índices salen de una sola descarga.
  */
-let symbolToCik: Map<string, string> | null = null;
-let symbolToCikAt = 0;
-
 export async function getCikForSymbol(symbol: string): Promise<string | null> {
-  if (!symbolToCik || Date.now() - symbolToCikAt >= CIK_MAP_TTL) {
-    const res = await fetch(TICKERS_MAP_URL, {
-      headers: { "User-Agent": SEC_UA },
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (!res.ok) throw new Error(`company_tickers ${res.status}`);
-    const raw = (await res.json()) as Record<
-      string,
-      { cik_str: number; ticker: string; title: string }
-    >;
-    const m = new Map<string, string>();
-    for (const v of Object.values(raw)) {
-      m.set(v.ticker.toUpperCase(), String(v.cik_str).padStart(10, "0"));
-    }
-    symbolToCik = m;
-    symbolToCikAt = Date.now();
-  }
-  return symbolToCik.get(symbol.toUpperCase()) ?? null;
+  const { bySymbol } = await getCikIndexes();
+  return bySymbol.get(symbol.toUpperCase()) ?? null;
 }
 
 const FILING_TYPES: Array<{ type: string; label: string }> = [
@@ -172,8 +165,14 @@ function companyFromTitle(title: string): string {
 // `allowed` = universo de tickers que ya seguimos (conocidos + watchlist).
 // Solo emitimos filings de esas empresas — así SEC aporta señal de los
 // valores relevantes, no un firehose de 8-K de micro-caps que nadie sigue
-// (que además gastarían capacidad de scoring). Si `allowed` viene vacío,
-// emitimos todos (modo test / primer arranque sin universo).
+// (que además gastarían capacidad de scoring).
+//
+// OJO con la distinción, que costó un incidente: `undefined` = "sin filtro"
+// (modo test / primer arranque sin universo, emite todos) y un Set VACÍO =
+// "el universo es vacío", que emite CERO. Antes los dos casos colapsaban en
+// `size > 0 ? allowed : null`, así que un fallo transitorio de
+// `loadKnownSymbols` (que degradaba a Set vacío) abría el firehose sin que
+// nada lo dijera en el log.
 export async function fetchSecFilings(
   allowed?: Set<string>,
 ): Promise<NormalizedNewsItem[]> {
@@ -184,7 +183,7 @@ export async function fetchSecFilings(
     console.warn("[sec-edgar] cik map failed:", e instanceof Error ? e.message : e);
     return [];
   }
-  const filter = allowed && allowed.size > 0 ? allowed : null;
+  const filter = allowed ?? null;
 
   // Cuenta de Form 4 ya ingeridos hoy por emisor + los que emitimos en este
   // tick — para no pasarnos del cap sumando ambos.

@@ -259,14 +259,16 @@ async function detectAuthorCalls(): Promise<SignalCandidate[]> {
 
 // ─── Escritura ───────────────────────────────────────────────────────────
 
-// Precio intradía SOLO para candidatos recién nacidos. quotes_cache si está
-// fresca (≤15min, gratis), si no un batch de Finnhub. Nunca bloquea: si no
-// hay precio se guarda null — el campo es informativo y el retorno del Lab
-// se calcula close-to-close, así que perderlo no degrada ninguna métrica.
+// Precio intradía SOLO para señales recién NACIDAS — y desde el 2026-08-01,
+// sólo para las que de verdad entraron en el registro (ver
+// `attachDetectionPrices`). quotes_cache si está fresca (≤15min, gratis), si
+// no un batch de Finnhub. Nunca bloquea: si no hay precio se queda null — el
+// campo es informativo y el retorno del Lab se calcula close-to-close, así
+// que perderlo no degrada ninguna métrica.
 async function resolvePrices(
-  candidates: SignalCandidate[],
+  events: { symbol: string; detectedAt: Date }[],
 ): Promise<Map<string, number>> {
-  const fresh = candidates.filter(
+  const fresh = events.filter(
     (c) =>
       Date.now() - c.detectedAt.getTime() < PRICE_FRESHNESS_MIN * 60_000,
   );
@@ -315,7 +317,7 @@ async function resolvePrices(
 export async function insertSignalEvent(
   c: SignalCandidate,
   price: number | null,
-): Promise<boolean> {
+): Promise<number | null> {
   const cooldownDays = KIND_SPECS[c.kind]?.cooldownDays ?? 0;
   const meta = c.meta ? JSON.stringify(c.meta) : null;
   // cooldown 0 = cada refId es un evento discreto real (un filing nuevo):
@@ -338,7 +340,48 @@ export async function insertSignalEvent(
     ON CONFLICT DO NOTHING
     RETURNING id
   `);
-  return unwrapRows<{ id: number }>(res).length > 0;
+  // Devuelve el id (no un booleano) para que el llamante pueda rellenar
+  // `price_at_detection` DESPUÉS, sólo de lo que realmente entró.
+  return unwrapRows<{ id: number }>(res)[0]?.id ?? null;
+}
+
+/**
+ * Rellena `price_at_detection` de los eventos que ACABAN de entrar.
+ *
+ * Por qué después de insertar y no antes (2026-08-01): `resolvePrices` corría
+ * sobre TODOS los candidatos, y los dos detectores que fechan con `new Date()`
+ * —squeeze setup y aperturas 13F— pasan siempre el filtro de frescura con
+ * hasta 300 símbolos por tick, siempre los mismos (el short interest es
+ * quincenal y los 13F trimestrales, así que la lista no cambia entre ticks).
+ * Como casi todos se suprimían luego por el UNIQUE y el cooldown, se estaba
+ * pagando un quote por cada símbolo candidato para rellenar filas que no se
+ * insertaban: 7.048 respuestas 429 de Finnhub en 50 ticks del refresher.
+ *
+ * Que sea una segunda sentencia no rompe nada: el insert sigue siendo
+ * insert-if-absent atómico, y `price_at_detection` es informativo por
+ * contrato — nunca es denominador de un retorno.
+ */
+async function attachDetectionPrices(
+  events: { id: number; symbol: string; detectedAt: Date }[],
+): Promise<void> {
+  if (!events.length) return;
+  const prices = await resolvePrices(events);
+  if (!prices.size) return;
+  for (const ev of events) {
+    const p = prices.get(ev.symbol);
+    if (p === undefined) continue;
+    try {
+      await db.execute(sql`
+        UPDATE signal_events SET price_at_detection = ${p}
+        WHERE id = ${ev.id} AND price_at_detection IS NULL
+      `);
+    } catch (err) {
+      console.warn(
+        `[signals] price_at_detection ${ev.symbol} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 }
 
 // Short squeeze setup: mucha posición corta que tardaría en deshacerse
@@ -523,19 +566,19 @@ export async function runDetectSignalsCron(): Promise<DetectResult> {
     return { inserted: 0, byKind, durationMs: Date.now() - t0 };
   }
 
-  const prices = await resolvePrices(candidates);
-
   // Orden cronológico: con cooldown, el primer evento del episodio debe ser
   // el más antiguo (si insertáramos el reciente primero, el viejo quedaría
   // suprimido y el track record empezaría a contar tarde).
   candidates.sort((a, b) => a.detectedAt.getTime() - b.detectedAt.getTime());
 
+  const born: { id: number; symbol: string; detectedAt: Date }[] = [];
   for (const c of candidates) {
     try {
-      const ok = await insertSignalEvent(c, prices.get(c.symbol) ?? null);
-      if (ok) {
+      const id = await insertSignalEvent(c, null);
+      if (id !== null) {
         inserted++;
         byKind[c.kind] = (byKind[c.kind] ?? 0) + 1;
+        born.push({ id, symbol: c.symbol, detectedAt: c.detectedAt });
       }
     } catch (err) {
       console.warn(
@@ -544,5 +587,10 @@ export async function runDetectSignalsCron(): Promise<DetectResult> {
       );
     }
   }
+
+  // El precio se pide AHORA, sobre lo que entró de verdad: en régimen normal
+  // son 0-3 símbolos por tick en vez de los ~300 candidatos.
+  await attachDetectionPrices(born);
+
   return { inserted, byKind, durationMs: Date.now() - t0 };
 }

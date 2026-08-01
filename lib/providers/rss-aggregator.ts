@@ -109,15 +109,15 @@ const SOURCES: { name: string; url: string }[] = [
 ];
 
 // Timeout 10s (audit 2026-05-12 #7): bajado desde 15s. Un Reuters/FT mirror
-// lento ya no domina el bucket. Las respuestas exitosas se cachean 15min
-// (ver `lastGoodResponses`) y se sirven como fallback si la siguiente
-// llamada falla — así un blip de 502 no nos deja sin ese feed por 5min
-// hasta el próximo tick. 24 feeds × 10s max ≈ 10s peak, vs 20s antes.
+// lento ya no domina el bucket. 24 feeds × 10s max ≈ 10s peak, vs 20s antes.
 const RSS_TIMEOUT_MS = 10_000;
-const RSS_CACHE_TTL_MS = 15 * 60 * 1000;
 
 const parser = new Parser({
   timeout: RSS_TIMEOUT_MS,
+  // El `timeout` de arriba sólo hace `reject` de la promesa: rss-parser no
+  // llama a `req.destroy()`, así que el socket seguía leyendo y acumulando
+  // XML hasta el exit del proceso. Éste sí llega a `http.get` y aborta.
+  requestOptions: { timeout: RSS_TIMEOUT_MS },
   headers: {
     // Algunos feeds (Reuters mirror, FT, MarketBeat) bloquean User-Agents
     // que no parezcan navegador. Usamos uno común para evitar 403.
@@ -128,15 +128,14 @@ const parser = new Parser({
   },
 });
 
-// Cache last-good por fuente. Cuando una fuente falla pero antes funcionó
-// hace <15min, reutilizamos. Dedupe vía hash en insertNewsBatch evita
-// duplicados — el coste de re-broadcast es 0 porque el hash conflict skip
-// no entra a `inserted`.
-type RssCacheEntry = {
-  items: NormalizedNewsItem[];
-  expiresAt: number;
-};
-const lastGoodResponses = new Map<string, RssCacheEntry>();
+// AQUÍ HUBO una caché "last-good" en memoria (Map de módulo, TTL 15min) que
+// servía la última respuesta buena de una fuente cuando la siguiente fallaba.
+// Se retiró el 2026-08-01 porque NUNCA acertaba: los tres puntos de entrada
+// de refresh-news —cron-runner, refresh-once y run-cron-local— son procesos
+// de un solo tick que terminan en `process.exit`, así que el Map arrancaba
+// vacío en cada ejecución. Prometía una resiliencia que no existía y ocultaba
+// que un 502 sí deja el feed sin esa fuente hasta el próximo tick.
+// Para que vuelva a tener sentido tendría que persistirse en BD.
 
 // Devuelve noticias de TODAS las fuentes en paralelo. Si una fuente falla
 // loggeamos y seguimos — un feed roto no debe tumbar el cron.
@@ -145,32 +144,23 @@ export async function fetchAllRssNews(): Promise<NormalizedNewsItem[]> {
     SOURCES.map((s) => fetchOne(s.name, s.url)),
   );
   const items: NormalizedNewsItem[] = [];
+  let failed = 0;
   results.forEach((r, i) => {
     const src = SOURCES[i].name;
     if (r.status === "fulfilled") {
       items.push(...r.value);
-      lastGoodResponses.set(src, {
-        items: r.value,
-        expiresAt: Date.now() + RSS_CACHE_TTL_MS,
-      });
     } else {
-      const cached = lastGoodResponses.get(src);
-      if (cached && cached.expiresAt > Date.now()) {
-        console.warn(
-          `[rss] source "${src}" failed, serving last-good (${cached.items.length} items): ${
-            r.reason instanceof Error ? r.reason.message : r.reason
-          }`,
-        );
-        items.push(...cached.items);
-      } else {
-        console.warn(
-          `[rss] source "${src}" failed: ${
-            r.reason instanceof Error ? r.reason.message : r.reason
-          }`,
-        );
-      }
+      failed++;
+      console.warn(
+        `[rss] source "${src}" failed: ${
+          r.reason instanceof Error ? r.reason.message : r.reason
+        }`,
+      );
     }
   });
+  if (failed) {
+    console.warn(`[rss] ${failed}/${SOURCES.length} fuentes caídas este tick`);
+  }
   return items;
 }
 

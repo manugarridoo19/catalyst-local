@@ -32,6 +32,13 @@ env:
   HEALTH_URL: https://catalyst-local.manubisbal19.workers.dev/api/health
   MAX_AGE_MIN: 120
   AUTHOR_MAX_AGE_MIN: 2160
+  # Barridos de 12h (13F y comunicados de resultados). 48h = cuatro ventanas
+  # perdidas: ya no es "el Mac estaba apagado" sino que el job lleva días sin
+  # COMPLETAR. Ojo, el umbral mide la edad de la marca de job_state, que se
+  # escribe al INTENTAR: si sube, es que el sub-job revienta antes de marcar
+  # o que el cron entero no corre. Sin esto, un 13F roto por un cambio de
+  # esquema de EDGAR se tragaba su error en cron-runner y no lo veía nadie.
+  SWEEP_MAX_AGE_MIN: 2880
 
 jobs:
   check:
@@ -54,7 +61,12 @@ jobs:
             # -1 = campo ausente/null (p.ej. tabla vacía): se salta el check
             # en vez de alarmar en falso.
             author=$(echo "$body" | jq -r '.authorBriefAgeMin // -1')
-            detail="insertedAgeMin=${inserted} scoredAgeMin=${scored} insertedLastHour=${inserted_lh} scoredLastHour=${scored_lh} unscoredWithTickers=${unscored} authorBriefAgeMin=${author}"
+            # Edad de los barridos de 12h. -1 = nunca han corrido (BD nueva o
+            # job_state vacío): se salta el check en vez de alarmar en falso,
+            # mismo criterio que el author brief.
+            funds=$(echo "$body" | jq -r '.phase3.fundsSweepAgeMin // -1')
+            ereports=$(echo "$body" | jq -r '.phase3.earningsSweepAgeMin // -1')
+            detail="insertedAgeMin=${inserted} scoredAgeMin=${scored} insertedLastHour=${inserted_lh} scoredLastHour=${scored_lh} unscoredWithTickers=${unscored} authorBriefAgeMin=${author} fundsSweepAgeMin=${funds} earningsSweepAgeMin=${ereports}"
             if [ "$inserted" -gt "$MAX_AGE_MIN" ]; then
               status="stalled"
               detail="INGESTA parada: última noticia insertada hace ${inserted} min (¿pinger muerto? cadencia sana ~10min). ${detail}"
@@ -64,6 +76,12 @@ jobs:
             elif [ "$author" -ge 0 ] && [ "$author" -gt "$AUTHOR_MAX_AGE_MIN" ]; then
               status="stalled"
               detail="AUTHOR WATCH rancio: último author brief hace ${author} min (¿cookies de Brave caducadas? ¿scrape fallando en silencio?). ${detail}"
+            elif [ "$funds" -ge 0 ] && [ "$funds" -gt "$SWEEP_MAX_AGE_MIN" ]; then
+              status="stalled"
+              detail="BARRIDO 13F parado: última marca hace ${funds} min (cadencia sana 12h). ¿EDGAR cambió el esquema y runFundHoldingsIngest revienta? El cron se traga ese error a propósito — mira failedJobs= en el log del cron-runner. ${detail}"
+            elif [ "$ereports" -ge 0 ] && [ "$ereports" -gt "$SWEEP_MAX_AGE_MIN" ]; then
+              status="stalled"
+              detail="BARRIDO de comunicados parado: última marca hace ${ereports} min (cadencia sana 12h). Mismo diagnóstico: revisa failedJobs= en el log del cron-runner. ${detail}"
             elif [ "$scored_lh" -eq 0 ] && [ "$inserted_lh" -gt 0 ]; then
               # Señal temprana de pools LLM agotados: entran noticias pero en
               # una hora entera no se ha puntuado NI UNA (OpenRouter + Gemini

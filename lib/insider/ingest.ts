@@ -16,6 +16,15 @@ import {
 // `limit`. La marca se pone SIEMPRE al intentar — un filing sin
 // transacciones (amendment vacío, holding-only) no se re-fetchea eternamente.
 // El mismo camino sirve para el backfill (limit alto vía script).
+//
+// La selección es a la vez un CLAIM (2026-08-01): marcar y elegir van en la
+// MISMA sentencia `UPDATE … RETURNING`, igual que el picker de scoring. Este
+// job corre dentro de refresh-news, y refresh-news corre en DOS escritores a
+// la vez —el cron de GH Actions y el refresher local, con relojes
+// independientes—, así que con un SELECT que sólo marcaba al terminar los dos
+// elegían los mismos 16 filings y hacían los mismos ~32 fetches a SEC. Las
+// escrituras convergían por `onConflictDoNothing`, pero el `GAP_MS` está
+// calculado para un solo escritor.
 
 const PARSE_CAP = Number(process.env.INSIDER_PARSE_CAP ?? 16);
 const LOOKBACK_HOURS = 72;
@@ -43,33 +52,41 @@ type PendingFiling = {
   published_at: string | Date;
 };
 
-async function getPendingFilings(
+/**
+ * Elige y RECLAMA en una sola sentencia: al devolver la fila ya queda con
+ * `insider_parsed_at` puesto, así que el otro escritor no la vuelve a coger.
+ *
+ * Reclamar por delante también es lo que ya hacía la semántica anterior en la
+ * práctica (se marcaba pase lo que pase, incluso en fallo: «mejor perderlo que
+ * loopear»), sólo que ahora la marca llega antes de gastar los fetches en vez
+ * de después.
+ */
+async function claimPendingFilings(
   limit: number,
   lookbackHours: number,
 ): Promise<PendingFiling[]> {
   return unwrapRows<PendingFiling>(
     await db.execute(sql`
-      SELECT n.id, n.url, n.headline, n.published_at,
-        (SELECT nt.ticker FROM news_tickers nt WHERE nt.news_id = n.id
+      WITH pendientes AS (
+        SELECT n.id FROM news n
+        WHERE n.source = 'sec-edgar'
+          AND n.insider_parsed_at IS NULL
+          AND n.published_at >= now() - (${lookbackHours} || ' hours')::interval
+          AND (
+            n.headline LIKE '% files Form 4 (insider)'
+            OR n.headline LIKE '% files SC 13D%'
+            OR n.headline LIKE '% files SC 13G%'
+          )
+        ORDER BY n.published_at DESC
+        LIMIT ${limit}
+      )
+      UPDATE news SET insider_parsed_at = now()
+      WHERE news.id IN (SELECT id FROM pendientes)
+        AND news.insider_parsed_at IS NULL
+      RETURNING news.id, news.url, news.headline, news.published_at,
+        (SELECT nt.ticker FROM news_tickers nt WHERE nt.news_id = news.id
           ORDER BY (nt.extraction_method = 'api') DESC LIMIT 1) AS symbol
-      FROM news n
-      WHERE n.source = 'sec-edgar'
-        AND n.insider_parsed_at IS NULL
-        AND n.published_at >= now() - (${lookbackHours} || ' hours')::interval
-        AND (
-          n.headline LIKE '% files Form 4 (insider)'
-          OR n.headline LIKE '% files SC 13D%'
-          OR n.headline LIKE '% files SC 13G%'
-        )
-      ORDER BY n.published_at DESC
-      LIMIT ${limit}
     `),
-  );
-}
-
-async function markParsed(newsId: number): Promise<void> {
-  await db.execute(
-    sql`UPDATE news SET insider_parsed_at = now() WHERE id = ${newsId}`,
   );
 }
 
@@ -127,7 +144,11 @@ async function ingestStake(f: PendingFiling): Promise<number> {
   // Cover best-effort: si no sale nombre ni %, la fila igualmente registra
   // "stake nueva declarada en X" — eso ya es señal.
   const cover = await fetchStakeCover(f.url).catch(() => null);
-  await db
+  // returning() = filas REALMENTE insertadas, mismo motivo que en
+  // `ingestForm4`: con `onConflictDoNothing` un 13D ya ingerido no entra, y
+  // devolver 1 a pelo hacía que el cron logueara "+1 stakes" sin que hubiera
+  // entrado nada — justo el número que se mira para saber si esto sigue vivo.
+  const inserted = await db
     .insert(fundStakes)
     .values({
       newsId: f.id,
@@ -138,15 +159,16 @@ async function ingestStake(f: PendingFiling): Promise<number> {
       percentOfClass: cover?.percentOfClass ?? null,
       filedAt: new Date(f.published_at),
     })
-    .onConflictDoNothing();
-  return 1;
+    .onConflictDoNothing()
+    .returning({ id: fundStakes.id });
+  return inserted.length;
 }
 
 export async function ingestInsiderData(
   opts: { limit?: number; lookbackHours?: number } = {},
 ): Promise<InsiderIngestResult> {
   const limit = opts.limit ?? PARSE_CAP;
-  const pending = await getPendingFilings(
+  const pending = await claimPendingFilings(
     limit,
     opts.lookbackHours ?? LOOKBACK_HOURS,
   );
@@ -165,15 +187,13 @@ export async function ingestInsiderData(
         result.stakes += await ingestStake(f);
       }
     } catch (e) {
+      // La marca ya está puesta por el claim, también para los que fallan: un
+      // filing que revienta el parser lo haría igual en el próximo tick.
       result.failed++;
       console.warn(
         `[insider] parse failed news=${f.id}:`,
         e instanceof Error ? e.message : e,
       );
-    } finally {
-      // Marca SIEMPRE — también en fallo. Un filing que revienta el parser
-      // lo haría igual en el próximo tick; mejor perderlo que loopear.
-      await markParsed(f.id).catch(() => {});
     }
     await new Promise((r) => setTimeout(r, GAP_MS));
   }

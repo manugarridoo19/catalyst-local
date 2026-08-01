@@ -11,6 +11,10 @@
   req/day and a 10-min cadence would burn it; it still flows in via the
   GH Actions cron. Hash dedupe makes remote/local overlap free.
 
+  SKIP_SWEEPS=1 leaves the ticker enricher, the retention purges and the
+  earnings calendar to the GH cron: this agent is here for the news
+  fan-out, and those three only duplicated its budget.
+
   Install / control via scripts/local-daemon.sh (refresher-* commands).
 
   Same TCC workaround as the other agents: pnpm - -dir so launchd never
@@ -53,6 +57,21 @@
          brief/picks — dos generadores concurrentes con age-check podían
          duplicar la llamada LLM al cruzar el umbral de 4h a la vez. -->
     <key>SKIP_BRIEFS</key>
+    <string>1</string>
+    <!-- SKIP_SWEEPS: mismo reparto, aplicado a los barridos que cuelgan del
+         fetch de noticias. Aquí interesa el fan-out (el feed avanza cada
+         10min aunque GitHub throttlee, y el dedupe por hash hace gratis el
+         solape), no repetir trabajo que el cron GH ya hace: el enricher de
+         tickers gasta cuota de Finnhub —la que el freno compartido reparte—
+         y las purgas de retención dan el mismo resultado corran una o dos
+         veces. La ingesta insider NO se apaga: desde que reclama en la
+         propia SELECT, dos escritores se REPARTEN los filings. -->
+    <key>SKIP_SWEEPS</key>
+    <string>1</string>
+    <!-- Cooldowns de keys LLM compartidos entre los 3 escritores vía la
+         tabla provider_cooldowns (lib/providers/cooldown-store.ts, audit
+         2026-08-01). Solo en procesos que puntúan — NUNCA en el Worker. -->
+    <key>PROVIDER_COOLDOWN_STORE</key>
     <string>1</string>
     <!-- max-http-header-size: Yahoo Finance responde headers >16KB
          (CSP+cookies) y undici los rechaza con UND_ERR_HEADERS_OVERFLOW,

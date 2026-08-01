@@ -30,13 +30,27 @@ export async function enrichPendingTickers(limit = ENRICH_BATCH) {
   const CONCURRENCY = 4;
   let cursor = 0;
   let done = 0;
+  let deferred = 0;
 
   async function worker() {
     while (true) {
       const i = cursor++;
       if (i >= pending.length) return;
       const { symbol } = pending[i];
-      const profile = await getProfile(symbol);
+      // Un fallo de PETICIÓN (429, red, timeout) deja el símbolo intacto para
+      // el próximo tick. Antes `getProfile` devolvía null también en ese caso
+      // y caíamos en la rama de abajo, que marca `enriched_at`: como la query
+      // de pendientes es `enriched_at IS NULL`, un 429 condenaba al ticker a
+      // quedarse sin nombre, sin logo y sin alias PARA SIEMPRE — y el alias
+      // que falta degrada además la extracción futura de ese símbolo.
+      let profile;
+      try {
+        profile = await getProfile(symbol);
+      } catch (err) {
+        deferred++;
+        maybeLogEnrichError(symbol, err);
+        continue;
+      }
       const now = new Date();
       if (profile && profile.name) {
         await db
@@ -64,7 +78,8 @@ export async function enrichPendingTickers(limit = ENRICH_BATCH) {
         }
         done++;
       } else {
-        // Marcamos como enriquecido aunque sea sin datos para no reintentar.
+        // Finnhub RESPONDIÓ y no tiene perfil (foreign, OTC): una sola
+        // tentativa, marcamos para no reintentar eternamente.
         await db
           .update(tickers)
           .set({ enrichedAt: now })
@@ -76,7 +91,28 @@ export async function enrichPendingTickers(limit = ENRICH_BATCH) {
   await Promise.all(
     Array.from({ length: CONCURRENCY }, () => worker()),
   );
+  if (deferred) {
+    console.warn(
+      `[enricher] ${deferred}/${pending.length} tickers aplazados por fallo de petición (se reintentan el próximo tick)`,
+    );
+  }
   return { processed: pending.length, succeeded: done };
+}
+
+// Throttle de log por símbolo (mismo patrón que el de finnhub.ts): con la key
+// enfriada fallarían los 12 del lote y no hace falta una línea por cada uno.
+const lastEnrichErrorLog = new Map<string, number>();
+const ENRICH_ERROR_LOG_TTL_MS = 5 * 60 * 1000;
+function maybeLogEnrichError(symbol: string, err: unknown) {
+  const now = Date.now();
+  const prev = lastEnrichErrorLog.get(symbol);
+  if (prev && now - prev < ENRICH_ERROR_LOG_TTL_MS) return;
+  lastEnrichErrorLog.set(symbol, now);
+  console.warn(
+    `[enricher] ${symbol} aplazado: ${
+      err instanceof Error ? err.message.slice(0, 140) : err
+    }`,
+  );
 }
 
 // Palabras inglesas comunes que NO sirven como alias corto de ticker.
