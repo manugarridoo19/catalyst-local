@@ -36,6 +36,11 @@
 // halfvec (2 bytes/dim) use bien su rango.
 
 import { listGeminiKeys, geminiDailyResetMs } from "@/lib/providers/gemini";
+import {
+  exactCooldown,
+  hydrateCooldowns,
+  persistCooldown,
+} from "@/lib/providers/cooldown-store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 export const EMBED_MODEL = "gemini-embedding-001";
@@ -58,6 +63,30 @@ export class EmbedQuotaError extends Error {
 
 const cooldown = new Map<string, number>();
 
+// Scope PROPIO en el store compartido, distinto del de chat. Es el mismo
+// invariante que ya separa este Map del pool de gemini.ts, ahora también
+// entre procesos: un 429 de `batchEmbedContents` no dice nada de la cuota de
+// `generateContent`, y publicarlo bajo el scope de chat dejaría al scorer de
+// los OTROS DOS procesos sin esa key gratis.
+const SCOPE = "gemini-embed" as const;
+
+/** Enfría una key aquí y lo publica. `model: ""` porque la cuota de
+ *  embeddings es del par (key, modelo de embedding) y sólo hay uno. */
+function cool(label: string, until: number, reason: string): void {
+  cooldown.set(label, until);
+  void persistCooldown(SCOPE, label, "", until, reason);
+}
+
+/** Siembra el Map local con lo que otros procesos ya descubrieron. */
+async function seedFromStore(labels: string[]): Promise<void> {
+  const entries = await hydrateCooldowns(SCOPE);
+  if (!entries.size) return;
+  for (const label of labels) {
+    const until = exactCooldown(entries, label, "");
+    if (until > (cooldown.get(label) ?? 0)) cooldown.set(label, until);
+  }
+}
+
 function isCool(label: string): boolean {
   return (cooldown.get(label) ?? 0) <= Date.now();
 }
@@ -76,15 +105,28 @@ function applyRateLimit(label: string, body: string): void {
   const m = body.match(/"retryDelay"\s*:\s*"(\d+)/) ?? body.match(/retry in (\d+)/i);
   const retrySec = m ? Number(m[1]) + 2 : 0;
 
-  // El diario manda: si el quotaId dice PerDay, da igual lo que pida esperar.
-  if (!/PerDay/i.test(quotaId) && retrySec > 0 && retrySec <= 300) {
-    cooldown.set(label, Date.now() + retrySec * 1000);
-    console.warn(`[gemini-embed] ${label} RPM burst — cooled ${retrySec}s`);
+  // El diario se AFIRMA, no se supone: sólo un `quotaId` que diga PerDay
+  // manda enfriar 24h. Antes la condición era al revés —cualquier 429 que no
+  // trajera un retryDelay parseable entre 1 y 300s caía en la rama diaria—,
+  // así que un 429 con el cuerpo abreviado (sin quotaId Y sin retryDelay)
+  // apartaba la key hasta medianoche Pacific por un incidente pasajero. El
+  // error simétrico cuesta un reintento; éste costaba el día entero de esa
+  // key, y `/ask` degradaba a léxico sin que nada lo señalara.
+  if (/PerDay/i.test(quotaId)) {
+    const until = geminiDailyResetMs();
+    cool(label, until, quotaId);
+    console.warn(
+      `[gemini-embed] ${label} DAILY QUOTA (${quotaId}) — cooled until ${new Date(until).toISOString().slice(0, 16)}Z`,
+    );
     return;
   }
-  cooldown.set(label, geminiDailyResetMs());
+  // Ráfaga por minuto, o un 429 que no se identifica. Sin retryDelay usable
+  // se aplica el mismo defecto que gemini.ts (60s): esperar de más aquí sólo
+  // retrasa un tick, y el tick de embeddings es resumable por diseño.
+  const wait = retrySec > 0 && retrySec <= 300 ? retrySec : 60;
+  cool(label, Date.now() + wait * 1000, quotaId || "rpm");
   console.warn(
-    `[gemini-embed] ${label} DAILY QUOTA (${quotaId || "sin quotaId"}) — cooled until ${new Date(geminiDailyResetMs()).toISOString().slice(0, 16)}Z`,
+    `[gemini-embed] ${label} RPM burst${quotaId ? ` (${quotaId})` : " (sin quotaId)"} — cooled ${wait}s`,
   );
 }
 
@@ -102,7 +144,7 @@ function l2normalize(v: number[]): number[] {
  *  skip-and-continue que impide que una key mala tumbe al proveedor es
  *  también lo que hace que una key muerta pase desapercibida. */
 function applyAuthFailure(label: string): void {
-  cooldown.set(label, geminiDailyResetMs());
+  cool(label, geminiDailyResetMs(), "auth 401/403");
   console.warn(
     `[gemini-embed] ${label} AUTH FAILED (401/403) — key inválida, apartada hasta el reset`,
   );
@@ -165,6 +207,7 @@ export async function embedBatch(
   if (keys.length === 0) throw new Error("No Gemini keys configured");
   const taskType = opts.taskType ?? "RETRIEVAL_DOCUMENT";
   const timeoutMs = opts.timeoutMs ?? 30_000;
+  await seedFromStore(keys.map((k) => k.label));
 
   // Igual que el pool de chat: primero las primarias en round-robin,
   // la reserva (cuenta principal del usuario) sólo si no queda otra.

@@ -20,6 +20,7 @@
 // porque no lo tiene.
 
 import { proseCompletion } from "@/lib/ai/prose-chain";
+import { warnIfTruncated } from "@/lib/providers/response";
 import type { ForwardCandidate } from "@/lib/ask/forward";
 
 /** Chars de cuerpo que viajan por artículo. Los compromisos ("sujeto a
@@ -121,6 +122,13 @@ export async function extractForwardLedger(
     tag: "forward-ledger",
     jsonMode: true,
   });
+
+  // Aquí el truncado es especialmente traicionero: el `catch` de abajo
+  // devuelve `items: []` a propósito para no tumbar la revisión, y una lista
+  // vacía se lee como "no hay compromisos pendientes" — que es una afirmación
+  // sobre el archivo, no un fallo. Con el aviso queda constancia de que lo
+  // que faltó fue sitio.
+  warnIfTruncated("forward-ledger", res);
 
   let parsed: { items?: Array<Record<string, unknown>> };
   try {

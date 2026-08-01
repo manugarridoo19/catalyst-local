@@ -1,4 +1,5 @@
 import { proseCompletion } from "@/lib/ai/prose-chain";
+import { warnIfTruncated } from "@/lib/providers/response";
 import {
   coreOf,
   describeAxes,
@@ -93,6 +94,7 @@ export async function proposeFalsifiers(input: {
       jsonMode: true,
       tag: "coach-falsifiers",
     });
+    warnIfTruncated("coach-falsifiers", res);
     const parsed = JSON.parse(
       res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""),
     ) as unknown;
@@ -117,35 +119,43 @@ export async function proposeFalsifiers(input: {
 // AFIRMA. Todo en él está inclinado hacia el "no": un falso negativo cuesta
 // un trimestre de retraso, un falso positivo le dice al usuario que su tesis
 // está rota cuando no lo está — y eso, sobre dinero, se paga una sola vez.
-const CHECK_PROMPT = `You check whether a specific, pre-declared condition occurred, according to a company's own earnings release.
+const CHECK_PROMPT = `You check whether a specific, pre-declared condition occurred, according to what a company reported.
 
 The investor wrote these conditions BEFORE knowing the outcome. Each states
 something that, if it happened, means their investment thesis was wrong.
+
+WHAT YOU ARE GIVEN IS AN EXTRACT, NOT THE FULL RELEASE: the headline, a few
+summary bullets, and the movements the company itself attributed, with its
+own words quoted. It carries the headline figures and what management chose
+to explain — it does NOT carry the full financial statements, the segment
+tables, or the year-ago comparatives. Most conditions will simply not be
+decidable from it, and that is the expected outcome, not a failure.
 
 Return STRICT JSON:
 {"results": [{"index": 0, "occurred": false, "evidence": null}]}
 
 One entry per condition, same order, same count.
 
-"occurred": true ONLY when the document shows the condition is met, plainly
+"occurred": true ONLY when the extract shows the condition is met, plainly
 and without arithmetic you had to invent. Otherwise false.
 
-"evidence": when true, the VERBATIM sentence or figure from the document that
+"evidence": when true, the VERBATIM sentence or figure from the extract that
 shows it. A true with no quotable evidence is invalid — return false instead.
 
 DEFAULT TO FALSE. These are the cases that must return false:
-- The document does not cover the metric at all.
+- The extract does not cover the metric at all — the common case.
 - It is close to the threshold but does not cross it.
 - The condition needs two consecutive quarters and you only have one.
-- It requires data the release does not print.
+- It requires a figure this extract does not print, even if the full release
+  surely printed it. Absence here is NOT evidence of anything.
 - You are unsure.
 
-"I cannot tell from this document" is FALSE, not true. A condition that has
+"I cannot tell from this extract" is FALSE, not true. A condition that has
 not been shown to occur has not occurred, as far as you are concerned.
 
 Do not interpret the spirit of the condition, only its letter. Do not judge
 whether the thesis is good. Do not consider the share price. Use ONLY the
-document you are given — no outside knowledge about the company.`;
+extract you are given — no outside knowledge about the company.`;
 
 export type FalsifierCheck = {
   index: number;
@@ -164,9 +174,27 @@ export type FalsifierCheck = {
 export async function checkFalsifiers(input: {
   symbol: string;
   conditions: string[];
-  /** El texto del comunicado ya extraído, más su resumen y atribución. Se
-   *  manda el DOCUMENTO y no sólo el resumen porque una condición sobre una
-   *  cifra concreta casi nunca aparece en tres bullets. */
+  /**
+   * EXTRACTO del comunicado, no el comunicado: titular + los bullets del
+   * resumen + las atribuciones ya extraídas con su cita. Esta línea decía
+   * "el texto del comunicado ya extraído" y era FALSO — el exhibit crudo no
+   * se guarda en ninguna parte (`lib/ai/earnings-report.ts` lo baja, lo lee
+   * y sólo persiste el resumen y la atribución en `earnings_reports`).
+   *
+   * SE MANTIENE ASÍ A PROPÓSITO, y no es la opción barata. Reconstruir el
+   * comunicado entero exigiría una petición nueva a SEC por símbolo y filing
+   * desde este job (que hoy no toca la red salvo el LLM) y metería 24k
+   * caracteres en el prompt. Lo que compraría es más superficie para que el
+   * modelo crea ver cumplida una condición: sube los falsos POSITIVOS, que
+   * es justo el error que este camino existe para no cometer — «un falso
+   * negativo cuesta un trimestre de retraso; un falso positivo le dice al
+   * usuario que su tesis está rota cuando no lo está». Con el extracto, lo
+   * que no se puede decidir sale `false`, que es la dirección segura.
+   *
+   * El prompt DICE que es un extracto y que la ausencia de una cifra no
+   * prueba nada. Prometerle el comunicado completo era lo que convertía «no
+   * viene» en una lectura del silencio.
+   */
   document: string;
 }): Promise<FalsifierCheck[]> {
   if (!input.conditions.length) return [];
@@ -177,7 +205,8 @@ export async function checkFalsifiers(input: {
     `Conditions to check:`,
     ...input.conditions.map((c, i) => `${i}. ${c}`),
     ``,
-    `The company's earnings release:`,
+    `Extract of what ${input.symbol} reported (headline, summary bullets and`,
+    `the movements the company itself attributed — not the full release):`,
     input.document,
   ].join("\n");
 
@@ -195,6 +224,7 @@ export async function checkFalsifiers(input: {
       jsonMode: true,
       tag: "coach-check",
     });
+    warnIfTruncated("coach-check", res);
     const parsed = JSON.parse(
       res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""),
     ) as { results?: unknown };

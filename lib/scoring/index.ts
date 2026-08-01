@@ -120,12 +120,15 @@ async function scoreViaGroq(input: {
       });
       return { content: result.content, model: result.model };
     } catch (err) {
+      // Skip-and-continue en cualquier fallo, no sólo el rate limit: desde
+      // que el 200-con-contenido-vacío de Groq lanza (antes se devolvía como
+      // éxito), un 70b que responde vacío tiene que caer al 8b en vez de
+      // abortar el proveedor entero. Si fallan los dos sale por el throw final.
       lastErr = err;
-      if (err instanceof GroqRateLimited) {
-        console.warn(`[scoring] groq ${model} rate-limited, trying next`);
-        continue;
-      }
-      throw err;
+      console.warn(
+        `[scoring] groq ${model} falló, siguiente: ` +
+          (err instanceof Error ? err.message.slice(0, 120) : String(err)),
+      );
     }
   }
   throw lastErr instanceof Error
@@ -260,10 +263,16 @@ export type BatchScoredItem = SentimentScore & {
   wrongTickers: string[];
 };
 
-// Solo conservamos el resumen IA para high-impact — el prompt pide que el
-// modelo lo omita para impact<=4, pero por si un modelo se despista y lo
-// escribe igualmente, lo descartamos aquí (coherencia + no ruido en la UI).
-const SUMMARY_MIN_IMPACT = 4;
+// Umbral del resumen IA por item. DEBE COINCIDIR con el que pide
+// `BATCH_SYSTEM_PROMPT` (lib/scoring/prompt.ts): el prompt ordena escribir
+// summary para impact>=3 y poner null en impact<=2, así que con este valor en
+// 4 el modelo emitía —y cobraba— una frase de ≤180 chars por cada item de
+// impact 3 que este mapeo tiraba a la basura, y la tarjeta expandida de esos
+// items se quedaba sin el resumen que v4.2 les prometía. Los guarda
+// `tests/scoring-prompt-contract.test.ts`; si se toca uno, hay que tocar el
+// otro. Sigue filtrándose aquí por si un modelo se despista y lo escribe
+// igualmente por debajo del umbral.
+export const SUMMARY_MIN_IMPACT = 3;
 
 async function batchViaOpenRouter(items: BatchPromptItem[]) {
   const result = await chatCompletion({
@@ -314,9 +323,13 @@ async function batchViaGroq(items: BatchPromptItem[]) {
       });
       return { content: result.content, model: result.model };
     } catch (err) {
+      // Mismo criterio que scoreViaGroq: cualquier fallo salta al siguiente
+      // modelo en vez de abortar el proveedor.
       lastErr = err;
-      if (err instanceof GroqRateLimited) continue;
-      throw err;
+      console.warn(
+        `[scoring] groq batch ${model} falló, siguiente: ` +
+          (err instanceof Error ? err.message.slice(0, 120) : String(err)),
+      );
     }
   }
   throw lastErr instanceof Error

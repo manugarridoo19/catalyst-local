@@ -13,6 +13,7 @@ import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { earningsReports } from "@/lib/db/schema";
 import { proseCompletion } from "@/lib/ai/prose-chain";
+import { warnIfTruncated } from "@/lib/providers/response";
 import { extractSecExhibitText } from "@/lib/articles/extract";
 import { SEC_USER_AGENT } from "@/lib/providers/sec-edgar";
 import type { EarningsFiling } from "@/lib/earnings/filings";
@@ -162,7 +163,12 @@ function basis(v: unknown): EarningsBasis | null {
  */
 function figure(v: unknown): number | null {
   const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.replace(/[^0-9.\-]/g, "")) : NaN;
-  return Number.isFinite(n) && n !== 0 ? n : null;
+  // El 0 se ACEPTA: un BPA de 0,00 es un trimestre en breakeven, un dato real
+  // que la empresa publica y que el consenso mide igual que cualquier otro.
+  // Descartarlo (junto con su base contable, por el encadenado de `sanitize`)
+  // borraba del comunicado justo la cifra de la que se habla ese trimestre.
+  // Un "" o un "N/A" siguen cayendo por `Number.isFinite`.
+  return Number.isFinite(n) ? n : null;
 }
 
 function sanitize(parsed: unknown): EarningsReportContent | null {
@@ -260,6 +266,9 @@ export async function generateEarningsReport(
     tag: "earnings",
   });
 
+  // Truncado por maxTokens ≠ modelo incapaz de emitir JSON: sin esta
+  // distinción, subir el techo no se le ocurre a nadie hasta releer el prompt.
+  warnIfTruncated("earnings", result);
   let parsed: unknown;
   try {
     parsed = JSON.parse(

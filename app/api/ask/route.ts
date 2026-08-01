@@ -118,8 +118,24 @@ export async function POST(req: Request) {
       try {
         [queryVec] = await embedBatch([question], { taskType: "RETRIEVAL_QUERY" });
       } catch (err) {
-        if (!(err instanceof EmbedQuotaError)) throw err;
-        note = "Búsqueda semántica sin cuota ahora mismo — resultados sólo por texto.";
+        // CUALQUIER fallo del embed degrada; antes sólo lo hacía
+        // `EmbedQuotaError` y el resto se relanzaba, tumbando la pregunta
+        // entera. Pero `embedBatch` marca como no-cuota todo lo que no sea
+        // 429/401/403 (un 503 de Google, un `shape mismatch`), así que un
+        // incidente pasajero del proveedor devolvía "El generador no
+        // respondió" cuando los canales léxico y SQL —que no gastan cuota—
+        // habrían contestado igual. El vector es UN canal de tres, y perderlo
+        // nunca puede costar los otros dos.
+        note =
+          err instanceof EmbedQuotaError
+            ? "Búsqueda semántica sin cuota ahora mismo — resultados sólo por texto."
+            : "Búsqueda semántica no disponible ahora mismo — resultados sólo por texto.";
+        if (!(err instanceof EmbedQuotaError)) {
+          console.warn(
+            "[api/ask] embed de la pregunta falló, se sigue sin vectorial:",
+            err instanceof Error ? err.message.slice(0, 140) : err,
+          );
+        }
       }
     }
 

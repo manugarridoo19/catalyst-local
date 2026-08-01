@@ -2,6 +2,7 @@ import { sql, desc } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { insiderDigests } from "@/lib/db/schema";
 import { proseCompletion } from "@/lib/ai/prose-chain";
+import { warnIfTruncated } from "@/lib/providers/response";
 import {
   getInsiderFlow,
   getClusterBuys,
@@ -173,11 +174,13 @@ export async function generateInsiderDigest(): Promise<InsiderDigestRow> {
   // Priors del Signal Lab para los kinds insider (ver lib/signals/priors.ts):
   // si los cluster buys han rendido y las stakes 13D no, el digest debe
   // ordenar sus highlights en consecuencia.
+  // `.catch` como en /ask y la revisión de cartera: los priors son
+  // calibración opcional y su fallo no puede tumbar el digest entero.
   const priors = await getEmpiricalPriors([
     "cluster_buy",
     "insider_net_buy",
     "stake_13d",
-  ]);
+  ]).catch(() => null);
 
   const result = await proseCompletion({
     messages: [
@@ -195,6 +198,9 @@ export async function generateInsiderDigest(): Promise<InsiderDigestRow> {
     tag: "insider",
   });
 
+  // Truncado por maxTokens ≠ modelo incapaz de emitir JSON: sin esta
+  // distinción, subir el techo no se le ocurre a nadie hasta releer el prompt.
+  warnIfTruncated("insider", result);
   let parsed: unknown;
   try {
     parsed = JSON.parse(

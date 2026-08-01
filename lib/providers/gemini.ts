@@ -36,6 +36,12 @@ import type {
   ChatMessage,
   ChatCompletionResult,
 } from "@/lib/providers/openrouter";
+import { emptyContentMessage } from "@/lib/providers/response";
+import {
+  exactCooldown,
+  hydrateCooldowns,
+  persistCooldown,
+} from "@/lib/providers/cooldown-store";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -146,21 +152,68 @@ function maskKey(k: string): string {
   return `${k.slice(0, 6)}…${k.slice(-4)}`;
 }
 
-// Las cuotas diarias free de Google resetean a medianoche PACIFIC (07:00
-// UTC en verano, PDT) — no a medianoche UTC como OpenRouter. Enfriamos
-// hasta las 07:05Z del día siguiente que toque, con margen.
-function nextPacificMidnightMs(): number {
-  const now = new Date();
-  const todayReset = Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-    7,
-    5,
-  );
+// Las cuotas diarias free de Google resetean a medianoche PACIFIC — no a
+// medianoche UTC como OpenRouter.
+//
+// La versión anterior devolvía SIEMPRE las 07:05Z, que es medianoche sólo en
+// horario de verano (PDT, UTC-7). En PST (noviembre-marzo, UTC-8) medianoche
+// Pacific son las 08:00Z, así que la key revivía 55 minutos antes de tiempo,
+// cosechaba otro 429 diario contra una cuota que aún no había reseteado y
+// `applyRateLimit` la volvía a enfriar — pero esa segunda vez ya con
+// `now >= todayReset`, o sea hasta el día SIGUIENTE. Se perdían ~23h de esa
+// key, cada día, todo el invierno.
+//
+// Se calcula el desplazamiento real preguntándole a `Intl` por la hora
+// Pacific de ESTE instante, así que sigue el cambio de hora sin tabla propia
+// y sin dependencias. Los 5 minutos de margen se conservan: el reset de
+// Google no es instantáneo al segundo.
+const PACIFIC_TZ = "America/Los_Angeles";
+const RESET_MARGIN_MS = 5 * 60_000;
+
+/** Offset de America/Los_Angeles respecto a UTC, en ms, en ese instante.
+ *  Positivo hacia el oeste: PDT → 7h, PST → 8h. */
+function pacificOffsetMs(at: Date): number {
+  // `en-CA` da `YYYY-MM-DD, HH:MM:SS` en 24h, que `Date.parse` entiende como
+  // UTC al añadirle la Z. La diferencia con el instante real ES el offset.
+  const wall = new Intl.DateTimeFormat("en-CA", {
+    timeZone: PACIFIC_TZ,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(at);
+  const [date, time] = wall.split(", ");
+  const asUtc = Date.parse(`${date}T${time}Z`);
+  // REDONDEADO AL MINUTO. `Intl` formatea a segundos, así que la resta
+  // arrastra los milisegundos de `at` dentro del offset y el reset salía a
+  // las 07:05:00.091Z en vez de en punto. Ningún huso horario del mundo tiene
+  // un desplazamiento con segundos, así que redondear no pierde información y
+  // sí quita una deriva que se propagaría a cada cooldown diario.
+  return Math.round((at.getTime() - asUtc) / 60_000) * 60_000;
+}
+
+export function nextPacificMidnightMs(now: Date = new Date()): number {
+  // Medianoche Pacific del día Pacific en curso, expresada en UTC. Se usa el
+  // offset VIGENTE para situarla y después se recalcula con el offset de ese
+  // mismo instante, porque en la noche del cambio de hora los dos difieren.
+  const offset = pacificOffsetMs(now);
+  const pacificWall = now.getTime() - offset;
+  const startOfPacificDay = Math.floor(pacificWall / 86_400_000) * 86_400_000;
+
+  const resetFor = (dayStartWall: number): number => {
+    const approx = dayStartWall + offset;
+    // Segunda pasada con el offset del propio instante de reset: si el
+    // cambio de hora cae entre medias, esto lo corrige.
+    return dayStartWall + pacificOffsetMs(new Date(approx)) + RESET_MARGIN_MS;
+  };
+
+  const todayReset = resetFor(startOfPacificDay);
   return now.getTime() < todayReset
     ? todayReset
-    : todayReset + 24 * 3600_000;
+    : resetFor(startOfPacificDay + 86_400_000);
 }
 
 class GeminiRetriable extends Error {
@@ -207,13 +260,19 @@ function applyRateLimit(
     until = Date.now() + retrySec * 1000;
     what = `RPM burst — cooled ${retrySec}s`;
   }
+  // El ÁMBITO viaja al store igual que a memoria: `model: ""` es la key
+  // entera, un modelo concreto es el cooldown por (key, modelo) de las cuotas
+  // `…PerProjectPerModel`. Publicarlo con el ámbito equivocado sería peor que
+  // no publicarlo: enfriaría de más en los otros dos procesos.
   if (wholeKey) {
     state.cooldownUntil = until;
+    void persistCooldown("gemini-chat", state.label, "", until, quotaId || what);
     console.warn(
       `[gemini] ${state.label} ${maskKey(state.key)} WHOLE KEY ${what}`,
     );
   } else {
     state.modelCooldowns.set(model, until);
+    void persistCooldown("gemini-chat", state.label, model, until, quotaId || what);
     console.warn(
       `[gemini] ${state.label} ${maskKey(state.key)} [${model}] ${what}`,
     );
@@ -328,14 +387,18 @@ async function tryOnceWithKey(
   const content = (json.candidates?.[0]?.content?.parts ?? [])
     .map((p) => p.text ?? "")
     .join("");
+  const finishReason = json.candidates?.[0]?.finishReason ?? null;
   if (content.trim() === "") {
     // 200 con contenido vacío (finishReason MAX_TOKENS/SAFETY sin texto).
-    // Devolverlo como éxito cortocircuita la cadena de fallback.
-    throw new GeminiRetriable(`empty content from ${model}`, 502);
+    // Devolverlo como éxito cortocircuita la cadena de fallback. El
+    // finishReason viaja en el mensaje: un vacío por MAX_TOKENS y uno por
+    // SAFETY piden reacciones distintas y antes eran la misma línea de log.
+    throw new GeminiRetriable(emptyContentMessage(model, finishReason), 502);
   }
   return {
     content,
     model,
+    finishReason,
     usage: json.usageMetadata
       ? {
           prompt_tokens: json.usageMetadata.promptTokenCount ?? 0,
@@ -344,6 +407,26 @@ async function tryOnceWithKey(
         }
       : undefined,
   };
+}
+
+/** Vuelca el estado compartido sobre el pool en memoria. `Math.max` en las
+ *  dos dimensiones: un snapshot de hasta 30s no puede REBAJAR un cooldown
+ *  que este proceso acaba de aprender de primera mano. */
+async function seedFromStore(): Promise<void> {
+  const entries = await hydrateCooldowns("gemini-chat");
+  if (!entries.size) return;
+  for (const state of KEY_POOL) {
+    state.cooldownUntil = Math.max(
+      state.cooldownUntil,
+      exactCooldown(entries, state.label, ""),
+    );
+    for (const model of GEMINI_MODELS) {
+      const until = exactCooldown(entries, state.label, model);
+      if (until > (state.modelCooldowns.get(model) ?? 0)) {
+        state.modelCooldowns.set(model, until);
+      }
+    }
+  }
 }
 
 // Interfaz espejo de chatCompletion (openrouter.ts) para que los callers
@@ -371,6 +454,11 @@ export async function geminiChatCompletion(opts: {
       "No Gemini keys configured — set GEMINI_API_KEYS or GEMINI_API_KEY",
     );
   }
+  // Siembra desde el store ANTES de barrer: los tres escritores (cron de GH,
+  // scorer y refresher) descubrían cada uno por su cuenta cada cuota agotada,
+  // quemando una petición muerta por (key, modelo) cada uno.
+  await seedFromStore();
+
   const timeoutMs = opts.timeoutMs ?? 20_000;
   const models = opts.model
     ? [opts.model, ...GEMINI_MODELS.filter((m) => m !== opts.model)]

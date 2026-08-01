@@ -11,6 +11,7 @@
 // conteos y agregados.
 
 import { proseCompletion } from "@/lib/ai/prose-chain";
+import { warnIfTruncated } from "@/lib/providers/response";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
 import type { ForwardItem } from "@/lib/ai/forward-ledger";
@@ -531,6 +532,14 @@ export async function askArchive(
   // una respuesta de decisión SIN postura es exactamente la queja que abrió
   // todo esto, y también cubre el JSON no parseable transitorio del modelo
   // de reserva. El reintento sólo se paga cuando el primero falla.
+  //
+  // El techo de salida es una VARIABLE porque el segundo intento tiene que
+  // poder ser distinto del primero: si el primero llegó truncado, repetir
+  // con el mismo `maxTokens` produce exactamente el mismo corte y se tira el
+  // reintento. Éste es el único sitio del proyecto donde el reintento por
+  // truncamiento existe — el resto de llamantes sólo lo LOGUEA (ver
+  // warnIfTruncated), porque añadir bucles nuevos multiplicaría la cuota.
+  let maxTokens = MAX_TOKENS[shape];
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await proseCompletion({
       messages: [
@@ -538,7 +547,7 @@ export async function askArchive(
         { role: "user", content: userBlock },
       ],
       temperature: 0.2,
-      maxTokens: MAX_TOKENS[shape],
+      maxTokens,
       tag: "ask",
       jsonMode: true,
       // Cuatro epígrafes con citas son ~1.900 chars de salida y el modelo de
@@ -562,6 +571,13 @@ export async function askArchive(
         `ledger=${ledger.length} presiones=${decision?.pressures.length ?? 0}`,
     );
 
+    // Un JSON cortado por el techo de tokens NO es un modelo que no sepa
+    // emitir JSON, y hasta ahora se veían igual: los dos acababan en
+    // "respuesta no parseable". Con el motivo de parada delante, el
+    // reintento sube el techo en vez de repetir el mismo corte.
+    const truncated = warnIfTruncated("ask", res);
+    if (truncated && attempt === 0) maxTokens = Math.round(maxTokens * 1.5);
+
     try {
       parsed = JSON.parse(
         res.content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""),
@@ -575,9 +591,20 @@ export async function askArchive(
     }
 
     sections = normalizeSections(parsed);
-    if (shape === "decision") {
-      sections = orderDecisionSections(sections);
-      if (sections.length && !sections.some((s) => s.key === "stance") && attempt === 0) {
+    if (shape === "decision") sections = orderDecisionSections(sections);
+    // El reintento cubre los DOS modos de fallo del esquema, no sólo uno.
+    // La guarda anterior exigía `sections.length` para reintentar por falta
+    // de postura, así que una respuesta que parsea pero produce CERO
+    // secciones (el modelo de reserva ignorando el esquema: `sections: []`,
+    // o todos los `text` vacíos) se saltaba el reintento, salía del bucle y
+    // moría abajo en "respuesta vacía o con scratchpad" — con el segundo
+    // intento sin gastar y habiendo pagado ya la llamada.
+    if (attempt === 0) {
+      if (!sections.length) {
+        console.warn("[ask] respuesta sin secciones utilizables — reintento");
+        continue;
+      }
+      if (shape === "decision" && !sections.some((s) => s.key === "stance")) {
         console.warn("[ask] decisión sin sección de postura — reintento");
         continue;
       }

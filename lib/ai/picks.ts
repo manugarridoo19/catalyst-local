@@ -2,6 +2,7 @@ import { sql, desc } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { aiPicks } from "@/lib/db/schema";
 import { proseCompletion } from "@/lib/ai/prose-chain";
+import { warnIfTruncated } from "@/lib/providers/response";
 import { getInsiderNetBySymbols } from "@/lib/insider/queries";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
@@ -325,12 +326,16 @@ export async function generatePicks(): Promise<PicksRow> {
   // Priors del Signal Lab: cómo le ha ido HISTÓRICAMENTE a cada tipo de
   // señal de Catalyst. No es predicción, es calibración de exigencia — y si
   // aún no hay muestra suficiente, el prompt sale exactamente como antes.
+  // `.catch` como en /ask y la revisión de cartera: los priors son
+  // CALIBRACIÓN opcional, así que un fallo de su query (o de la BD en ese
+  // instante) tiene que dejar el prompt exactamente como estaba antes de
+  // existir, no abortar la generación entera de picks.
   const priors = await getEmpiricalPriors([
     "ai_pick",
     "cluster_buy",
     "insider_net_buy",
     "analyst_upgrade",
-  ]);
+  ]).catch(() => null);
 
   const result = await proseCompletion({
     messages: [
@@ -346,6 +351,9 @@ export async function generatePicks(): Promise<PicksRow> {
     tag: "picks",
   });
 
+  // Truncado por maxTokens ≠ modelo incapaz de emitir JSON: sin esta
+  // distinción, subir el techo no se le ocurre a nadie hasta releer el prompt.
+  warnIfTruncated("picks", result);
   let parsed: unknown;
   try {
     parsed = JSON.parse(

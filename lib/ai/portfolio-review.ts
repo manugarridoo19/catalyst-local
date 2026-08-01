@@ -13,6 +13,7 @@
 // prompt; no puede ignorar un filtro que se ejecuta sobre su salida.
 
 import { proseCompletion } from "@/lib/ai/prose-chain";
+import { warnIfTruncated } from "@/lib/providers/response";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
 import type { ForwardItem } from "@/lib/ai/forward-ledger";
@@ -219,8 +220,14 @@ function formatPortfolio(r: PortfolioRetrieval): string {
     );
   }
   for (const c of r.derived.earningsClusters) {
+    // El porcentaje se calcula sólo sobre lo valorable; si algún nombre del
+    // cluster no tiene precio se DICE, en vez de dejar que el porcentaje se
+    // lea como si los incluyera a todos.
+    const sinPrecio = c.unpricedSymbols.length
+      ? ` (sin contar ${c.unpricedSymbols.join(", ")}: sin precio, su peso no se pudo calcular)`
+      : "";
     agg.push(
-      `- ${c.date}: reportan ${c.symbols.join(", ")} — ${c.weightPct.toFixed(1)}% de la cartera en esa sesión`,
+      `- ${c.date}: reportan ${c.symbols.join(", ")} — ${c.weightPct.toFixed(1)}% de la cartera en esa sesión${sinPrecio}`,
     );
   }
   if (agg.length) {
@@ -360,12 +367,19 @@ function formatCalendar(r: PortfolioRetrieval): string {
  */
 function hasHardEvidence(f: PositionFacts | undefined): boolean {
   if (!f) return false;
+  // `nextEarnings` NO cuenta, y quitarlo es lo que hace que este gate muerda.
+  // El propio SYSTEM_PROMPT de arriba lo dice en mayúsculas ("QUE UNA EMPRESA
+  // PRESENTE RESULTADOS NO ES MOTIVO DE POSTURA… si lo único que tienes es su
+  // fecha y su consenso, OMÍTELA"), pero el gate la aceptaba como respaldo
+  // suficiente: en temporada de resultados TODAS las posiciones tienen fecha,
+  // así que el filtro que debía degradar a "none" no se activaba nunca justo
+  // cuando más ruido había. La fecha sigue viajando en watchNext y en el
+  // calendario, que es donde el prompt la quiere.
   return Boolean(
     f.insiderNet7d ||
       f.insiderNet30d ||
       f.stakes.length ||
       f.signals.length ||
-      f.nextEarnings ||
       (f.daysToCover !== null && f.daysToCover >= 5),
   );
 }
@@ -479,31 +493,61 @@ export async function reviewPortfolio(
     .filter(Boolean)
     .join("\n");
 
-  const res = await proseCompletion({
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userBlock },
-    ],
-    temperature: 0.3,
-    maxTokens: 1800,
-    tag: "portfolio",
-    jsonMode: true,
-  });
-
+  // DOS intentos, igual que /ask y por el mismo motivo medido: la cadena de
+  // fallback llega hasta llama-3.1-8b y el modelo de la cola devuelve JSON
+  // roto de vez en cuando. Una revisión es una operación que el usuario lanza
+  // a sabiendas de que tarda; perderla entera por un JSON transitorio, tras
+  // haber pagado la cosecha de cuerpos y la llamada del libro de futuros, es
+  // el peor momento posible para no reintentar. El segundo intento sólo se
+  // paga cuando el primero falla.
+  let maxTokens = 1800;
   let parsed: {
     verdict?: string;
     positions?: Array<{ symbol?: string; stance?: string; why?: string; used?: number[] }>;
     watchNext?: string[];
-  };
-  try {
-    parsed = JSON.parse(
-      res.content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""),
-    );
-  } catch {
-    throw new Error("portfolio-review: respuesta no parseable como JSON");
+  } = {};
+  let model = "none";
+  let verdict = "";
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await proseCompletion({
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userBlock },
+      ],
+      temperature: 0.3,
+      maxTokens,
+      tag: "portfolio",
+      jsonMode: true,
+    });
+    model = res.model;
+
+    // Truncado ≠ modelo incapaz de emitir JSON. Con el motivo de parada
+    // delante, el reintento sube el techo en vez de repetir el mismo corte.
+    if (warnIfTruncated("portfolio", res) && attempt === 0) {
+      maxTokens = Math.round(maxTokens * 1.5);
+    }
+
+    try {
+      parsed = JSON.parse(
+        res.content.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, ""),
+      );
+    } catch {
+      if (attempt === 0) {
+        console.warn("[portfolio-review] JSON no parseable — reintento");
+        continue;
+      }
+      throw new Error("portfolio-review: respuesta no parseable como JSON");
+    }
+
+    verdict = (parsed.verdict ?? "").trim();
+    if ((!verdict || looksLikeScratchpad(verdict)) && attempt === 0) {
+      console.warn("[portfolio-review] veredicto vacío o con scratchpad — reintento");
+      continue;
+    }
+    break;
   }
 
-  const verdict = (parsed.verdict ?? "").trim();
   if (!verdict || looksLikeScratchpad(verdict)) {
     throw new Error("portfolio-review: veredicto vacío o con scratchpad");
   }
@@ -527,6 +571,6 @@ export async function reviewPortfolio(
     verdict,
     positions: applyEvidenceGate(raw, r),
     watchNext,
-    model: res.model,
+    model,
   };
 }

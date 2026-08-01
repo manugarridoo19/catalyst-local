@@ -7,6 +7,12 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { emptyContentMessage } from "@/lib/providers/response";
+import {
+  exactCooldown,
+  hydrateCooldowns,
+  persistCooldown,
+} from "@/lib/providers/cooldown-store";
 
 const BASE = "https://openrouter.ai/api/v1";
 
@@ -96,6 +102,11 @@ export type ChatMessage = {
 export type ChatCompletionResult = {
   content: string;
   model: string;
+  /** Por qué paró el modelo, crudo tal y como lo dice su API (`length`,
+   *  `stop`, `MAX_TOKENS`…). Se interpreta en lib/providers/response.ts: sin
+   *  esto, un JSON truncado por el techo de tokens y un modelo que no sabe
+   *  emitir JSON se ven exactamente igual desde el llamante. */
+  finishReason?: string | null;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -278,6 +289,28 @@ function availableKeys(): KeyState[] {
   return KEY_POOL.filter((k) => k.cooldownUntil <= now);
 }
 
+/** Enfría una key y lo PUBLICA para los otros procesos. Aquí sólo hay
+ *  cooldowns de key entera (el cap diario es de cuenta, no de modelo), así
+ *  que el modelo va vacío. La escritura no se espera: ver cooldown-store. */
+function coolKey(state: KeyState, until: number, reason: string): void {
+  state.cooldownUntil = until;
+  void persistCooldown("openrouter", state.label, "", until, reason);
+}
+
+/** Siembra el pool con lo que otros procesos ya descubrieron. `Math.max`
+ *  para que un snapshot de hasta 30s no pueda REBAJAR un cooldown que este
+ *  proceso acaba de aprender de primera mano. */
+async function seedFromStore(): Promise<void> {
+  const entries = await hydrateCooldowns("openrouter");
+  if (!entries.size) return;
+  for (const state of KEY_POOL) {
+    state.cooldownUntil = Math.max(
+      state.cooldownUntil,
+      exactCooldown(entries, state.label, ""),
+    );
+  }
+}
+
 /** Inspect a 429 body and decide whether it's the daily-account cap (=
  *  cooldown this whole key) or a per-model RPM/TPM burst (= just retry/
  *  fall through to next model with the same key). */
@@ -361,15 +394,28 @@ async function tryOnceWithKey(
     // 429 special handling: distinguish daily-account cap (cool the WHOLE
     // key until UTC midnight) from per-model RPM/TPM (just fall through).
     if (res.status === 429 && isDailyCapError(text)) {
-      state.cooldownUntil = nextUtcMidnightMs();
+      coolKey(state, nextUtcMidnightMs(), "free-models-per-day");
       console.warn(
         `[openrouter] ${state.label} ${maskKey(state.key)} HIT DAILY CAP — cooled until ${new Date(state.cooldownUntil).toISOString().slice(11, 16)}Z`,
       );
     }
+    // 401/403: la key no sirve (revocada, sin saldo). No es transitorio, así
+    // que se aparta hasta el reset diario en vez de gastar los 3 modelos
+    // restantes contra ella — el bucle exterior ya salta las keys frías.
+    // Misma doctrina que `applyAuthFailure` en gemini-embed.ts.
+    if (res.status === 401 || res.status === 403) {
+      coolKey(state, nextUtcMidnightMs(), `auth ${res.status}`);
+      console.warn(
+        `[openrouter] ${state.label} ${maskKey(state.key)} AUTH FAILED (${res.status}) — key apartada hasta el reset`,
+      );
+    }
+    // 500 entra en la lista: Gemini ya lo trataba como retriable y aquí caía
+    // al `throw` duro, que además abortaba el pool entero (ver chatCompletion).
     if (
       res.status === 404 ||
       res.status === 408 ||
       res.status === 429 ||
+      res.status === 500 ||
       res.status === 502 ||
       res.status === 503
     ) {
@@ -384,20 +430,22 @@ async function tryOnceWithKey(
     );
   }
   const json = (await res.json()) as {
-    choices: { message: { content: string } }[];
+    choices: { message: { content: string }; finish_reason?: string | null }[];
     model: string;
     usage?: ChatCompletionResult["usage"];
   };
   const content = json.choices?.[0]?.message?.content ?? "";
+  const finishReason = json.choices?.[0]?.finish_reason ?? null;
   if (content.trim() === "") {
     // 200 con contenido vacío (p.ej. un modelo reasoning que quema todo
     // max_tokens pensando). Tratarlo como éxito cortocircuita la cadena
     // entera de fallback; debe avanzar al siguiente modelo.
-    throw new RetriableError(`empty content from ${model}`, 502);
+    throw new RetriableError(emptyContentMessage(model, finishReason), 502);
   }
   return {
     content,
     model: json.model,
+    finishReason,
     usage: json.usage,
   };
 }
@@ -422,6 +470,11 @@ export async function chatCompletion(opts: {
 
   // OPENROUTER_MODEL solo pisa la cadena de scoring — un override de env
   // pensado para el scorer no debe arrastrar al brief a un modelo JSON.
+  // Siembra ANTES de elegir keys: sin esto, cada proceso redescubre por su
+  // cuenta cada cap diario quemando una petición muerta por key, y el runner
+  // de GH —que arranca de cero en cada tick— la redescubre siempre.
+  await seedFromStore();
+
   const chain = TASK_MODEL_CHAINS[opts.task ?? "scoring"];
   const preferred =
     opts.model ||
@@ -469,7 +522,17 @@ export async function chatCompletion(opts: {
             );
             break; // next model under same key
           }
-          throw err;
+          // SKIP-and-continue en CUALQUIER fallo per-key, igual que
+          // gemini.ts. Este `throw` salía de los TRES bucles: un 500 de
+          // OpenRouter (que ni siquiera estaba en la lista de retriables) o
+          // un reset de socket en la primera key mataba la llamada entera
+          // con los otros 3 modelos y las demás keys intactos. Si de verdad
+          // es fatal para todas, sale por el `throw lastErr` final.
+          console.warn(
+            `[openrouter] ${state.label} ${model} falló, siguiente: ` +
+              (err instanceof Error ? err.message.slice(0, 120) : String(err)),
+          );
+          break; // next model under same key
         }
       }
       if (state.cooldownUntil > Date.now()) break; // skip remaining models on this cooled key

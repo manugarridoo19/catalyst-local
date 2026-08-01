@@ -114,9 +114,16 @@ async function authorCompletion(userPrompt: string) {
       timeoutMs: 90_000,
     });
   } catch (err) {
+    // El aviso dice explícitamente lo que se PIERDE, no sólo que se cayó:
+    // ésta es la única cadena del proyecto que razona a propósito (1 call/día
+    // lo permite y la fusión tweets↔tape se beneficia), y los dos fallbacks
+    // de abajo no razonan — Gemini va con thinking al mínimo por diseño y el
+    // 70b de Groq no tiene el parámetro. Sin esta línea, un brief de peor
+    // calidad era indistinguible de uno normal a posteriori.
     console.warn(
-      "[author-brief] openrouter reasoning chain failed, falling back:",
-      err instanceof Error ? err.message.slice(0, 120) : err,
+      "[author-brief] openrouter reasoning chain failed — el fallback NO razona " +
+        "(gemini va con thinking al mínimo, groq no tiene el parámetro): " +
+        (err instanceof Error ? err.message.slice(0, 120) : err),
     );
   }
   if (getGeminiPoolStatus().total > 0) {

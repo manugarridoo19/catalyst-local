@@ -83,6 +83,23 @@ export type PositionContext = {
   positionCount: number;
 };
 
+/**
+ * DE DÓNDE VIENE un hecho de la mesa. No es metadato decorativo: es lo que
+ * permite que los gates filtren por PROCEDENCIA en vez de por presencia.
+ *
+ *  - `declared`  alguien tuvo que declararlo ante un tercero (SEC, FINRA, el
+ *                calendario de resultados, el comunicado de la empresa). Es
+ *                el único material que puede sostener una postura por sí solo.
+ *  - `computed`  aritmética del código sobre la cartera o sobre datos ya en
+ *                BD (peso, plusvalía, beta, concentración sectorial). Verdad
+ *                comprobable, pero no un hecho nuevo del mundo.
+ *  - `self`      salida de un LLM del propio Catalyst (la tesis de un AI
+ *                Pick). Vale como CONTEXTO en el prompt y NO como respaldo:
+ *                dejar que abra el gate de la postura convierte la opinión de
+ *                ayer en la evidencia de hoy, que es razonamiento circular.
+ */
+export type Provenance = "declared" | "computed" | "self";
+
 /** Un hecho duro ya orientado. `neutral` = importa para decidir pero no
  *  empuja a ningún lado por sí solo (una plusvalía grande es argumento de
  *  los dos bandos según a quién le preguntes).
@@ -96,6 +113,7 @@ export type Pressure = {
   symbol: string;
   side: "add" | "hold" | "trim" | "neutral";
   text: string;
+  provenance: Provenance;
 };
 
 /** Algo ya publicado que va a resolver parte de la duda, con su fecha. */
@@ -103,6 +121,7 @@ export type DatedFact = {
   symbol: string;
   date: string | null;
   text: string;
+  provenance: Provenance;
 };
 
 export type DecisionFacts = {
@@ -224,12 +243,14 @@ export function buildDecisionFacts(input: {
           symbol,
           side: "trim",
           text: `pesa ${ctx.weightPct.toFixed(1)}% de tu cartera valorable (${money(ctx.marketValue ?? 0)} de ${money(ctx.portfolioValue)}, ${ctx.positionCount} posiciones) — por encima del umbral de concentración de ${T.weightTrimPct}%`,
+          provenance: "computed",
         });
       } else if (ctx.weightPct < T.weightMinPct) {
         pressures.push({
           symbol,
           side: "hold",
           text: `pesa sólo ${ctx.weightPct.toFixed(1)}% de la cartera: recortar aquí no cambia el riesgo del conjunto`,
+          provenance: "computed",
         });
       }
     }
@@ -239,12 +260,14 @@ export function buildDecisionFacts(input: {
           symbol,
           side: "neutral",
           text: `plusvalía no realizada ${pct(ctx.unrealizedPct)} (${money(ctx.unrealizedAbs ?? 0)}): recortar la asegura y tributa; aguantar la mantiene expuesta`,
+          provenance: "computed",
         });
       } else if (ctx.unrealizedPct <= T.bigLossPct) {
         pressures.push({
           symbol,
           side: "neutral",
           text: `minusvalía no realizada ${pct(ctx.unrealizedPct)} (${money(ctx.unrealizedAbs ?? 0)}): tu precio de entrada no es un dato del negocio y no debe entrar en la decisión`,
+          provenance: "computed",
         });
       }
     }
@@ -256,6 +279,7 @@ export function buildDecisionFacts(input: {
         symbol,
         side: "neutral",
         text: `no tienes posición registrada en ${symbol}: la pregunta es de entrada, no de recorte`,
+        provenance: "computed",
       });
     }
 
@@ -272,6 +296,7 @@ export function buildDecisionFacts(input: {
         symbol,
         side: "trim",
         text: `beta ${risk.beta.toFixed(2)}: con ${ctx.weightPct !== null ? `${ctx.weightPct.toFixed(1)}% de la cartera` : "esta posición"} el valor amplifica el movimiento del mercado, no lo diluye`,
+        provenance: "computed",
       });
     }
     if (risk?.daysToCover != null && risk.daysToCover >= T.daysToCoverHigh) {
@@ -294,6 +319,7 @@ export function buildDecisionFacts(input: {
         symbol,
         side: "neutral",
         text: `days-to-cover ${risk.daysToCover.toFixed(1)}${deriva}: hay apuesta contraria acumulada, que es a la vez presión vendedora y combustible de un squeeze`,
+        provenance: "declared",
       });
     }
 
@@ -312,6 +338,7 @@ export function buildDecisionFacts(input: {
         symbol,
         side: net > 0 ? "add" : "trim",
         text: `insiders neto 30d ${money(net)} en mercado abierto (${f.insiderBuyers30d} compradores / ${f.insiderSellers30d} vendedores)`,
+        provenance: "declared",
       });
     }
     for (const s of f.stakes) {
@@ -319,6 +346,7 @@ export function buildDecisionFacts(input: {
         symbol,
         side: "add",
         text: `13D/G de ${s.filer ?? "declarante no identificado"}${s.pct !== null ? ` con ${s.pct}% del capital` : ""} declarado el ${s.filedAt} — hay un tercero acumulando con intención declarada`,
+        provenance: "declared",
       });
     }
 
@@ -340,6 +368,7 @@ export function buildDecisionFacts(input: {
         text: `resultados${f.nextEarningsHour ? ` (${f.nextEarningsHour})` : ""}${
           d !== null ? `, dentro de ${d} día${Math.abs(d) === 1 ? "" : "s"}` : ""
         }${vara ? ` — la vara a batir: ${vara}` : ""}`,
+        provenance: "declared",
       });
       // Un evento fechado ANTES de que dé tiempo a reaccionar no es un
       // argumento del debate: es la fecha en la que el debate se resuelve
@@ -351,6 +380,7 @@ export function buildDecisionFacts(input: {
           symbol,
           side: "trim",
           text: `reporta en ${d} día${d === 1 ? "" : "s"} (${f.nextEarnings}): llegar entero al evento es exponer ${ctx.weightPct !== null ? `${ctx.weightPct.toFixed(1)}% de la cartera` : "toda la posición"} a un desenlace binario con fecha`,
+          provenance: "declared",
         });
       }
     }
@@ -359,6 +389,7 @@ export function buildDecisionFacts(input: {
         symbol,
         date: f.lastPick.generatedAt,
         text: `tesis del último AI Pick de Catalyst: ${f.lastPick.thesis}`,
+        provenance: "self",
       });
     }
   }
@@ -397,6 +428,7 @@ export function buildDecisionFacts(input: {
         symbol: er.symbol,
         side,
         text: `del comunicado oficial (${er.reportDate ?? er.filingDate}): ${SIGNAL_LABEL[a.signal]} — ${a.magnitude}. Leído contra tu marco: ${read.note}`,
+        provenance: "declared",
       });
     }
   }
@@ -419,6 +451,7 @@ export function buildDecisionFacts(input: {
       symbol,
       side: flag.level === "warn" ? "trim" : "neutral",
       text: `su sector (${sector}) pesa ${flag.weightPct.toFixed(0)}% de la cartera: recortar ${symbol} reduce el riesgo del NOMBRE, no el de la apuesta sectorial — sustituirlo por otro valor del mismo sector dejaría la exposición donde estaba`,
+      provenance: "computed",
     });
   }
 
@@ -432,6 +465,7 @@ export function buildDecisionFacts(input: {
       symbol: s.symbol,
       side: "trim",
       text: `${s.owner}${s.title ? ` (${s.title})` : ""} lleva ${s.sales} ventas entre ${s.firstSale} y ${s.lastSale}${quedan} — plan de venta en curso, oferta futura ya conocida`,
+      provenance: "declared",
     });
   }
   for (const d of input.deals ?? []) {
@@ -444,6 +478,7 @@ export function buildDecisionFacts(input: {
       symbol: d.symbol,
       date: d.publishedAt,
       text: `operación corporativa anunciada (no verificado que siga abierta): ${d.headline}`,
+      provenance: "declared",
     });
   }
 
@@ -451,8 +486,21 @@ export function buildDecisionFacts(input: {
   return { contexts, pressures, dated };
 }
 
-/** ¿Hay algo duro sobre lo que inclinarse? Lo consume el gate de
- *  `lib/ai/ask.ts`: sin esto, una postura es una opinión sin respaldo. */
+/**
+ * ¿Hay algo duro sobre lo que inclinarse? Lo consume el gate de
+ * `lib/ai/ask.ts`: sin esto, una postura es una opinión sin respaldo.
+ *
+ * Lo de procedencia `self` NO cuenta. La tesis del último AI Pick es salida
+ * de un LLM del propio Catalyst, y bastaba con que existiera para que
+ * `dated.length > 0` abriera el gate: un símbolo sin insiders, sin 13D y sin
+ * resultados próximos recibía un veredicto AMPLIAR/RECORTAR sostenido
+ * únicamente por la opinión que esta misma herramienta había escrito tres
+ * días antes. Eso no es evidencia, es la opinión de ayer disfrazada de hecho
+ * — el pick sigue viajando al prompt como contexto, que es su sitio.
+ */
 export function hasDecisionEvidence(d: DecisionFacts): boolean {
-  return d.pressures.some((p) => p.side !== "neutral") || d.dated.length > 0;
+  return (
+    d.pressures.some((p) => p.side !== "neutral" && p.provenance !== "self") ||
+    d.dated.some((x) => x.provenance !== "self")
+  );
 }

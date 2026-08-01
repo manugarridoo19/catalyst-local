@@ -113,7 +113,6 @@ describe("applyEvidenceGate — qué cuenta como hecho duro", () => {
     ["compra neta de insiders a 7d", { insiderNet7d: 500_000 }],
     ["un 13D/G declarado", { stakes: [{ filer: "F", pct: 6, filedAt: "2026-07-01" }] }],
     ["una señal del Lab", { signals: [{ kind: "ai_pick", label: "AI Pick", detectedAt: "2026-07-01", matured: false }] }],
-    ["una fecha de resultados", { nextEarnings: "2026-08-01" }],
     ["days-to-cover alto", { daysToCover: 7 }],
   ] as const;
 
@@ -125,6 +124,33 @@ describe("applyEvidenceGate — qué cuenta como hecho duro", () => {
       expect(out[0].degraded).toBeUndefined();
     });
   }
+
+  // LA FECHA DE RESULTADOS NO ES UN HECHO DURO, y esta aserción está en
+  // desacuerdo a propósito con la lista de arriba.
+  //
+  // El SYSTEM_PROMPT de la revisión lo dice en mayúsculas ("QUE UNA EMPRESA
+  // PRESENTE RESULTADOS NO ES MOTIVO DE POSTURA… si lo único que tienes es su
+  // fecha y su consenso, OMÍTELA"), pero el gate la aceptaba como respaldo
+  // suficiente. En temporada de resultados TODAS las posiciones tienen fecha,
+  // así que el filtro que debía degradar a "none" no se activaba nunca justo
+  // cuando más ruido había: el gate le daba por bueno al modelo exactamente
+  // lo que el prompt le prohibía. La fecha sigue viajando en watchNext y en
+  // el calendario, que es donde el prompt la quiere.
+  it("una fecha de resultados NO sostiene una postura por sí sola", () => {
+    const r = retrieval({ facts: [facts("AAA", { nextEarnings: "2026-08-01" })] });
+    const out = applyEvidenceGate([verdict({ symbol: "AAA", used: [] })], r);
+    expect(out[0].stance).toBe("none");
+    expect(out[0].degraded).toBe(true);
+  });
+
+  it("pero la fecha NO estorba cuando hay un hecho duro de verdad", () => {
+    const r = retrieval({
+      facts: [facts("AAA", { nextEarnings: "2026-08-01", insiderNet30d: -1_000_000 })],
+    });
+    const out = applyEvidenceGate([verdict({ symbol: "AAA", used: [] })], r);
+    expect(out[0].stance).toBe("watch");
+    expect(out[0].degraded).toBeUndefined();
+  });
 
   // Los agregados blandos justifican cualquier cosa ("mucha atención
   // mediática", "sentimiento tibio"), así que deliberadamente NO cuentan.
