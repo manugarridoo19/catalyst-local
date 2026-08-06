@@ -1,6 +1,11 @@
 import { Header } from "@/components/header";
 import { FeedList } from "@/components/feed/feed-list";
+import { NewNamesStrip } from "@/components/feed/new-names-strip";
 import { WatchlistPanel } from "@/components/watchlist/watchlist-panel";
+import {
+  getNewUniverseNames,
+  type NewUniverseName,
+} from "@/lib/tickers/discovery";
 import { getFeed, getTickerMetaMap, getWatchlist } from "@/lib/db/queries";
 import { getQuotesMap, type CompactQuote } from "@/lib/providers/finnhub";
 import { getSessionId } from "@/lib/session";
@@ -24,11 +29,12 @@ async function loadInitial(): Promise<{
     logoUrl: string | null;
   }[];
   quotes: Record<string, CompactQuote | null>;
+  newNames: NewUniverseName[];
   error?: string;
 }> {
   try {
     const session = await getSessionId();
-    const [feedRows, watchRows] = await Promise.all([
+    const [feedRows, watchRows, newNames] = await Promise.all([
       getFeed({
         limit: 100,
         since: fifteenDaysAgo(),
@@ -43,6 +49,8 @@ async function loadInitial(): Promise<{
         requireTicker: true,
       }),
       getWatchlist(session),
+      // Descubrimiento: qué nombres acaban de empezar a sonar y por qué.
+      getNewUniverseNames().catch(() => []),
     ]);
 
     const symbols = new Set<string>();
@@ -84,19 +92,20 @@ async function loadInitial(): Promise<{
       ? await getQuotesMap(watchlist.map((w) => w.symbol)).catch(() => ({}))
       : {};
 
-    return { feed, watchlist, quotes };
+    return { feed, watchlist, quotes, newNames };
   } catch (err) {
     return {
       feed: [],
       watchlist: [],
       quotes: {},
+      newNames: [],
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function NewsPage() {
-  const { feed, watchlist, quotes, error } = await loadInitial();
+  const { feed, watchlist, quotes, newNames, error } = await loadInitial();
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -106,6 +115,7 @@ export default async function NewsPage() {
           {error}
         </div>
       ) : null}
+      <NewNamesStrip names={newNames} />
       <div className="flex flex-1 overflow-hidden">
         <main className="flex-1 overflow-hidden">
           <FeedList
