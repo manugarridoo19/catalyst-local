@@ -77,6 +77,81 @@ export async function getLabTotals(): Promise<LabTotals> {
   );
 }
 
+export type ConfluenceStatRow = {
+  confluent: boolean;
+  horizon: number;
+  n: number;
+  avg_excess: number | null;
+  beat_rate: number | null;
+};
+
+/**
+ * ¿La CONFLUENCIA añade edge? Compara los outcomes de señales que, al
+ * nacer, ya tenían OTRA señal de distinto kind sobre el mismo símbolo en
+ * los 14 días ANTERIORES, contra las que iban solas.
+ *
+ * La ventana mira solo hacia atrás a propósito: "tenía compañía" debe ser
+ * conocible en el momento de la detección o la comparación lleva
+ * lookahead — el mismo sesgo que el registro prospectivo existe para
+ * evitar. Solo lectura: no crea kinds ni reescribe eventos; si el
+ * histórico demuestra que la confluencia rinde, decidir si merece ser
+ * señal propia es otra conversación.
+ */
+export async function getConfluenceStats(): Promise<ConfluenceStatRow[]> {
+  return unwrapRows<ConfluenceStatRow>(
+    await db.execute(sql`
+      WITH flagged AS (
+        SELECT e.id,
+          EXISTS (
+            SELECT 1 FROM signal_events e2
+            WHERE e2.symbol = e.symbol AND e2.kind <> e.kind
+              AND e2.detected_at >= e.detected_at - interval '14 days'
+              AND e2.detected_at <= e.detected_at
+          ) AS confluent
+        FROM signal_events e
+      )
+      SELECT f.confluent, o.horizon::int AS horizon, COUNT(*)::int AS n,
+        ROUND(AVG(o.return_pct - o.benchmark_return_pct)::numeric, 2)::float
+          AS avg_excess,
+        ROUND((COUNT(*) FILTER (WHERE o.return_pct > o.benchmark_return_pct)::numeric
+          / NULLIF(COUNT(*), 0) * 100), 1)::float AS beat_rate
+      FROM flagged f
+      JOIN signal_outcomes o ON o.event_id = f.id
+      WHERE o.benchmark_return_pct IS NOT NULL
+      GROUP BY f.confluent, o.horizon
+      ORDER BY f.confluent DESC, o.horizon
+    `),
+  );
+}
+
+export type ConfluenceRow = {
+  symbol: string;
+  name: string | null;
+  kinds: string[];
+  last_at: string | Date;
+};
+
+/** Confluencias VIVAS: símbolos con ≥2 kinds distintos en los últimos 14
+ *  días. La lista que el scoreboard por kind no puede enseñar. */
+export async function getCurrentConfluences(
+  limit = 12,
+): Promise<ConfluenceRow[]> {
+  return unwrapRows<ConfluenceRow>(
+    await db.execute(sql`
+      SELECT e.symbol, MIN(tk.name) AS name,
+        ARRAY_AGG(DISTINCT e.kind) AS kinds,
+        MAX(e.detected_at) AS last_at
+      FROM signal_events e
+      LEFT JOIN tickers tk ON tk.symbol = e.symbol
+      WHERE e.detected_at >= now() - interval '14 days'
+      GROUP BY e.symbol
+      HAVING COUNT(DISTINCT e.kind) >= 2
+      ORDER BY COUNT(DISTINCT e.kind) DESC, MAX(e.detected_at) DESC
+      LIMIT ${limit}
+    `),
+  );
+}
+
 export type AuthorTrackRecord = {
   /** Stats del kind `author_call` por horizonte (n, media, exceso vs SPY). */
   stats: SignalStatRow[];

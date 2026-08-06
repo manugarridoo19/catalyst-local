@@ -3,6 +3,7 @@ import {
   ScoreboardSection,
   RecentSignalsSection,
   LabTotalsStrip,
+  ConfluenceSection,
 } from "@/components/lab/sections";
 import { ResearchNotePanel } from "@/components/lab/research-note-panel";
 import {
@@ -13,9 +14,13 @@ import {
   getSignalStats,
   getLabTotals,
   getRecentSignals,
+  getConfluenceStats,
+  getCurrentConfluences,
   type SignalStatRow,
   type RecentSignalRow,
   type LabTotals,
+  type ConfluenceStatRow,
+  type ConfluenceRow,
 } from "@/lib/signals/queries";
 
 export const dynamic = "force-dynamic";
@@ -32,18 +37,23 @@ async function loadData(): Promise<{
   totals: LabTotals;
   recent: RecentSignalRow[];
   note: ResearchNoteRow | null;
+  confluenceStats: ConfluenceStatRow[];
+  confluences: ConfluenceRow[];
   error?: string;
 }> {
   try {
-    const [stats, totals, recent, note] = await Promise.all([
-      getSignalStats(),
-      getLabTotals(),
-      getRecentSignals(16),
-      // Solo LECTURA: la nota la redacta el cron 1×/día. Esta página sigue
-      // sin gastar cuota jamás.
-      getLatestResearchNote().catch(() => null),
-    ]);
-    return { stats, totals, recent, note };
+    const [stats, totals, recent, note, confluenceStats, confluences] =
+      await Promise.all([
+        getSignalStats(),
+        getLabTotals(),
+        getRecentSignals(16),
+        // Solo LECTURA: la nota la redacta el cron 1×/día. Esta página sigue
+        // sin gastar cuota jamás.
+        getLatestResearchNote().catch(() => null),
+        getConfluenceStats().catch(() => []),
+        getCurrentConfluences().catch(() => []),
+      ]);
+    return { stats, totals, recent, note, confluenceStats, confluences };
   } catch (err) {
     return {
       stats: [],
@@ -57,13 +67,16 @@ async function loadData(): Promise<{
       },
       recent: [],
       note: null,
+      confluenceStats: [],
+      confluences: [],
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function LabPage() {
-  const { stats, totals, recent, note, error } = await loadData();
+  const { stats, totals, recent, note, confluenceStats, confluences, error } =
+    await loadData();
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -109,6 +122,10 @@ export default async function LabPage() {
           ) : (
             <>
               <ScoreboardSection stats={stats} />
+              <ConfluenceSection
+                stats={confluenceStats}
+                current={confluences}
+              />
               <RecentSignalsSection rows={recent} />
             </>
           )}

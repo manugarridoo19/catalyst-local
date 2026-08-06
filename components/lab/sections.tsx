@@ -1,5 +1,10 @@
 import Link from "next/link";
-import type { SignalStatRow, RecentSignalRow } from "@/lib/signals/queries";
+import type {
+  SignalStatRow,
+  RecentSignalRow,
+  ConfluenceStatRow,
+  ConfluenceRow,
+} from "@/lib/signals/queries";
 import {
   KIND_SPECS,
   MIN_SAMPLE,
@@ -275,5 +280,127 @@ export function LabTotalsStrip({
         </div>
       ))}
     </div>
+  );
+}
+
+// --- Confluencia ------------------------------------------------------------
+
+/** ¿Vale más una señal acompañada? Comparación medida (sin lookahead: la
+ *  compañía se busca solo en los 14 días ANTERIORES a la detección) + las
+ *  confluencias vivas ahora. Solo lectura — el registro no se toca. */
+export function ConfluenceSection({
+  stats,
+  current,
+}: {
+  stats: ConfluenceStatRow[];
+  current: ConfluenceRow[];
+}) {
+  if (!stats.length && !current.length) return null;
+  const horizons = Array.from(new Set(stats.map((s) => s.horizon))).sort(
+    (a, b) => a - b,
+  );
+  return (
+    <section>
+      <SectionTitle hint="≥2 distinct signal kinds on one name · 14d lookback, no lookahead">
+        Confluence — do signals in company beat signals alone?
+      </SectionTitle>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {stats.length ? (
+          <div className="overflow-hidden rounded-sm border border-border/60">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-border/60 bg-card/50 text-left font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/70">
+                  <th className="px-3 py-1.5 font-medium">Horizon</th>
+                  <th className="px-3 py-1.5 text-right font-medium">
+                    In company
+                  </th>
+                  <th className="px-3 py-1.5 text-right font-medium">Alone</th>
+                </tr>
+              </thead>
+              <tbody>
+                {horizons.map((h) => {
+                  const c = stats.find((s) => s.horizon === h && s.confluent);
+                  const a = stats.find((s) => s.horizon === h && !s.confluent);
+                  const cell = (r: ConfluenceStatRow | undefined) =>
+                    r ? (
+                      <span className={toneClass(r.avg_excess)}>
+                        {pct(r.avg_excess)}{" "}
+                        <span className="text-muted-foreground/60">
+                          · n={r.n}
+                          {r.n < MIN_SAMPLE ? " (small)" : ""}
+                        </span>
+                      </span>
+                    ) : (
+                      "—"
+                    );
+                  return (
+                    <tr
+                      key={h}
+                      className="border-b border-border/40 last:border-b-0"
+                    >
+                      <td className="px-3 py-1.5 font-mono text-[11px] text-muted-foreground">
+                        {h}d
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono text-[11.5px] tabular-nums">
+                        {cell(c)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono text-[11.5px] tabular-nums">
+                        {cell(a)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="border-t border-border/40 px-3 py-1.5 font-editorial text-[10px] leading-snug text-muted-foreground/50">
+              Excess vs SPY of measured signals that already had another kind
+              on the same name in the prior 14 days, versus those that fired
+              alone. Read-only analysis — nothing here re-scores the registry.
+            </p>
+          </div>
+        ) : null}
+
+        {current.length ? (
+          <div className="rounded-sm border border-border/60 bg-card/40">
+            <div className="border-b border-border/60 px-3 py-2">
+              <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground">
+                Live confluences · 14d
+              </span>
+            </div>
+            <ul className="divide-y divide-border/40">
+              {current.map((c) => (
+                <li
+                  key={c.symbol}
+                  className="flex items-baseline gap-3 px-3 py-2"
+                >
+                  <Link
+                    href={`/ticker/${c.symbol}`}
+                    className="tick w-16 shrink-0 font-mono text-[12px] font-semibold text-foreground hover:text-primary"
+                  >
+                    {c.symbol}
+                  </Link>
+                  <span className="hidden w-36 shrink-0 truncate font-editorial text-[11px] text-muted-foreground/70 md:inline">
+                    {c.name ?? ""}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {c.kinds.map((k) => (
+                      <span
+                        key={k}
+                        className="mr-1.5 inline-block rounded-sm border border-primary/30 bg-primary/[0.06] px-1.5 py-0.5 font-mono text-[9px] text-primary/90"
+                      >
+                        {kindLabel(k as SignalKind)}
+                      </span>
+                    ))}
+                  </span>
+                  <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground/60">
+                    {new Date(c.last_at).toISOString().slice(0, 10)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
