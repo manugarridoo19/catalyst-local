@@ -445,7 +445,13 @@ export type AskOptions = {
    *  a responder ESA pregunta — "¿compro?" contestado con aguantar/recortar
    *  es responder a una pregunta que nadie hizo (medido 2026-07-31). */
   focus?: "entry" | "exit" | "general";
+  /** Turnos anteriores de ESTA conversación ("¿y si quito NVDA?" tras una
+   *  revisión). Contexto para entender el seguimiento, nunca fuente: los
+   *  hechos siguen saliendo del material de este turno. */
+  history?: AskTurn[];
 };
+
+export type AskTurn = { question: string; answer: string };
 
 /** La línea que ata el veredicto a la pregunta. Va en el bloque de usuario,
  *  justo bajo la QUESTION, porque es una instrucción sobre ESTA pregunta y
@@ -475,7 +481,7 @@ export async function askArchive(
   question: string,
   opts: AskOptions = {},
 ): Promise<AskAnswer> {
-  const { decision, ledger = [], focus = "general" } = opts;
+  const { decision, ledger = [], focus = "general", history = [] } = opts;
   // Una pregunta de decisión con evidencia dura propia (peso, insiders,
   // una fecha de resultados) merece respuesta aunque el archivo de noticias
   // venga flojo: la mitad de la respuesta no sale de las noticias.
@@ -501,7 +507,19 @@ export async function askArchive(
   const priors =
     shape === "decision" ? await getEmpiricalPriors().catch(() => null) : null;
 
+  // La conversación previa entra como CONTEXTO, delante de la pregunta y
+  // con la regla explícita de que no es fuente: el material de ESTE turno
+  // manda. Sin este bloque, "¿y a largo plazo?" no tiene referente; con él
+  // sin la regla, el modelo recicla cifras de una respuesta que ya caducó.
+  const historyBlock = history.length
+    ? [
+        "CONVERSATION SO FAR — context to understand the follow-up ONLY. Every fact and number in your answer must come from the material BELOW; if an earlier answer conflicts with today's material, today's material wins:",
+        ...history.map((t) => `Q: ${t.question}\nA: ${t.answer}`),
+      ].join("\n")
+    : "";
+
   const userBlock = [
+    historyBlock,
     `QUESTION: ${question}`,
     shape === "decision" ? focusLine(focus) : "",
     "",

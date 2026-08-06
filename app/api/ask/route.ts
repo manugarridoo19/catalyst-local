@@ -5,7 +5,12 @@ import {
   type Citation,
   type StructuredFacts,
 } from "@/lib/ask/retrieve";
-import { askArchive, hasCoverage, type AskSection } from "@/lib/ai/ask";
+import {
+  askArchive,
+  hasCoverage,
+  type AskSection,
+  type AskTurn,
+} from "@/lib/ai/ask";
 import { extractForwardLedger, type ForwardItem } from "@/lib/ai/forward-ledger";
 import { embedBatch, EmbedQuotaError } from "@/lib/providers/gemini-embed";
 import { isWorkersRuntime, llmAllowed, rateLimited } from "@/lib/ask/gate";
@@ -43,6 +48,40 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_QUESTION_CHARS = 300;
+// Límites del historial de conversación: 3 turnos y respuestas recortadas.
+// El historial es CONTEXTO para el seguimiento, no material — con más se
+// come el presupuesto de tokens del material real, que es el que manda.
+const MAX_HISTORY_TURNS = 3;
+const MAX_HISTORY_ANSWER_CHARS = 700;
+const SYMBOL_RE = /^[A-Z0-9.\-]{1,10}$/;
+
+type HistoryIn = { question: string; answer: string; symbols: string[] };
+
+/** Valida y acota el historial que manda el cliente. Formato hostil no
+ *  rompe nada: lo que no case, se tira. */
+function parseHistory(raw: unknown): HistoryIn[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (t): t is { question: string; answer: string; symbols?: unknown } =>
+        !!t &&
+        typeof (t as { question?: unknown }).question === "string" &&
+        typeof (t as { answer?: unknown }).answer === "string",
+    )
+    .slice(-MAX_HISTORY_TURNS)
+    .map((t) => ({
+      question: t.question.trim().slice(0, MAX_QUESTION_CHARS),
+      answer: t.answer.trim().slice(0, MAX_HISTORY_ANSWER_CHARS),
+      symbols: Array.isArray(t.symbols)
+        ? t.symbols
+            .filter((s): s is string => typeof s === "string")
+            .map((s) => s.toUpperCase())
+            .filter((s) => SYMBOL_RE.test(s))
+            .slice(0, 8)
+        : [],
+    }))
+    .filter((t) => t.question.length >= 3);
+}
 
 export type AskResponse = {
   mode: "answer" | "search";
@@ -84,9 +123,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
   let question = "";
+  let history: HistoryIn[] = [];
   try {
-    const body = (await req.json()) as { question?: unknown };
+    const body = (await req.json()) as { question?: unknown; history?: unknown };
     question = typeof body.question === "string" ? body.question.trim() : "";
+    history = parseHistory(body.history);
   } catch {
     return NextResponse.json({ error: "invalid_body" }, { status: 400 });
   }
@@ -114,9 +155,16 @@ export async function POST(req: Request) {
     // respondiendo bastantes preguntas.
     let queryVec: number[] | null = null;
     let note: string | undefined;
+    // En un seguimiento, la pregunta sola es mal vector: "¿y a largo
+    // plazo?" no significa nada sin la pregunta anterior. Se embebe la
+    // última pregunta + la nueva (mismo coste: sigue siendo 1 embedding).
+    const lastTurn = history.at(-1);
+    const embedText = lastTurn
+      ? `${lastTurn.question}\n${question}`
+      : question;
     if (allowLlm) {
       try {
-        [queryVec] = await embedBatch([question], { taskType: "RETRIEVAL_QUERY" });
+        [queryVec] = await embedBatch([embedText], { taskType: "RETRIEVAL_QUERY" });
       } catch (err) {
         // CUALQUIER fallo del embed degrada; antes sólo lo hacía
         // `EmbedQuotaError` y el resto se relanzaba, tumbando la pregunta
@@ -142,7 +190,15 @@ export async function POST(req: Request) {
     // La cosecha de cuerpos (N fetches salientes) va gated a la sesión del
     // dueño, igual que el embedding y el LLM: un endpoint público y
     // enumerable no puede convertirse en un proxy de descargas para bots.
-    const r = await retrieve({ question, queryVec, harvest: allowLlm, intent });
+    const r = await retrieve({
+      question,
+      queryVec,
+      harvest: allowLlm,
+      intent,
+      // Herencia de símbolos del turno anterior — solo actúa si la
+      // pregunta nueva no nombra ninguno (ver retrieve).
+      carrySymbols: lastTurn?.symbols,
+    });
 
     // Los hechos de decisión se calculan SIEMPRE que la intención lo sea,
     // también para el anónimo: son aritmética sobre datos ya en BD, cuestan
@@ -214,7 +270,12 @@ export async function POST(req: Request) {
       ledger = extracted?.items ?? [];
     }
 
-    const a = await askArchive(r, question, { decision, ledger, focus });
+    const a = await askArchive(r, question, {
+      decision,
+      ledger,
+      focus,
+      history: history satisfies AskTurn[],
+    });
     return NextResponse.json(
       {
         mode: "answer",

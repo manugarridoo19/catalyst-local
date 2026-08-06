@@ -47,10 +47,25 @@ function sentimentTone(n: number): string {
   return "text-muted-foreground";
 }
 
+type Turn = { question: string; answer: string; symbols: string[] };
+
+/** Texto plano de una respuesta para el historial: la prosa si existe, si
+ *  no las secciones unidas. El servidor lo recorta igualmente. */
+function plainAnswer(r: AskResponse): string {
+  if (r.answer) return r.answer;
+  return r.sections
+    .map((s) => (s.title ? `${s.title}: ${s.text}` : s.text))
+    .join(" · ");
+}
+
 export function AskPanel() {
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [res, setRes] = useState<AskResponse | null>(null);
+  // Turnos previos de ESTA conversación. Viajan con cada pregunta para que
+  // "¿y a largo plazo?" tenga referente; el servidor los usa como contexto
+  // y para heredar símbolos, nunca como fuente de hechos.
+  const [history, setHistory] = useState<Turn[]>([]);
 
   async function submit(q: string) {
     const trimmed = q.trim();
@@ -61,9 +76,25 @@ export function AskPanel() {
       const r = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed }),
+        body: JSON.stringify({ question: trimmed, history }),
       });
-      setRes((await r.json()) as AskResponse);
+      const data = (await r.json()) as AskResponse;
+      setRes(data);
+      // Solo las respuestas REDACTADAS entran al historial: un resultado de
+      // búsqueda léxica no es un turno de conversación que retomar.
+      if (data.mode === "answer" && (data.answer || data.sections.length)) {
+        setHistory((h) =>
+          [
+            ...h,
+            {
+              question: trimmed,
+              answer: plainAnswer(data).slice(0, 700),
+              symbols: data.symbols ?? [],
+            },
+          ].slice(-3),
+        );
+      }
+      setQuestion("");
     } catch {
       setRes(null);
     } finally {
@@ -105,6 +136,28 @@ export function AskPanel() {
             {loading ? "Buscando" : "Preguntar"}
           </button>
         </div>
+        {history.length > 0 ? (
+          <div className="flex items-center gap-2">
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/60"
+              title={history.map((t) => t.question).join("\n")}
+            >
+              Conversación · {history.length}{" "}
+              {history.length === 1 ? "turno" : "turnos"} · seguimiento de:{" "}
+              &ldquo;{history[history.length - 1].question}&rdquo;
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setHistory([]);
+                setRes(null);
+              }}
+              className="shrink-0 rounded-sm border border-border/40 px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground/70 transition-colors hover:border-primary/40 hover:text-primary"
+            >
+              Nueva conversación
+            </button>
+          </div>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           {EXAMPLES.map((ex) => (
             <button

@@ -767,12 +767,20 @@ export async function retrieve(opts: {
    *  del Worker van así: no pueden disparar N fetches salientes. */
   harvest?: boolean;
   harvestBudgetMs?: number;
+  /** Símbolos del turno ANTERIOR de la conversación. Solo entran cuando la
+   *  pregunta nueva no nombra ninguno: "¿y a largo plazo?" tras hablar de
+   *  SOFI tiene que seguir hablando de SOFI, y sin esto el retrieval se
+   *  quedaba sin referente y la respuesta salía genérica. Si la pregunta
+   *  nueva SÍ nombra símbolos, mandan los nuevos — cambiar de valor en
+   *  mitad de la conversación es legítimo. */
+  carrySymbols?: string[];
 }): Promise<Retrieval> {
   const { question, queryVec } = opts;
   const intent: AskIntent = opts.intent ?? "archive";
   const limit = opts.limit ?? 20;
   const half = Math.ceil(limit / 2);
-  const symbols = await extractQuestionSymbols(question);
+  const extracted = await extractQuestionSymbols(question);
+  const symbols = extracted.length ? extracted : (opts.carrySymbols ?? []);
   const forwardOn = intent === "decision" && symbols.length > 0;
 
   // Se lanza aquí y se pasa SIN await a structuredFacts: las dos cosas
