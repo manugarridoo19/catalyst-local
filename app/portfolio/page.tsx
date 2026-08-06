@@ -3,8 +3,10 @@ import { PortfolioTable } from "@/components/portfolio/portfolio-table";
 import { CoachPanel } from "@/components/portfolio/coach-panel";
 import { TrackRecordSection } from "@/components/portfolio/track-record";
 import {
+  getDeskCalls,
   getLabReference,
   getTrackRecord,
+  type DeskCall,
   type LabReference,
 } from "@/lib/coach/track-record";
 import { getJournalCash, getTrades, getWatchlist } from "@/lib/db/queries";
@@ -40,11 +42,24 @@ export default async function PortfolioPage() {
     getJournalCash(session).catch(() => null),
     getTrackRecord(session).catch(() => null),
   ]);
-  // La referencia del Lab solo se paga cuando hay algún veredicto que
-  // comparar: para un visitante anónimo (diario vacío) es una query menos.
-  const labRef: LabReference = trackRecord?.stats.length
-    ? await getLabReference().catch(() => ({}))
-    : {};
+  // La referencia del Lab y el cruce con las revisiones solo se pagan
+  // cuando hay algo que cruzar: para un visitante anónimo (diario vacío)
+  // son cero queries extra.
+  const [labRef, deskCalls]: [LabReference, Record<string, DeskCall>] =
+    await Promise.all([
+      trackRecord?.stats.length
+        ? getLabReference().catch(() => ({}))
+        : Promise.resolve({}),
+      trackRecord?.trades.length
+        ? getDeskCalls(
+            session,
+            trackRecord.trades.map((t) => ({
+              date: t.createdAt,
+              symbol: t.symbol,
+            })),
+          ).catch(() => ({}))
+        : Promise.resolve({}),
+    ]);
   const symbols = rows.map((r) => r.symbol);
   const quotes = symbols.length
     ? await getQuotesMap(symbols).catch(() => ({}))
@@ -97,7 +112,11 @@ export default async function PortfolioPage() {
           />
 
           {trackRecord ? (
-            <TrackRecordSection record={trackRecord} labRef={labRef} />
+            <TrackRecordSection
+              record={trackRecord}
+              labRef={labRef}
+              deskCalls={deskCalls}
+            />
           ) : null}
 
           <section>

@@ -57,6 +57,19 @@ export type PositionContrast = {
   /** El marco se movió DESPUÉS de escribir la tesis vigente: lo que creías
    *  al operar se está leyendo con una vara que entonces no era ésa. */
   frameChangedAfterThesis: boolean;
+  /** Cuántas veces se ha movido la vara en total. El último cambio ya se
+   *  contrasta arriba; el RECUENTO es otra información — una posición cuyo
+   *  marco se ha movido cuatro veces en dos trimestres no tiene un marco,
+   *  tiene una racionalización, y eso no se ve mirando solo el último. */
+  frameChangeCount: number;
+  /** La cadena completa, más reciente primero, ya etiquetada. `initial` =
+   *  venía de sin clasificar (clasificación inicial, no reclasificación). */
+  frameHistory: Array<{
+    at: string;
+    fromLabel: string | null;
+    toLabel: string | null;
+    initial: boolean;
+  }>;
   /** La tesis vigente: la más reciente que escribiste al operar en este
    *  valor. Ver `loadContrasts` para por qué la más reciente y no todas. */
   thesis: string | null;
@@ -112,6 +125,16 @@ type Row = {
   belief: string | null;
   belief_at: string | null;
   belief_horizon: string | null;
+  frame_change_count: number | null;
+  frame_history: Array<{
+    at: string;
+    from_madurez: string | null;
+    from_capital: string | null;
+    from_ciclo: string | null;
+    to_madurez: string | null;
+    to_capital: string | null;
+    to_ciclo: string | null;
+  }> | null;
 };
 
 /**
@@ -166,9 +189,10 @@ export async function loadContrasts(
           FROM earnings_reports
          ORDER BY symbol, filing_date DESC
       ),
-      -- Sólo el ÚLTIMO cambio de marco: el panel contrasta el marco vigente
-      -- con el inmediatamente anterior, no cuenta la historia entera. La
-      -- cadena completa está en la tabla para quien la audite.
+      -- El ÚLTIMO cambio de marco se contrasta arriba (marco vigente contra
+      -- el inmediatamente anterior); la CADENA entera viaja aparte como
+      -- historial — el recuento de veces que se ha movido la vara es
+      -- información propia que el último cambio no contiene.
       ultimo_marco AS (
         SELECT DISTINCT ON (symbol)
                symbol,
@@ -179,12 +203,26 @@ export async function loadContrasts(
           FROM frame_changes
          WHERE user_session = ${session}
          ORDER BY symbol, changed_at DESC, id DESC
+      ),
+      historial_marco AS (
+        SELECT symbol, COUNT(*)::int AS frame_change_count,
+               json_agg(json_build_object(
+                 'at', to_char(changed_at at time zone 'UTC','YYYY-MM-DD'),
+                 'from_madurez', from_madurez, 'from_capital', from_capital,
+                 'from_ciclo', from_ciclo,
+                 'to_madurez', to_madurez, 'to_capital', to_capital,
+                 'to_ciclo', to_ciclo
+               ) ORDER BY changed_at DESC, id DESC) AS frame_history
+          FROM frame_changes
+         WHERE user_session = ${session}
+         GROUP BY symbol
       )
       SELECT w.symbol, t.name, w.frame_madurez, w.frame_capital, w.frame_ciclo,
              ut.thesis, ut.thesis_at, ut.thesis_horizon, ut.thesis_annotated_later,
              ui.attribution, ui.report_date,
              um.frame_set_at, um.frame_prev_madurez, um.frame_prev_capital,
              um.frame_prev_ciclo,
+             hm.frame_change_count, hm.frame_history,
              w.thesis AS belief, w.thesis_horizon AS belief_horizon,
              to_char(w.thesis_declared_at at time zone 'UTC','YYYY-MM-DD')
                AS belief_at
@@ -193,6 +231,7 @@ export async function loadContrasts(
         LEFT JOIN ultima_tesis ut ON ut.symbol = w.symbol
         LEFT JOIN ultimo_informe ui ON ui.symbol = w.symbol
         LEFT JOIN ultimo_marco um ON um.symbol = w.symbol
+        LEFT JOIN historial_marco hm ON hm.symbol = w.symbol
        WHERE w.user_session = ${session}
          AND w.shares IS NOT NULL AND w.shares > 0
        ORDER BY w.symbol
@@ -234,6 +273,28 @@ export async function loadContrasts(
       ciclo: r.frame_prev_ciclo,
     });
 
+    // La cadena por el MISMO parseAxes que todo lo demás: una entrada con
+    // ejes a medias o valores viejos degrada a null y se etiqueta "sin
+    // clasificar" en vez de romper el panel.
+    const frameHistory = (r.frame_history ?? []).map((h) => {
+      const from = parseAxes({
+        madurez: h.from_madurez,
+        capital: h.from_capital,
+        ciclo: h.from_ciclo,
+      });
+      const to = parseAxes({
+        madurez: h.to_madurez,
+        capital: h.to_capital,
+        ciclo: h.to_ciclo,
+      });
+      return {
+        at: h.at,
+        fromLabel: from ? describeAxes(from) : null,
+        toLabel: to ? describeAxes(to) : null,
+        initial: from === null,
+      };
+    });
+
     return {
       symbol: r.symbol,
       name: r.name,
@@ -243,6 +304,8 @@ export async function loadContrasts(
       frameSetAt: r.frame_set_at,
       framePrev,
       framePrevLabel: framePrev ? describeAxes(framePrev) : null,
+      frameChangeCount: r.frame_change_count ?? 0,
+      frameHistory,
       frameChangedAfterReport: movedAfter(r.frame_set_at, r.report_date),
       frameChangedAfterThesis: movedAfter(r.frame_set_at, r.thesis_at),
       thesis: r.thesis,

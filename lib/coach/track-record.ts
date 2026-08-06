@@ -249,6 +249,66 @@ export async function getTrackRecord(session: string): Promise<TrackRecord> {
   return buildTrackRecord(rows, totals.awaiting, totals.decisions);
 }
 
+/** Lo que decía la revisión de cartera de ESE día sobre ESE símbolo. */
+export type DeskCall = {
+  reviewDate: string;
+  stance: string;
+  why: string;
+};
+
+/**
+ * «Qué decía la mesa el día que operaste»: cruza el diario con la serie de
+ * `portfolio_reviews` — que el propio schema guarda "para mirar atrás" y de
+ * la que hasta ahora solo se servía la última fila. Devuelve un mapa
+ * `fecha:símbolo → postura`, solo para las fechas pedidas.
+ *
+ * No es un veredicto sobre ti ni sobre la mesa: es el contexto que tenías
+ * delante (o podrías haber tenido) al decidir. Las operaciones anteriores a
+ * la revisión diaria (06-08-2026) no tienen fila, y eso se enseña como
+ * ausencia, no como acuerdo.
+ */
+export async function getDeskCalls(
+  session: string,
+  keys: Array<{ date: string; symbol: string }>,
+): Promise<Record<string, DeskCall>> {
+  const dates = Array.from(new Set(keys.map((k) => k.date)));
+  if (!dates.length) return {};
+  const rows = unwrapRows<{ review_date: string; positions: string }>(
+    await db.execute(sql`
+      SELECT review_date, positions
+      FROM portfolio_reviews
+      WHERE user_session = ${session}
+        AND review_date IN (${sql.join(
+          dates.map((d) => sql`${d}`),
+          sql`, `,
+        )})
+    `),
+  );
+  const wanted = new Set(keys.map((k) => `${k.date}:${k.symbol}`));
+  const out: Record<string, DeskCall> = {};
+  for (const r of rows) {
+    let positions: Array<{ symbol?: string; stance?: string; why?: string }>;
+    try {
+      positions = JSON.parse(r.positions);
+    } catch {
+      continue; // una fila corrupta no puede tumbar el panel
+    }
+    if (!Array.isArray(positions)) continue;
+    for (const p of positions) {
+      if (!p?.symbol || !p.stance) continue;
+      const key = `${r.review_date}:${p.symbol}`;
+      if (wanted.has(key)) {
+        out[key] = {
+          reviewDate: r.review_date,
+          stance: p.stance,
+          why: p.why ?? "",
+        };
+      }
+    }
+  }
+  return out;
+}
+
 /** Referencia del Signal Lab en los horizontes que comparte con el diario
  *  (1/7/30). Global a propósito: las señales no son de ninguna sesión. */
 export async function getLabReference(): Promise<LabReference> {

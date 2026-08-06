@@ -162,12 +162,28 @@ function FrameTrail({ p }: { p: PositionContrast }) {
 
   const reclasificada = p.framePrev !== null;
   const sesgado = p.frameChangedAfterReport || p.frameChangedAfterThesis;
+  // El recuento es información propia que el último cambio no da: cuatro
+  // reclasificaciones en dos trimestres no son un marco, son una
+  // racionalización en curso. La cadena entera va al title, fechada.
+  const reclasificaciones = p.frameHistory.filter((h) => !h.initial).length;
+  const historial = p.frameHistory
+    .map(
+      (h) =>
+        `${h.at}: ${h.initial ? "clasificada" : `${h.fromLabel ?? "sin clasificar"} →`} ${h.toLabel ?? "sin clasificar"}`,
+    )
+    .join("\n");
 
   return (
-    <p className="mt-0.5 font-mono text-[9.5px] leading-relaxed text-muted-foreground/45">
+    <p
+      className="mt-0.5 font-mono text-[9.5px] leading-relaxed text-muted-foreground/45"
+      title={historial || undefined}
+    >
       {reclasificada
         ? `perfil cambiado ${p.frameSetAt} · antes: ${p.framePrevLabel}`
         : `clasificada ${p.frameSetAt}`}
+      {reclasificaciones >= 2
+        ? ` · la vara se ha movido ${reclasificaciones} veces`
+        : null}
       {sesgado ? (
         <span className="text-amber-700/80 dark:text-amber-300/80">
           {" · "}

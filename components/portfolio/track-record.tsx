@@ -1,4 +1,5 @@
 import {
+  type DeskCall,
   type JudgedJournalTrade,
   type LabReference,
   type TrackRecord,
@@ -37,9 +38,13 @@ const SIDE_LABEL: Record<JudgedJournalTrade["side"], string> = {
 export function TrackRecordSection({
   record,
   labRef,
+  deskCalls = {},
 }: {
   record: TrackRecord;
   labRef: LabReference;
+  /** `fecha:símbolo → postura de la revisión de ese día`. Contexto, no
+   *  veredicto: qué decía la mesa cuando decidiste. */
+  deskCalls?: Record<string, DeskCall>;
 }) {
   const { trades, stats, totals } = record;
 
@@ -94,7 +99,9 @@ export function TrackRecordSection({
           {stats.length ? (
             <StatsTable stats={stats} labRef={labRef} />
           ) : null}
-          {trades.length ? <TradesTable trades={trades} /> : null}
+          {trades.length ? (
+            <TradesTable trades={trades} deskCalls={deskCalls} />
+          ) : null}
         </>
       )}
 
@@ -182,7 +189,13 @@ function StatsTable({
   );
 }
 
-function TradesTable({ trades }: { trades: JudgedJournalTrade[] }) {
+function TradesTable({
+  trades,
+  deskCalls,
+}: {
+  trades: JudgedJournalTrade[];
+  deskCalls: Record<string, DeskCall>;
+}) {
   return (
     <div className="overflow-hidden rounded-sm border border-border/60">
       <table className="w-full border-collapse">
@@ -192,6 +205,9 @@ function TradesTable({ trades }: { trades: JudgedJournalTrade[] }) {
             <th className="px-3 py-1.5 font-medium">Operación</th>
             <th className="hidden px-3 py-1.5 font-medium sm:table-cell">
               Plazo
+            </th>
+            <th className="hidden px-3 py-1.5 font-medium md:table-cell">
+              La mesa decía
             </th>
             {MEASURED_HORIZONS.map((h) => (
               <th
@@ -228,6 +244,28 @@ function TradesTable({ trades }: { trades: JudgedJournalTrade[] }) {
               </td>
               <td className="hidden px-3 py-1.5 font-mono text-[11px] text-muted-foreground sm:table-cell">
                 {t.plazo ? HORIZON_LABEL[t.plazo].split(" ·")[0] : "—"}
+              </td>
+              <td className="hidden px-3 py-1.5 md:table-cell">
+                {(() => {
+                  const call = deskCalls[`${t.createdAt}:${t.symbol}`];
+                  return call ? (
+                    <span
+                      className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground"
+                      title={call.why}
+                    >
+                      {call.stance}
+                    </span>
+                  ) : (
+                    // Ausencia ≠ acuerdo: las operaciones anteriores a la
+                    // revisión diaria no tienen fila, y se dice.
+                    <span
+                      className="font-mono text-[10px] text-muted-foreground/40"
+                      title="sin revisión guardada ese día"
+                    >
+                      —
+                    </span>
+                  );
+                })()}
               </td>
               {MEASURED_HORIZONS.map((h) => (
                 <td
