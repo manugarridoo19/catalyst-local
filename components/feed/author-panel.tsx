@@ -1,20 +1,77 @@
 import Link from "next/link";
 import { MessageSquareQuote, TriangleAlert } from "lucide-react";
 import type { AuthorBriefRow } from "@/lib/ai/author-brief";
+import type { AuthorTrackRecord } from "@/lib/signals/queries";
 import type { CompactQuote } from "@/lib/providers/finnhub";
 
 // Author Watch — "super sección" arriba del feed. Fusión diaria de lo que el
 // autor seguido dijo en X con nuestro tape de noticias de esos tickers.
 // Server component, mismo patrón <details> que los otros paneles IA.
 
+function pct(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+}
+
+/** El track record del autor, medido por el Lab con su misma aritmética.
+ *  Va DENTRO del panel del autor y no solo en /lab: el sitio donde decides
+ *  cuánto peso darle a lo que dice es donde lo estás leyendo. */
+function AuthorRecordStrip({ record }: { record: AuthorTrackRecord }) {
+  const s7 = record.stats.find((s) => s.horizon === 7);
+  const s30 = record.stats.find((s) => s.horizon === 30);
+  if (!s7 && !s30) return null;
+  const n = Math.max(s7?.n ?? 0, s30?.n ?? 0);
+  return (
+    <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 rounded-sm border border-border/50 bg-card/40 px-3 py-1.5">
+      <Link
+        href="/lab"
+        className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/70 hover:text-primary"
+      >
+        His measured calls →
+      </Link>
+      {s7 ? (
+        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
+          7d {pct(s7.avg_return)}{" "}
+          <span className="text-muted-foreground/60">
+            (vs SPY {pct(s7.avg_excess)})
+          </span>
+        </span>
+      ) : null}
+      {s30 ? (
+        <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
+          30d {pct(s30.avg_return)}{" "}
+          <span className="text-muted-foreground/60">
+            (vs SPY {pct(s30.avg_excess)})
+          </span>
+        </span>
+      ) : null}
+      <span
+        className={`font-mono text-[9.5px] tabular-nums ${n < 20 ? "text-amber-700/80 dark:text-amber-300/80" : "text-muted-foreground/60"}`}
+      >
+        n={n}
+        {n < 20 ? " · small n" : ""}
+      </span>
+      {record.recent.length ? (
+        <span className="min-w-0 flex-1 truncate text-right font-mono text-[10px] tabular-nums text-muted-foreground/60">
+          {record.recent
+            .map((r) => `${r.symbol} ${pct(r.r7 ?? r.r1)}`)
+            .join(" · ")}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function AuthorPanel({
   brief,
   handle,
   quotes,
+  trackRecord = null,
 }: {
   brief: AuthorBriefRow | null;
   handle: string;
   quotes: Record<string, CompactQuote | null>;
+  trackRecord?: AuthorTrackRecord | null;
 }) {
   if (!brief) return null;
   const modelShort =
@@ -100,6 +157,7 @@ export function AuthorPanel({
             })}
           </div>
         )}
+        {trackRecord ? <AuthorRecordStrip record={trackRecord} /> : null}
         <div className="mt-2.5 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/50">
           Author&rsquo;s public posts, fused with our news tape · not investment advice
         </div>

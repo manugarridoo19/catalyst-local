@@ -16,6 +16,10 @@ import {
   getLatestAuthorBrief,
   type AuthorBriefRow,
 } from "@/lib/ai/author-brief";
+import {
+  getAuthorTrackRecord,
+  type AuthorTrackRecord,
+} from "@/lib/signals/queries";
 
 // Autor seguido en el Author Watch. Configurable por env; default el que
 // pidió el usuario. El brief lo genera el LaunchAgent local (scraping vive
@@ -43,12 +47,21 @@ async function loadInitial(): Promise<{
   picks: PicksRow | null;
   earnings: UpcomingEarning[];
   authorBrief: AuthorBriefRow | null;
+  authorRecord: AuthorTrackRecord | null;
   error?: string;
 }> {
   try {
     const session = await getSessionId();
-    const [feedRows, insiderRows, watchRows, brief, picks, earnings, authorBrief] =
-      await Promise.all([
+    const [
+      feedRows,
+      insiderRows,
+      watchRows,
+      brief,
+      picks,
+      earnings,
+      authorBrief,
+      authorRecord,
+    ] = await Promise.all([
       // Live feed: rolling 24h (NO "hoy UTC" — el corte de día vaciaba el
       // feed a las 00:00Z / 18:00 locales) con ticker asociado y categoría
       // de signal. MACRO y OTHER viven en /news. Orden estricto por
@@ -75,6 +88,9 @@ async function loadInitial(): Promise<{
       getLatestPicks().catch(() => null),
       getUpcomingEarnings().catch(() => []),
       getLatestAuthorBrief(AUTHOR_HANDLE).catch(() => null),
+      // Sus calls medidos por el Lab — el peso que se ha ganado, junto a lo
+      // que dice hoy. Cero LLM, dos agregados y un log de 5.
+      getAuthorTrackRecord(AUTHOR_HANDLE).catch(() => null),
     ]);
 
     // Recolectar symbols primarios + watchlist para una sola query de meta.
@@ -133,7 +149,16 @@ async function loadInitial(): Promise<{
       ? await getQuotesMap(quoteSymbols).catch(() => ({}))
       : {};
 
-    return { feed, watchlist, quotes, brief, picks, earnings, authorBrief };
+    return {
+      feed,
+      watchlist,
+      quotes,
+      brief,
+      picks,
+      earnings,
+      authorBrief,
+      authorRecord,
+    };
   } catch (err) {
     return {
       feed: [],
@@ -143,20 +168,35 @@ async function loadInitial(): Promise<{
       picks: null,
       earnings: [],
       authorBrief: null,
+      authorRecord: null,
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function HomePage() {
-  const { feed, watchlist, quotes, brief, picks, earnings, authorBrief, error } =
-    await loadInitial();
+  const {
+    feed,
+    watchlist,
+    quotes,
+    brief,
+    picks,
+    earnings,
+    authorBrief,
+    authorRecord,
+    error,
+  } = await loadInitial();
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <Header />
       {error ? <SetupBanner message={error} /> : null}
-      <AuthorPanel brief={authorBrief} handle={AUTHOR_HANDLE} quotes={quotes} />
+      <AuthorPanel
+        brief={authorBrief}
+        handle={AUTHOR_HANDLE}
+        quotes={quotes}
+        trackRecord={authorRecord}
+      />
       <BriefPanel brief={brief} />
       <PicksPanel picks={picks} quotes={quotes} />
       <div className="flex flex-1 overflow-hidden">

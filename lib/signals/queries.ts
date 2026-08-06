@@ -77,6 +77,65 @@ export async function getLabTotals(): Promise<LabTotals> {
   );
 }
 
+export type AuthorTrackRecord = {
+  /** Stats del kind `author_call` por horizonte (n, media, exceso vs SPY). */
+  stats: SignalStatRow[];
+  /** Últimos calls YA medidos. */
+  recent: RecentSignalRow[];
+  /** Cuántos tweets del autor hay archivados y desde cuándo. */
+  tweetCount: number;
+  tweetsSince: string | null;
+};
+
+/**
+ * El track record del autor seguido: sus calls medidos por el Lab con la
+ * misma aritmética que todo lo demás. Los datos llevaban meses en la BD
+ * (author_tweets acumula sin límite y `author_call` es un kind del Lab
+ * desde la Fase 1) pero nadie los cruzaba: el panel del autor enseñaba lo
+ * que DIJO y el Lab lo que PASÓ, cada uno en su página. Es la tesis del
+ * proyecto aplicada a una fuente humana — calibración de cuánto peso darle,
+ * no un juicio.
+ */
+export async function getAuthorTrackRecord(
+  author: string,
+): Promise<AuthorTrackRecord> {
+  const [stats, recent, tweets] = await Promise.all([
+    db.execute(sql`
+      SELECT e.kind, o.horizon::int AS horizon,
+        COUNT(*)::int AS n,
+        ROUND(AVG(o.return_pct)::numeric, 2)::float AS avg_return,
+        ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY o.return_pct)::numeric,
+          2)::float AS median_return,
+        ROUND((COUNT(*) FILTER (WHERE o.return_pct > 0)::numeric
+          / COUNT(*) * 100), 1)::float AS hit_rate,
+        ROUND(AVG(o.return_pct - o.benchmark_return_pct)::numeric, 2)::float
+          AS avg_excess,
+        ROUND((COUNT(*) FILTER (WHERE o.return_pct > o.benchmark_return_pct)::numeric
+          / NULLIF(COUNT(*) FILTER (WHERE o.benchmark_return_pct IS NOT NULL), 0)
+          * 100), 1)::float AS beat_rate
+      FROM signal_events e
+      JOIN signal_outcomes o ON o.event_id = e.id
+      WHERE e.kind = 'author_call'
+      GROUP BY e.kind, o.horizon
+      ORDER BY o.horizon
+    `),
+    getRecentSignals(5, "author_call"),
+    db.execute(sql`
+      SELECT COUNT(*)::int AS n,
+             to_char(MIN(created_at) at time zone 'UTC','YYYY-MM-DD') AS since
+      FROM author_tweets
+      WHERE author = ${author}
+    `),
+  ]);
+  const t = unwrapRows<{ n: number; since: string | null }>(tweets)[0];
+  return {
+    stats: unwrapRows<SignalStatRow>(stats),
+    recent,
+    tweetCount: t?.n ?? 0,
+    tweetsSince: t?.since ?? null,
+  };
+}
+
 export type RecentSignalRow = {
   id: number;
   kind: string;
