@@ -11,6 +11,7 @@ import {
   removeFromWatchlist,
   setAxes,
   setPosition,
+  setPositionThesis,
 } from "@/lib/db/queries";
 import { ensureSessionCookie } from "@/lib/session";
 import { isWorkersRuntime, rateLimited } from "@/lib/ask/gate";
@@ -126,6 +127,21 @@ const axesSchema = symbolSchema.extend({
     .nullable(),
 });
 
+// Declarar lo que crees HOY sobre una posición. Verbo aparte de `annotate`
+// y no un `tradeId` opcional: `annotate` escribe en el DIARIO (lo que
+// pensabas al operar, atado a un precio y a una fecha que ya pasaron) y
+// esto escribe en la POSICIÓN (lo que crees ahora). Confundirlos
+// presentaría como predicción algo que nunca lo fue.
+//
+// Existe porque 5 de 7 posiciones reales son anteriores al diario y no
+// tienen ninguna fila que anotar. `thesis: null` retira la creencia.
+const believeSchema = symbolSchema.extend({
+  believe: z.object({
+    horizon: z.enum(HORIZONS),
+    thesis: z.string().trim().min(1).max(600).nullable(),
+  }),
+});
+
 // Tope de símbolos por sesión. No es una regla de producto (una watchlist
 // real tiene 5-30 nombres): es que `watchlist` no caduca y el Worker público
 // acepta escrituras anónimas, así que sin techo se puede llenar desde fuera
@@ -206,7 +222,7 @@ export async function PATCH(req: Request) {
   // terminaba en `positionSchema`, así que el cliente recibía
   // `invalid_position` con issues sobre `shares` y `avgCost` — campos que
   // nunca había enviado. Ahora cada verbo falla contando lo suyo.
-  const op = (["axes", "annotate", "add", "sell"] as const).find(
+  const op = (["axes", "annotate", "believe", "add", "sell"] as const).find(
     (k) => body !== null && typeof body === "object" && k in body,
   );
 
@@ -250,6 +266,28 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "trade_not_found" }, { status: 404 });
     }
     return NextResponse.json({ trades: await getTrades(session) });
+  }
+
+  // Declarar creencia: como `axes`, no toca acciones ni coste, así que no
+  // comparte la guarda optimista de `add`/`sell`.
+  if (op === "believe") {
+    const bel = believeSchema.safeParse(body);
+    if (!bel.success) {
+      return NextResponse.json(
+        { error: "invalid_believe", issues: bel.error.issues },
+        { status: 400 },
+      );
+    }
+    const ok = await setPositionThesis(
+      session,
+      bel.data.symbol,
+      bel.data.believe.horizon,
+      bel.data.believe.thesis,
+    );
+    if (!ok) {
+      return NextResponse.json({ error: "not_in_watchlist" }, { status: 404 });
+    }
+    return NextResponse.json({ items: await getWatchlist(session) });
   }
 
   // Dos operaciones por el mismo verbo, distinguidas por la presencia de

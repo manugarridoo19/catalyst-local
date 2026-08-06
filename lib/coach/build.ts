@@ -66,6 +66,20 @@ export type PositionContrast = {
    *  una tesis escrita sabiendo el resultado no es una predicción y el
    *  panel no puede presentarla como si lo fuera. */
   thesisAnnotatedLater: boolean;
+  /**
+   * Lo que crees HOY sobre la posición, declarado sobre la posición y no
+   * sobre una operación. CONVIVE con `thesis` en vez de sustituirla, y el
+   * panel las etiqueta distinto: la del diario es lo que pensabas al
+   * operar —atada a un precio y a una fecha que ya pasaron—, ésta es una
+   * creencia sobre el presente. Fundirlas presentaría como predicción algo
+   * que nunca lo fue.
+   *
+   * Es la única vía de las posiciones ANTERIORES al diario: sin fila que
+   * anotar, `annotate` no tiene dónde escribir.
+   */
+  belief: string | null;
+  beliefAt: string | null;
+  beliefHorizon: TradeHorizon | null;
   /** Movimientos del último comunicado, ya leídos contra el marco. */
   readings: Array<{
     attribution: Attribution;
@@ -95,6 +109,9 @@ type Row = {
   frame_prev_madurez: string | null;
   frame_prev_capital: string | null;
   frame_prev_ciclo: string | null;
+  belief: string | null;
+  belief_at: string | null;
+  belief_horizon: string | null;
 };
 
 /**
@@ -167,7 +184,10 @@ export async function loadContrasts(
              ut.thesis, ut.thesis_at, ut.thesis_horizon, ut.thesis_annotated_later,
              ui.attribution, ui.report_date,
              um.frame_set_at, um.frame_prev_madurez, um.frame_prev_capital,
-             um.frame_prev_ciclo
+             um.frame_prev_ciclo,
+             w.thesis AS belief, w.thesis_horizon AS belief_horizon,
+             to_char(w.thesis_declared_at at time zone 'UTC','YYYY-MM-DD')
+               AS belief_at
         FROM watchlist w
         LEFT JOIN tickers t ON t.symbol = w.symbol
         LEFT JOIN ultima_tesis ut ON ut.symbol = w.symbol
@@ -198,7 +218,10 @@ export async function loadContrasts(
 
     const missing: PositionContrast["missing"] = [];
     if (!axes) missing.push("marco");
-    if (!r.thesis) missing.push("tesis");
+    // Cualquiera de las dos basta para que el coach tenga TUS palabras
+    // contra las que leer: una posición anterior al diario nunca tendrá la
+    // del diario, y seguir pidiéndosela sería pedir algo imposible.
+    if (!r.thesis && !r.belief) missing.push("tesis");
     if (!attributions.length) missing.push("comunicado");
 
     // El marco anterior pasa por el MISMO `parseAxes` que el vigente: una
@@ -226,6 +249,9 @@ export async function loadContrasts(
       thesisAt: r.thesis_at,
       thesisHorizon: isTradeHorizon(r.thesis_horizon) ? r.thesis_horizon : null,
       thesisAnnotatedLater: r.thesis_annotated_later === true,
+      belief: r.belief,
+      beliefAt: r.belief_at,
+      beliefHorizon: isTradeHorizon(r.belief_horizon) ? r.belief_horizon : null,
       readings: attributions.map((a) => {
         // El quote decide si un "mortal" se puede afirmar: sin la frase de
         // la empresa, la capa es inferencia y el veredicto baja a vigilar.

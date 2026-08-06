@@ -98,7 +98,13 @@ export async function POST(req: Request) {
     // Sin marco o sin tesis no se puede proponer nada útil: los falsadores
     // salen DE la tesis y su severidad depende del marco. Es un 422 y no un
     // 400 — la petición está bien formada, lo que falta es el material.
-    if (!target || !target.axes || !target.thesis) {
+    // La del diario manda sobre la creencia declarada cuando existen las
+    // dos: los falsadores se comprueban contra el futuro, y lo que dijiste
+    // ANTES de saber el resultado es la afirmación más exigente que hay
+    // sobre la mesa. La creencia de hoy es el respaldo de las posiciones
+    // anteriores al diario, que nunca tendrán la otra.
+    const claim = target?.thesis ?? target?.belief ?? null;
+    if (!target || !target.axes || !claim) {
       return NextResponse.json(
         {
           error: "sin_material",
@@ -110,7 +116,7 @@ export async function POST(req: Request) {
     const texts = await proposeFalsifiers({
       symbol,
       axes: target.axes,
-      thesis: target.thesis,
+      thesis: claim,
       attributions: target.readings.map((r) => r.attribution),
     });
     if (!texts.length) {

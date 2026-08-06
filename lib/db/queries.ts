@@ -671,6 +671,42 @@ export async function setAxes(
   return (res as { rowCount?: number }).rowCount === 1;
 }
 
+/**
+ * Declara lo que crees HOY sobre una posición, con su plazo.
+ *
+ * Es la única vía para las posiciones ANTERIORES al diario: `annotateTrade`
+ * exige un `tradeId` y ellas no tienen ninguna fila que anotar. Usar
+ * `add`/`sell` para colar la tesis habría movido acciones y coste medio —
+ * falsear la posición para poder describirla.
+ *
+ * `thesis_declared_at` se sella EN EL SERVIDOR y no lo manda el cliente:
+ * la fecha de una creencia es el único dato que dice si se escribió antes
+ * o después del comunicado que se va a leer con ella, y ése es justo el
+ * dato que no puede venir de fuera.
+ *
+ * Pasar `thesis: null` la borra, plazo y sello incluidos: dejar la fecha de
+ * una creencia retirada diría que sigue habiendo una.
+ */
+export async function setPositionThesis(
+  session: string,
+  symbol: string,
+  horizon: string | null,
+  thesis: string | null,
+): Promise<boolean> {
+  const res = await db.execute(sql`
+    UPDATE watchlist
+       SET thesis = ${thesis},
+           thesis_horizon = ${thesis === null ? null : horizon},
+           -- El sello va en la MISMA rama que el texto: un CASE y no un
+           -- ternario en JS para que la condición viva donde se escribe.
+           thesis_declared_at = CASE
+             WHEN ${thesis}::text IS NULL THEN NULL ELSE now()
+           END
+     WHERE user_session = ${session} AND symbol = ${symbol}
+  `);
+  return (res as { rowCount?: number }).rowCount === 1;
+}
+
 export async function annotateTrade(
   session: string,
   tradeId: number,

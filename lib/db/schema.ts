@@ -205,6 +205,31 @@ export const watchlist = pgTable(
     frameMadurez: text("frame_madurez"), // cosechando | construyendo | recuperandose
     frameCapital: text("frame_capital"), // alto | bajo
     frameCiclo: text("frame_ciclo"), // exogeno | secular
+    /**
+     * Lo que crees HOY sobre esta posición, en tus palabras.
+     *
+     * NO ES LO MISMO que `position_trades.thesis` y por eso vive aparte en
+     * vez de rellenar aquélla: la del diario es lo que escribiste AL OPERAR,
+     * atada a una decisión y a un precio; ésta es una creencia declarada
+     * sobre una posición que ya tenías. Fundirlas presentaría como
+     * predicción algo que nunca lo fue.
+     *
+     * Existe porque 5 de las 7 posiciones reales son ANTERIORES al diario:
+     * no tienen ninguna fila que anotar, y `annotate` exige un `tradeId`.
+     * Sin esto, una cartera que empezó antes que la herramienta se queda
+     * muda para siempre — y usar `add`/`sell` para colar la tesis habría
+     * falseado acciones y coste medio.
+     *
+     * MUTABLE a propósito, al revés que la del diario: una creencia sobre
+     * el presente se actualiza, y la del diario es un hecho histórico que
+     * no se toca. `thesis_declared_at` dice de cuándo es la vigente.
+     */
+    thesis: text("thesis"),
+    /** Plazo de esa creencia. Lo consume `verdictHorizonsFor`, igual que el
+     *  de las operaciones: sin él, una convicción a años recibiría un
+     *  veredicto de precio por caer un 4% en tres semanas. */
+    thesisHorizon: text("thesis_horizon"), // corto | medio | largo
+    thesisDeclaredAt: timestamp("thesis_declared_at", { withTimezone: true }),
     addedAt: timestamp("added_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

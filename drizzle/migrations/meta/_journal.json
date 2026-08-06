@@ -239,6 +239,13 @@
       "when": 1786023128947,
       "tag": "0033_bent_sally_floyd",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786025074538,
+      "tag": "0034_light_shiva",
+      "breakpoints": true
     }
   ]
 }

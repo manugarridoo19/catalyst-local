@@ -233,6 +233,25 @@ function PositionCard({
         </div>
       ) : null}
 
+      {/* La creencia declarada va DEBAJO de la del diario y con otro
+          rótulo, nunca fundida con ella. Lo que escribiste al operar es una
+          apuesta con precio y fecha; lo que crees hoy es una descripción
+          del presente. Presentarlas igual convertiría la segunda en una
+          predicción que nunca hizo nadie. Las posiciones anteriores al
+          diario sólo tienen ésta, y es lo máximo que honestamente pueden
+          tener. */}
+      {p.belief ? (
+        <div className="mt-1.5 border-l-2 border-dashed border-border/50 pl-2">
+          <p className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground/50">
+            lo que crees hoy{p.beliefAt ? ` · ${p.beliefAt}` : ""}
+            {p.beliefHorizon ? ` · ${p.beliefHorizon}` : ""}
+          </p>
+          <p className="font-editorial text-[12px] leading-snug text-foreground/85">
+            «{p.belief}»
+          </p>
+        </div>
+      ) : null}
+
       <ul className="mt-2 flex flex-col gap-1.5">
         {p.readings.map((r, i) => (
           <li key={i} className="flex flex-col gap-0.5">
@@ -275,9 +294,12 @@ function PositionCard({
         ))}
       </ul>
 
+      {/* `canPropose`: cualquiera de las dos tesis sirve de material — el
+          servidor aplica la misma precedencia. Sin esto, las 5 posiciones
+          anteriores al diario no podrían proponer falsadores nunca. */}
       <Falsifiers
         symbol={p.symbol}
-        canPropose={!!p.axes && !!p.thesis}
+        canPropose={!!p.axes && (!!p.thesis || !!p.belief)}
         items={falsifiers.filter((f) => f.symbol === p.symbol)}
         onChange={onFalsifiers}
       />
