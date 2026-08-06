@@ -137,6 +137,52 @@ export function CoachPanel() {
   );
 }
 
+/**
+ * El rastro del marco: cuándo se declaró la vara con la que se juzga todo
+ * lo de abajo, y qué decía antes.
+ *
+ * ESTO ES LO QUE CIERRA EL AGUJERO. El marco no es una etiqueta decorativa:
+ * `readingOf()` lo toma como entrada, así que moverlo re-juzga hacia atrás
+ * todas las lecturas de la tarjeta. Sin esta línea, reclasificar una
+ * posición después de un mal trimestre convierte sus `mortal` en `esperado`
+ * y el panel dice "esto es lo que compraste" sin que nada recuerde que
+ * antes decía lo contrario. Es el mismo problema que «anotada a posteriori»
+ * resuelve para la tesis.
+ *
+ * El ámbar se reserva para lo que de verdad contamina la lectura —el
+ * cambio es POSTERIOR al comunicado o a la tesis que se están leyendo con
+ * él—. Un cambio anterior a ambos se registra en gris: es historia, no
+ * sesgo, y pintarlo todo de ámbar enseña a ignorar el color.
+ */
+function FrameTrail({ p }: { p: PositionContrast }) {
+  if (!p.frameSetAt) return null;
+  // Sin marco vigente no hay nada que contaminar: la posición está sin
+  // clasificar y `missing` ya lo dice más arriba y más claro.
+  if (!p.axes) return null;
+
+  const reclasificada = p.framePrev !== null;
+  const sesgado = p.frameChangedAfterReport || p.frameChangedAfterThesis;
+
+  return (
+    <p className="mt-0.5 font-mono text-[9.5px] leading-relaxed text-muted-foreground/45">
+      {reclasificada
+        ? `perfil cambiado ${p.frameSetAt} · antes: ${p.framePrevLabel}`
+        : `clasificada ${p.frameSetAt}`}
+      {sesgado ? (
+        <span className="text-amber-700/80 dark:text-amber-300/80">
+          {" · "}
+          {/* Se nombra la fecha contra la que es posterior, no un genérico:
+              «posterior a resultados 29-07» se puede comprobar, «posterior»
+              a secas hay que creérselo. */}
+          {p.frameChangedAfterReport
+            ? `posterior a resultados ${p.reportDate}`
+            : `posterior a la tesis ${p.thesisAt}`}
+        </span>
+      ) : null}
+    </p>
+  );
+}
+
 function PositionCard({
   p,
   falsifiers,
@@ -163,6 +209,8 @@ function PositionCard({
           </span>
         ) : null}
       </div>
+
+      <FrameTrail p={p} />
 
       {p.thesis ? (
         <div className="mt-1.5 border-l-2 border-border/60 pl-2">

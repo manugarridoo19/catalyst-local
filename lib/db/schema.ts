@@ -218,6 +218,63 @@ export const watchlist = pgTable(
 );
 
 /**
+ * Historia de reclasificaciones de una posición. APPEND-ONLY.
+ *
+ * EXISTE PORQUE EL MARCO ES EL JUEZ, NO UN METADATO. `readingOf()` toma los
+ * ejes como ENTRADA: cambiar una casilla re-juzga retroactivamente todo el
+ * historial de la posición, y un `mortal` del trimestre pasado pasa a
+ * `esperado` hoy sin que nada lo diga. Ése es exactamente el mecanismo por
+ * el que uno se absuelve solo — la posición se desploma, se mueve la vara,
+ * y el panel te da la razón. Es el mismo agujero que `annotated_later`
+ * cierra para la tesis, y es PEOR aquí: la tesis vive en filas inmutables
+ * del diario y el marco vivía en tres celdas mutables que se sobrescribían.
+ *
+ * Guarda el ANTES y el DESPUÉS y no sólo el después: sin el antes, la única
+ * forma de saber qué decía el marco en un momento dado sería reconstruirlo
+ * hacia atrás desde `watchlist`, y la primera fila de la cadena (la
+ * clasificación inicial) no existiría. `null` en los tres ejes es un valor
+ * legítimo a ambos lados: de "sin clasificar" a algo, y de algo a "sin
+ * clasificar", son cambios reales que hay que poder contar.
+ *
+ * NO lleva sesión aparte del filtro: se escribe desde `setAxes`, que ya
+ * está acotada a `user_session`, y se lee unida a `watchlist` por sesión.
+ *
+ * Sin retención: son unas pocas filas por posición y por año, y la gracia
+ * es precisamente que no caduquen — un cambio de marco de hace dos años
+ * sigue explicando por qué aquella lectura decía otra cosa.
+ */
+export const frameChanges = pgTable(
+  "frame_changes",
+  {
+    id: serial("id").primaryKey(),
+    userSession: text("user_session").notNull(),
+    symbol: text("symbol").notNull(),
+    /** Los ejes que había ANTES. Los tres `null` = estaba sin clasificar. */
+    fromMadurez: text("from_madurez"),
+    fromCapital: text("from_capital"),
+    fromCiclo: text("from_ciclo"),
+    /** Los ejes que quedan DESPUÉS. Los tres `null` = se dejó sin clasificar. */
+    toMadurez: text("to_madurez"),
+    toCapital: text("to_capital"),
+    toCiclo: text("to_ciclo"),
+    changedAt: timestamp("changed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // El panel pide SIEMPRE el último cambio por símbolo de una sesión:
+    // DISTINCT ON (symbol) ORDER BY symbol, changed_at DESC. Dirección
+    // mixta, igual que en `position_trades` — un índice todo-ASC no lo
+    // serviría ni leído al revés.
+    index("frame_changes_session_symbol_changed_desc_idx").on(
+      t.userSession,
+      t.symbol,
+      t.changedAt.desc(),
+    ),
+  ],
+);
+
+/**
  * Registro de operaciones sobre una posición. APPEND-ONLY.
  *
  * NO es la fuente de verdad de la posición y no debe llegar a serlo:
@@ -1085,3 +1142,4 @@ export type NewNews = typeof news.$inferInsert;
 export type NewsRow = typeof news.$inferSelect;
 export type NewsScore = typeof newsScores.$inferSelect;
 export type WatchlistRow = typeof watchlist.$inferSelect;
+export type FrameChangeRow = typeof frameChanges.$inferSelect;

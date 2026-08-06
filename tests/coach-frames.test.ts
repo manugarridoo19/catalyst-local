@@ -10,6 +10,7 @@ import {
   severityOf,
   type Axes,
 } from "@/lib/coach/frames";
+import { movedAfter } from "@/lib/coach/build";
 import { judgeTrade, verdictLabel } from "@/lib/coach/measure";
 import { verdictHorizonsFor } from "@/lib/coach/horizon";
 
@@ -348,5 +349,42 @@ describe("judgeTrade — convención de signo", () => {
       benchmarkReturnPct: 0,
     });
     expect(verdictLabel(v)).toBe("neutro");
+  });
+});
+
+// El rastro del marco. Lo que se custodia aquí no es una comparación de
+// cadenas: es la condición bajo la que el panel se atreve a decir que la
+// vara se movió sabiendo ya el resultado. Un falso positivo acusa al
+// usuario de algo que no hizo; un falso negativo deja pasar exactamente el
+// sesgo que el log existe para cazar.
+describe("marco movido después del hecho", () => {
+  it("cambio posterior al comunicado: se marca", () => {
+    expect(movedAfter("2026-08-02", "2026-07-29")).toBe(true);
+  });
+
+  it("cambio anterior al comunicado: NO se marca, es historia y no sesgo", () => {
+    expect(movedAfter("2026-07-01", "2026-07-29")).toBe(false);
+  });
+
+  // EL CASO QUE FIJA LA DOCTRINA. Con resolución de día, "el mismo día" no
+  // distingue haberlo cambiado antes de leer el comunicado de haberlo
+  // cambiado después. El coach no afirma lo que no puede probar: igual que
+  // un `mortal` sin cita de la empresa baja a `vigilar`.
+  it("mismo día: NO se marca — no se puede probar el orden", () => {
+    expect(movedAfter("2026-07-29", "2026-07-29")).toBe(false);
+  });
+
+  it("sin comunicado o sin cambio registrado no hay nada que comparar", () => {
+    expect(movedAfter("2026-08-02", null)).toBe(false);
+    expect(movedAfter(null, "2026-07-29")).toBe(false);
+    expect(movedAfter(null, null)).toBe(false);
+  });
+
+  // El año manda sobre el día: `"2026-01-05" > "2025-12-31"` es cierto por
+  // orden lexicográfico SÓLO porque el formato es YYYY-MM-DD con relleno de
+  // ceros. Si alguna vez el SQL devuelve DD-MM o quita el cero, esto rompe.
+  it("cruza el año sin invertirse (depende del formato YYYY-MM-DD)", () => {
+    expect(movedAfter("2026-01-05", "2025-12-31")).toBe(true);
+    expect(movedAfter("2025-12-31", "2026-01-05")).toBe(false);
   });
 });

@@ -608,17 +608,64 @@ export async function reduceLotFromPosition(
  * leer, así que dejar uno a medias dejaría la posición clasificada a ojos
  * del usuario e ilegible para el coach. Pasar `null` en los tres la
  * devuelve a "sin clasificar", que es un estado legítimo.
+ *
+ * DEJA RASTRO en `frame_changes`. Reclasificar no es editar un metadato:
+ * el marco es la vara con la que `readingOf()` juzga, así que moverlo
+ * re-juzga hacia atrás todo lo que ya se había leído. Sin el log, cambiar
+ * la casilla después de un mal trimestre convierte un `mortal` en
+ * `esperado` y el panel te da la razón sin constancia de que antes decía
+ * otra cosa.
+ *
+ * EN UN SOLO STATEMENT y no en dos, con un CTE que modifica datos:
+ * - `db` es el driver HTTP de Neon, que NO hace transacciones interactivas
+ *   (para eso está `createTxDb()`, que abre un WebSocket y sólo vale en
+ *   Node — esto corre en el Worker). Dos `execute` sueltos podrían dejar
+ *   el marco cambiado sin fila de log, que es justo el fallo que esto
+ *   viene a cerrar.
+ * - Un `WITH ... INSERT` se ejecuta SIEMPRE y hasta el final aunque la
+ *   consulta principal no lea su salida, y todas las ramas ven el MISMO
+ *   snapshot: por eso `prev` lee los valores viejos aunque el `UPDATE` de
+ *   abajo ya los esté pisando.
+ *
+ * `IS DISTINCT FROM` y no `<>`: con `null` a un lado, `<>` da `null` y el
+ * log se saltaría en silencio precisamente los dos casos que más importan
+ * — la primera clasificación y la vuelta a "sin clasificar".
+ *
+ * Guardar el mismo valor NO escribe fila: pulsar el botón sin cambiar nada
+ * es ruido, no una reclasificación.
  */
 export async function setAxes(
   session: string,
   symbol: string,
   axes: { madurez: string; capital: string; ciclo: string } | null,
 ): Promise<boolean> {
+  const madurez = axes?.madurez ?? null;
+  const capital = axes?.capital ?? null;
+  const ciclo = axes?.ciclo ?? null;
   const res = await db.execute(sql`
+    WITH prev AS (
+      SELECT frame_madurez AS m, frame_capital AS c, frame_ciclo AS y
+        FROM watchlist
+       WHERE user_session = ${session} AND symbol = ${symbol}
+    ),
+    log AS (
+      INSERT INTO frame_changes (
+        user_session, symbol,
+        from_madurez, from_capital, from_ciclo,
+        to_madurez, to_capital, to_ciclo
+      )
+      SELECT ${session}, ${symbol},
+             prev.m, prev.c, prev.y,
+             ${madurez}, ${capital}, ${ciclo}
+        FROM prev
+       WHERE prev.m IS DISTINCT FROM ${madurez}::text
+          OR prev.c IS DISTINCT FROM ${capital}::text
+          OR prev.y IS DISTINCT FROM ${ciclo}::text
+    )
     UPDATE watchlist
-       SET frame_madurez = ${axes?.madurez ?? null},
-           frame_capital = ${axes?.capital ?? null},
-           frame_ciclo   = ${axes?.ciclo ?? null}
+       SET frame_madurez = ${madurez},
+           frame_capital = ${capital},
+           frame_ciclo   = ${ciclo}
      WHERE user_session = ${session} AND symbol = ${symbol}
   `);
   return (res as { rowCount?: number }).rowCount === 1;

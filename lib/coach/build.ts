@@ -36,6 +36,27 @@ export type PositionContrast = {
   /** Lo que el núcleo significa PARA ESTE MARCO. Es la vara contra la que
    *  se lee todo lo demás, así que se enseña. */
   core: string | null;
+  /** Cuándo se declaró por última vez el marco vigente (`null` = nunca se
+   *  tocó desde que existe el log). */
+  frameSetAt: string | null;
+  /** Qué decía el marco ANTES de ese cambio. `null` con `frameSetAt` puesto
+   *  significa que la posición estaba sin clasificar: fue la clasificación
+   *  inicial, no una reclasificación, y el panel las nombra distinto. */
+  framePrev: Axes | null;
+  framePrevLabel: string | null;
+  /**
+   * El marco se movió DESPUÉS del comunicado que se está leyendo con él.
+   *
+   * Es el caso que justifica todo el log: la vara con la que se juzga se
+   * cambió sabiendo ya el resultado, así que la lectura de abajo no es una
+   * predicción que se cumplió, es una casilla ajustada al hecho. No es una
+   * acusación —reclasificar puede ser lo correcto, la empresa cambia— pero
+   * el panel no puede callárselo.
+   */
+  frameChangedAfterReport: boolean;
+  /** El marco se movió DESPUÉS de escribir la tesis vigente: lo que creías
+   *  al operar se está leyendo con una vara que entonces no era ésa. */
+  frameChangedAfterThesis: boolean;
   /** La tesis vigente: la más reciente que escribiste al operar en este
    *  valor. Ver `loadContrasts` para por qué la más reciente y no todas. */
   thesis: string | null;
@@ -70,7 +91,29 @@ type Row = {
   thesis_annotated_later: boolean | null;
   attribution: string | null;
   report_date: string | null;
+  frame_set_at: string | null;
+  frame_prev_madurez: string | null;
+  frame_prev_capital: string | null;
+  frame_prev_ciclo: string | null;
 };
+
+/**
+ * ¿El marco se movió después de `fecha`?
+ *
+ * Comparación de cadenas `YYYY-MM-DD`, que en ese formato ordena igual que
+ * las fechas. ESTRICTAMENTE posterior: un cambio el MISMO día que el
+ * comunicado no se marca. La resolución del dato es el día, así que
+ * "mismo día" no distingue "lo cambié antes de leerlo" de "lo cambié
+ * después", y el coach no afirma lo que no puede probar — la misma
+ * doctrina que baja un `mortal` sin cita a `vigilar`.
+ */
+export function movedAfter(
+  frameSetAt: string | null,
+  fecha: string | null,
+): boolean {
+  if (!frameSetAt || !fecha) return false;
+  return frameSetAt > fecha;
+}
 
 /**
  * Una consulta para toda la cartera.
@@ -105,14 +148,31 @@ export async function loadContrasts(
                symbol, attribution, COALESCE(report_date, filing_date) AS report_date
           FROM earnings_reports
          ORDER BY symbol, filing_date DESC
+      ),
+      -- Sólo el ÚLTIMO cambio de marco: el panel contrasta el marco vigente
+      -- con el inmediatamente anterior, no cuenta la historia entera. La
+      -- cadena completa está en la tabla para quien la audite.
+      ultimo_marco AS (
+        SELECT DISTINCT ON (symbol)
+               symbol,
+               to_char(changed_at at time zone 'UTC','YYYY-MM-DD') AS frame_set_at,
+               from_madurez AS frame_prev_madurez,
+               from_capital AS frame_prev_capital,
+               from_ciclo   AS frame_prev_ciclo
+          FROM frame_changes
+         WHERE user_session = ${session}
+         ORDER BY symbol, changed_at DESC, id DESC
       )
       SELECT w.symbol, t.name, w.frame_madurez, w.frame_capital, w.frame_ciclo,
              ut.thesis, ut.thesis_at, ut.thesis_horizon, ut.thesis_annotated_later,
-             ui.attribution, ui.report_date
+             ui.attribution, ui.report_date,
+             um.frame_set_at, um.frame_prev_madurez, um.frame_prev_capital,
+             um.frame_prev_ciclo
         FROM watchlist w
         LEFT JOIN tickers t ON t.symbol = w.symbol
         LEFT JOIN ultima_tesis ut ON ut.symbol = w.symbol
         LEFT JOIN ultimo_informe ui ON ui.symbol = w.symbol
+        LEFT JOIN ultimo_marco um ON um.symbol = w.symbol
        WHERE w.user_session = ${session}
          AND w.shares IS NOT NULL AND w.shares > 0
        ORDER BY w.symbol
@@ -141,12 +201,27 @@ export async function loadContrasts(
     if (!r.thesis) missing.push("tesis");
     if (!attributions.length) missing.push("comunicado");
 
+    // El marco anterior pasa por el MISMO `parseAxes` que el vigente: una
+    // fila de log con los tres ejes a null es "estaba sin clasificar", y
+    // eso hace que el cambio sea la clasificación INICIAL, no una
+    // reclasificación. El panel las nombra distinto porque no son lo mismo.
+    const framePrev = parseAxes({
+      madurez: r.frame_prev_madurez,
+      capital: r.frame_prev_capital,
+      ciclo: r.frame_prev_ciclo,
+    });
+
     return {
       symbol: r.symbol,
       name: r.name,
       axes,
       frameLabel: axes ? describeAxes(axes) : null,
       core: axes ? coreOf(axes) : null,
+      frameSetAt: r.frame_set_at,
+      framePrev,
+      framePrevLabel: framePrev ? describeAxes(framePrev) : null,
+      frameChangedAfterReport: movedAfter(r.frame_set_at, r.report_date),
+      frameChangedAfterThesis: movedAfter(r.frame_set_at, r.thesis_at),
       thesis: r.thesis,
       thesisAt: r.thesis_at,
       thesisHorizon: isTradeHorizon(r.thesis_horizon) ? r.thesis_horizon : null,
