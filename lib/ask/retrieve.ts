@@ -657,7 +657,13 @@ export async function earningsReads(symbols: string[]): Promise<EarningsRead[]> 
     await db.execute(sql`
       SELECT r.symbol, r.filing_date AS "filingDate", r.report_date AS "reportDate",
              r.headline, r.summary, r.read_between_lines AS "readBetweenLines",
-             r.exhibit_url AS "exhibitUrl", e.eps, e.revenue,
+             r.exhibit_url AS "exhibitUrl",
+             -- El snapshot manda: earnings_events borra las fechas pasadas
+             -- en cada refresh, así que el join en vivo (e.*) solo responde
+             -- los primeros días tras el comunicado. El COALESCE mantiene el
+             -- comportamiento viejo para filas anteriores al snapshot.
+             COALESCE(r.eps_estimate, e.eps) AS eps,
+             COALESCE(r.revenue_estimate, e.revenue) AS revenue,
              r.revenue_actual AS "revenueActual", r.revenue_basis AS "revenueBasis",
              r.eps_actual AS "epsActual", r.eps_basis AS "epsBasis",
              r.attribution

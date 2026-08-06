@@ -317,11 +317,20 @@ export async function getEarningsCalendar(
   symbol: string,
   days = 90,
 ): Promise<FinnhubEarningsEvent[] | null> {
+  const from = new Date().toISOString().slice(0, 10);
+  const to = new Date(Date.now() + days * 86400_000).toISOString().slice(0, 10);
+  return getEarningsCalendarRange(symbol, from, to);
+}
+
+/** Calendario en un rango ARBITRARIO — el pasado incluido: Finnhub sirve
+ *  las estimaciones históricas, que es lo que usa el backfill de snapshots
+ *  de consenso (`scripts/backfill-earnings-estimates.ts`). */
+export async function getEarningsCalendarRange(
+  symbol: string,
+  from: string,
+  to: string,
+): Promise<FinnhubEarningsEvent[] | null> {
   try {
-    const from = new Date().toISOString().slice(0, 10);
-    const to = new Date(Date.now() + days * 86400_000)
-      .toISOString()
-      .slice(0, 10);
     const data = await fh<{
       earningsCalendar?: Array<{
         symbol: string;

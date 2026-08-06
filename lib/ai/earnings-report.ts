@@ -17,6 +17,7 @@ import { warnIfTruncated } from "@/lib/providers/response";
 import { extractSecExhibitText } from "@/lib/articles/extract";
 import { SEC_USER_AGENT } from "@/lib/providers/sec-edgar";
 import type { EarningsFiling } from "@/lib/earnings/filings";
+import { consensusNear } from "@/lib/earnings/queries";
 import { parseAttributions, type Attribution } from "@/lib/coach/frames";
 
 const SYSTEM_PROMPT = `You are a buy-side analyst reading a company's own earnings press release (SEC 8-K, exhibit 99.1).
@@ -282,6 +283,17 @@ export async function generateEarningsReport(
   const content = sanitize(parsed);
   if (!content) throw new Error("earnings report output invalid — discarded");
 
+  // El consenso se snapshotea AHORA o nunca: el refresh del calendario borra
+  // las fechas pasadas de earnings_events (~20h por símbolo), así que dentro
+  // de unos días este join devuelve nada y la sorpresa del comunicado se
+  // vuelve incalculable para siempre (medido 2026-08-06: los 6 comunicados
+  // en BD ya no tenían consenso casable). Best-effort: sin consenso el
+  // comunicado entra igual, con estimates null.
+  const consensus = await consensusNear(
+    filing.symbol,
+    filing.reportDate ?? filing.filingDate,
+  );
+
   const row = {
     symbol: filing.symbol,
     accession: filing.accession,
@@ -295,6 +307,8 @@ export async function generateEarningsReport(
     revenueBasis: content.revenueBasis,
     epsActual: content.epsActual,
     epsBasis: content.epsBasis,
+    revenueEstimate: consensus.revenue,
+    epsEstimate: consensus.eps,
     attribution: JSON.stringify(content.attribution),
     model: result.model,
   };
@@ -302,7 +316,14 @@ export async function generateEarningsReport(
   await (opts?.overwrite
     ? insert.onConflictDoUpdate({
         target: [earningsReports.symbol, earningsReports.accession],
-        set: row,
+        set: {
+          ...row,
+          // Un regen (regen-earnings-report.ts) corre MESES después del
+          // filing, cuando el consenso ya no existe en earnings_events: si
+          // pisara el snapshot con null, borraría un dato irrecuperable.
+          revenueEstimate: sql`COALESCE(EXCLUDED.revenue_estimate, ${earningsReports.revenueEstimate})`,
+          epsEstimate: sql`COALESCE(EXCLUDED.eps_estimate, ${earningsReports.epsEstimate})`,
+        },
       })
     : // Dos escritores (cron y refresher) pueden cruzarse en el mismo filing.
       insert.onConflictDoNothing());

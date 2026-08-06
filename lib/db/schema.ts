@@ -1102,6 +1102,18 @@ export const earningsReports = pgTable(
     epsActual: doublePrecision("eps_actual"),
     epsBasis: text("eps_basis"),
     /**
+     * El consenso del trimestre que este comunicado responde, SNAPSHOTEADO
+     * al generarlo. No es redundante con `earnings_events`: esa tabla BORRA
+     * las fechas pasadas en cada refresh (~20h por símbolo), así que el join
+     * en vivo de `earningsReads` pierde el consenso a los pocos días y la
+     * sorpresa desaparecía de /ask EN SILENCIO — medido 2026-08-06: los 6
+     * comunicados en BD tenían 0 filas casables. Mismo patrón que el
+     * snapshot desnormalizado de `news_embeddings`: lo que una cita necesita
+     * para seguir siendo verificable viaja con la cita.
+     */
+    revenueEstimate: doublePrecision("revenue_estimate"),
+    epsEstimate: doublePrecision("eps_estimate"),
+    /**
      * JSON con `Attribution[]` — qué se movió y a qué lo ATRIBUYE la empresa,
      * clasificado en núcleo / inversión deliberada / no recurrente. Ver
      * `lib/coach/frames.ts`.

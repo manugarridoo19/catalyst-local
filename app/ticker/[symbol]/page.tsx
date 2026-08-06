@@ -7,7 +7,10 @@ import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerFundamentals } from "@/components/ticker/ticker-fundamentals";
 import { getShortInterest } from "@/lib/short-interest/queries";
-import { getLatestEarningsReport } from "@/lib/earnings/queries";
+import {
+  getLatestEarningsReport,
+  getSurpriseHistory,
+} from "@/lib/earnings/queries";
 import { EarningsReportPanel } from "@/components/ticker/earnings-report-panel";
 import { TickerLogo } from "@/components/ticker/ticker-logo";
 import { WatchlistToggle } from "@/components/ticker/watchlist-toggle";
@@ -51,6 +54,7 @@ export default async function TickerPage({
     earnings,
     shortInterest,
     earningsReport,
+    surpriseHistory,
   ] = await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
@@ -72,6 +76,9 @@ export default async function TickerPage({
     getShortInterest(symbol).catch(() => null),
     // Ya generado por el cron: aquí sólo se lee, no se genera nada al vuelo.
     getLatestEarningsReport(symbol).catch(() => null),
+    // Serie de sorpresas trimestre a trimestre (consenso snapshoteado al
+    // leer cada 8-K). Crece sola con el barrido de earnings.
+    getSurpriseHistory(symbol).catch(() => []),
   ]);
 
   const news: FeedItem[] = newsRows.map((r) => ({
@@ -229,7 +236,10 @@ export default async function TickerPage({
           {/* Cuadro AI del día: se rellena async (la 1ª generación puede
               tardar; el caché BD hace instantáneas las siguientes). */}
           <TickerBrief symbol={symbol} />
-          <EarningsReportPanel report={earningsReport} />
+          <EarningsReportPanel
+            report={earningsReport}
+            history={surpriseHistory}
+          />
           <div className="min-h-0 flex-1">
             <NewsSidePanel symbol={symbol} items={news} />
           </div>

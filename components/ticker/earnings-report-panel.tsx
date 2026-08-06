@@ -1,12 +1,54 @@
 import { FileText, ExternalLink } from "lucide-react";
-import type { EarningsReport } from "@/lib/earnings/queries";
+import type {
+  EarningsReport,
+  SurpriseHistoryRow,
+} from "@/lib/earnings/queries";
 
 // Lectura del último comunicado de resultados (8-K item 2.02, exhibit 99.1).
 // SERVER component, a diferencia del TickerBrief de al lado: esto ya está
 // generado y guardado cuando la página se pinta, así que no hay nada que
 // esperar ni motivo para un fetch de cliente.
 
-export function EarningsReportPanel({ report }: { report: EarningsReport | null }) {
+function compact(n: number): string {
+  if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
+  return n.toFixed(2);
+}
+
+function surpriseTone(pct: number | null): string {
+  if (pct == null) return "text-muted-foreground/60";
+  if (pct > 0) return "text-emerald-700 dark:text-emerald-300";
+  if (pct < 0) return "text-rose-700 dark:text-rose-300";
+  return "text-muted-foreground";
+}
+
+function surpriseCell(
+  pct: number | null,
+  actual: number | null,
+  isEps: boolean,
+): React.ReactNode {
+  if (actual == null) return <span className="text-muted-foreground/40">—</span>;
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span className="text-foreground/80">
+        {isEps ? actual.toFixed(2) : compact(actual)}
+      </span>
+      <span className={surpriseTone(pct)}>
+        {/* Sin consenso archivado el % no se inventa: la cifra real sola
+            sigue siendo un dato, la sorpresa no. */}
+        {pct == null ? "" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`}
+      </span>
+    </span>
+  );
+}
+
+export function EarningsReportPanel({
+  report,
+  history = [],
+}: {
+  report: EarningsReport | null;
+  history?: SurpriseHistoryRow[];
+}) {
   if (!report) return null;
 
   return (
@@ -45,6 +87,46 @@ export function EarningsReportPanel({ report }: { report: EarningsReport | null 
             </li>
           ))}
         </ul>
+
+        {history.some((h) => h.revenueActual != null || h.epsActual != null) && (
+          <div className="rounded-md border border-border/60 bg-background/40 p-3">
+            <div className="eyebrow mb-1.5 text-[8.5px] text-muted-foreground/70">
+              vs consensus — quarter by quarter
+            </div>
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="text-left font-mono text-[8.5px] uppercase tracking-[0.14em] text-muted-foreground/60">
+                  <th className="py-0.5 pr-2 font-medium">Filed</th>
+                  <th className="py-0.5 pr-2 font-medium">Revenue</th>
+                  <th className="py-0.5 font-medium">EPS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((h) => (
+                  <tr
+                    key={h.filingDate + h.exhibitUrl}
+                    className="font-mono text-[10.5px] tabular-nums"
+                  >
+                    <td className="py-0.5 pr-2 text-muted-foreground/70">
+                      {h.filingDate}
+                    </td>
+                    <td className="py-0.5 pr-2">
+                      {surpriseCell(h.revenuePct, h.revenueActual, false)}
+                    </td>
+                    <td className="py-0.5">
+                      {surpriseCell(h.epsPct, h.epsActual, true)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-1.5 font-editorial text-[10px] leading-snug text-muted-foreground/50">
+              Surprise vs the consensus archived when each release was read;
+              blank when no basis-matched estimate exists. Figures from the
+              8-K itself, never a model.
+            </p>
+          </div>
+        )}
 
         {report.readBetweenLines && (
           <div className="rounded-md border border-border/60 bg-background/40 p-3">
