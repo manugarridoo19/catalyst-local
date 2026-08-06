@@ -25,8 +25,12 @@ const PERIOD_TO_YAHOO: Record<
   "1y": { range: "1y", interval: "1d" },
 };
 
-const BROWSER_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+// El UA de Safari COMPLETO recibe 429 determinista (text/html) desde la IP
+// del Mac mientras "Mozilla/5.0" pelado recibe 200 — medido 2026-08-06,
+// 3/3 vs 3/3 en query1 y query2: Yahoo clasifica por fingerprint, no por
+// volumen (un navegador real trae cookies y no pide Accept: json). No
+// volver a un UA de navegador realista sin re-medir las dos variantes.
+const BROWSER_UA = "Mozilla/5.0";
 
 type YahooChartResponse = {
   chart: {
@@ -144,7 +148,15 @@ type YahooQuoteMeta = {
   regularMarketDayLow?: number;
 };
 
+// Mismo freno que maybeLogFinnhubError: este camino corre por símbolo en
+// cada refresco y sin freno una caída de Yahoo son cientos de líneas/hora.
+const quoteErrorLog = new Map<string, number>();
+const QUOTE_ERROR_TTL_MS = 5 * 60 * 1000;
+
 export async function getYahooQuote(symbol: string): Promise<YahooQuote | null> {
+  // Hasta 2026-08-06 el fallo aquí era MUDO (catch → continue → null): el 429
+  // por fingerprint tuvo los quotes del daemon en null semanas sin una línea.
+  let lastFail = "sin hosts";
   for (const host of YAHOO_HOSTS) {
     try {
       const url = new URL(
@@ -158,7 +170,10 @@ export async function getYahooQuote(symbol: string): Promise<YahooQuote | null> 
         signal: AbortSignal.timeout(10_000),
       });
       const ct = res.headers.get("content-type") ?? "";
-      if (!res.ok || !ct.includes("json")) continue;
+      if (!res.ok || !ct.includes("json")) {
+        lastFail = `${host} ${res.status} (ct: ${ct.slice(0, 30)})`;
+        continue;
+      }
       const json = (await res.json()) as YahooChartResponse & {
         chart: { result?: Array<{ meta?: YahooQuoteMeta }> };
       };
@@ -167,6 +182,7 @@ export async function getYahooQuote(symbol: string): Promise<YahooQuote | null> 
       const price = meta?.regularMarketPrice;
       const prev = meta?.chartPreviousClose ?? meta?.previousClose;
       if (typeof price !== "number" || typeof prev !== "number" || prev <= 0) {
+        lastFail = `${host} 200 sin precio en meta`;
         continue;
       }
       const day = result?.indicators?.quote?.[0];
@@ -179,9 +195,16 @@ export async function getYahooQuote(symbol: string): Promise<YahooQuote | null> 
         low: meta?.regularMarketDayLow ?? day?.low?.[0] ?? null,
         open: day?.open?.[0] ?? null,
       };
-    } catch {
+    } catch (err) {
+      lastFail = `${host} ${err instanceof Error ? err.message : String(err)}`;
       continue;
     }
+  }
+  const now = Date.now();
+  const prevLog = quoteErrorLog.get(symbol);
+  if (!prevLog || now - prevLog >= QUOTE_ERROR_TTL_MS) {
+    quoteErrorLog.set(symbol, now);
+    console.warn(`[yahoo] quote:${symbol} failed: ${lastFail.slice(0, 200)}`);
   }
   return null;
 }

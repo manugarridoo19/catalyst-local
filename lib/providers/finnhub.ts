@@ -87,6 +87,7 @@ type FinnhubNews = {
 async function fh<T>(
   path: string,
   params: Record<string, string> = {},
+  timeoutMs = 10_000,
 ): Promise<T> {
   const url = new URL(`${BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -105,7 +106,7 @@ async function fh<T>(
     headers: { "User-Agent": "catalyst-local/0.1" },
     // Sin timeout, una conexión colgada retiene el tick del cron entero
     // hasta el wall-clock del runner.
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     if (res.status === 429) applyRateLimit(res);
@@ -274,7 +275,11 @@ export type FinnhubQuote = {
 
 export async function getQuote(symbol: string): Promise<FinnhubQuote | null> {
   try {
-    return await fh<FinnhubQuote>("/quote", { symbol });
+    // 3s y no los 10 genéricos: /quote está en el camino del SSR y tiene
+    // fallback vivo (Yahoo) — con Finnhub caído (2026-08-06: timeouts+503 en
+    // serie), cada símbolo pagaba el timeout entero ANTES del fallback y la
+    // home tardaba 17-21s. Un quote que tarda >3s no vale para pintar precio.
+    return await fh<FinnhubQuote>("/quote", { symbol }, 3_000);
   } catch (err) {
     // Mismo throttle que company-news: sin esto un fallo de /quote (p.ej.
     // TODOS los quotes a null en el Worker) era invisible — la watchlist
