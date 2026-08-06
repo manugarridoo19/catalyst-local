@@ -4,6 +4,11 @@ import {
   RecentSignalsSection,
   LabTotalsStrip,
 } from "@/components/lab/sections";
+import { ResearchNotePanel } from "@/components/lab/research-note-panel";
+import {
+  getLatestResearchNote,
+  type ResearchNoteRow,
+} from "@/lib/ai/research-note";
 import {
   getSignalStats,
   getLabTotals,
@@ -26,15 +31,19 @@ async function loadData(): Promise<{
   stats: SignalStatRow[];
   totals: LabTotals;
   recent: RecentSignalRow[];
+  note: ResearchNoteRow | null;
   error?: string;
 }> {
   try {
-    const [stats, totals, recent] = await Promise.all([
+    const [stats, totals, recent, note] = await Promise.all([
       getSignalStats(),
       getLabTotals(),
       getRecentSignals(16),
+      // Solo LECTURA: la nota la redacta el cron 1×/día. Esta página sigue
+      // sin gastar cuota jamás.
+      getLatestResearchNote().catch(() => null),
     ]);
-    return { stats, totals, recent };
+    return { stats, totals, recent, note };
   } catch (err) {
     return {
       stats: [],
@@ -47,13 +56,14 @@ async function loadData(): Promise<{
         last_filled_at: null,
       },
       recent: [],
+      note: null,
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function LabPage() {
-  const { stats, totals, recent, error } = await loadData();
+  const { stats, totals, recent, note, error } = await loadData();
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -85,6 +95,8 @@ export default async function LabPage() {
             since={totals.first_detected_at}
             lastFilled={totals.last_filled_at}
           />
+
+          <ResearchNotePanel note={note} />
 
           {!stats.length ? (
             <div className="rounded-sm border border-border/60 bg-card/40 px-4 py-6 text-center">

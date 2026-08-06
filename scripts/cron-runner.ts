@@ -197,6 +197,22 @@ async function main() {
     noteFailure("signal-outcomes", err);
   }
 
+  // Research note matinal (Fase 4): autocrítica sobre el scoreboard del
+  // Lab. Age check 20h dentro → 1 llamada de prosa al día como mucho.
+  try {
+    const { maybeGenerateResearchNote } = await import(
+      "../lib/ai/research-note"
+    );
+    const note = await maybeGenerateResearchNote();
+    console.log(
+      note.generated
+        ? `[cron-runner] research note regenerated (${note.note?.model})`
+        : "[cron-runner] research note still fresh — skipped",
+    );
+  } catch (err) {
+    noteFailure("research-note", err);
+  }
+
   // Lo mismo para las operaciones del usuario. Job separado del anterior a
   // propósito: comparten aritmética pero no destino, y un fallo midiendo el
   // track record del Lab no debe dejar sin medir el diario de la cartera.

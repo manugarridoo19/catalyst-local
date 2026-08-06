@@ -260,6 +260,13 @@
       "when": 1786034437736,
       "tag": "0036_sour_justin_hammer",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1786040611236,
+      "tag": "0037_steep_rocket_racer",
+      "breakpoints": true
     }
   ]
 }

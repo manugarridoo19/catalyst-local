@@ -588,6 +588,22 @@ export const aiBriefs = pgTable("ai_briefs", {
     .defaultNow(),
 });
 
+// Research note matinal sobre el PROPIO track record del Lab (Fase 4 del
+// roadmap 2.0, la autocrítica): qué tipos de señal se han ganado peso y
+// cuáles no, redactado UNA vez al día sobre cifras precalculadas en código.
+export const researchNotes = pgTable("research_notes", {
+  id: serial("id").primaryKey(),
+  content: text("content").notNull(), // markdown-lite (bullets)
+  /** Las cifras EXACTAS que se le enseñaron al modelo (JSON), archivadas
+   *  como procedencia: una nota que cita números tiene que poder auditarse
+   *  contra lo que de verdad recibió, no contra el Lab de hoy. */
+  statsSnapshot: text("stats_snapshot").notNull(),
+  model: text("model").notNull(),
+  generatedAt: timestamp("generated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 // Ticker Day Brief — resumen LLM de "qué está pasando HOY" para un símbolo
 // concreto (página /ticker/[symbol]). Se genera on-demand al visitar la
 // página y se cachea aquí; `newestNewsAt` guarda el publishedAt más reciente
