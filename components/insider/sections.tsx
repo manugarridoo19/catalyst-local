@@ -5,6 +5,7 @@ import type {
   ClusterBuyRow,
   FundStakeRow,
   NotableTradeRow,
+  ExerciseActivityRow,
 } from "@/lib/insider/queries";
 import { fmtUsd, fmtShares, fmtDay } from "@/components/insider/format";
 
@@ -310,6 +311,87 @@ export function NotableTradesSection({
           );
         })}
       </div>
+    </section>
+  );
+}
+
+/** Ejercicios de opciones: quedárselas o cobrarse. Los A/M/F se excluyen
+ *  del flujo open-market con razón (no son dinero nuevo decidido en
+ *  mercado), pero QUÉ HACE el insider con lo ejercitado sí dice algo:
+ *  quedárselo todo es pagar strike e impuestos por más exposición;
+ *  venderlo todo el mismo día es nómina. */
+export function ExerciseActivitySection({
+  rows,
+}: {
+  rows: ExerciseActivityRow[];
+}) {
+  if (!rows.length) return null;
+  return (
+    <section>
+      <SectionTitle hint="option exercises · what they did with the shares · 30d">
+        Exercises — kept or cashed out
+      </SectionTitle>
+      <div className="overflow-hidden rounded-sm border border-border/60">
+        {rows.map((r) => {
+          // «KEPT ALL» solo con CERO disposiciones: un 98% redondearía a
+          // "todo" con miles de acciones vendidas debajo, y el chip y la
+          // cifra se contradirían en la misma fila.
+          const kept = r.disposed === 0;
+          const green = r.keptPct >= 95;
+          const cashed = r.keptPct <= 5;
+          return (
+            <div
+              key={r.filingUrl}
+              className="flex items-center gap-3 border-b border-border/40 px-3 py-2 last:border-b-0 hover:bg-foreground/[0.02]"
+            >
+              <span
+                className={`w-20 shrink-0 rounded-sm border px-1.5 py-0.5 text-center font-mono text-[9px] uppercase tracking-[0.08em] ${
+                  green
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : cashed
+                      ? "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+                      : "border-border/60 bg-card/50 text-muted-foreground"
+                }`}
+              >
+                {kept ? "KEPT ALL" : cashed ? "CASHED OUT" : `KEPT ${r.keptPct}%`}
+              </span>
+              <div className="min-w-0 flex-1">
+                <TickerCell symbol={r.symbol} name={r.name} />
+                <div className="truncate font-editorial text-[11.5px] text-foreground/80">
+                  {r.ownerTitle ? `${r.ownerName} · ${r.ownerTitle}` : r.ownerName}
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="font-mono text-[12px] tabular-nums text-foreground/90">
+                  {fmtShares(r.exercised)} exercised
+                </div>
+                <div className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+                  {r.disposed > 0
+                    ? `${fmtShares(r.disposed)} sold/withheld`
+                    : "kept every share"}
+                </div>
+              </div>
+              <span className="hidden w-20 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground/60 md:inline">
+                {fmtDay(r.filedAt)}
+              </span>
+              <a
+                href={r.filingUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 text-muted-foreground/50 transition-colors hover:text-primary"
+                aria-label={`Open Form 4 filing for ${r.symbol} on sec.gov`}
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-1.5 max-w-2xl font-editorial text-[10.5px] leading-snug text-muted-foreground/50">
+        Same-filing pairing of exercises (M) with sales and tax withholding
+        (S/F). Excluded from the open-market flow numbers above by design —
+        this reads intent, not new money.
+      </p>
     </section>
   );
 }

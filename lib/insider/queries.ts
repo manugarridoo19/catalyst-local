@@ -143,6 +143,78 @@ export async function getNotableTrades(
   );
 }
 
+export type ExerciseActivityRow = {
+  symbol: string;
+  name: string | null;
+  ownerName: string;
+  ownerTitle: string | null;
+  /** Acciones adquiridas ejercitando opciones (M) en el filing. */
+  exercised: number;
+  /** Vendidas (S) + retenidas para impuestos (F) en el MISMO filing. */
+  disposed: number;
+  /** % de lo ejercitado que el insider SE QUEDÓ. La cifra con señal:
+   *  quedárselo todo es pagar strike e impuestos por tener más acciones —
+   *  dinero propio detrás de la posición —; venderlo todo el mismo día es
+   *  compensación cobrándose, no una opinión sobre la empresa. */
+  keptPct: number;
+  filingUrl: string;
+  filedAt: string | Date;
+};
+
+/**
+ * Ejercicios de opciones recientes, con qué hizo el insider con las
+ * acciones. Los tx_code A/M/F se ALMACENAN desde el día uno pero todos los
+ * agregados los excluyen (correcto para el flujo open-market): este dataset
+ * completo no tenía ninguna superficie. La agregación va por FILING, que es
+ * como llegan emparejados el ejercicio y su venta del mismo día.
+ */
+export async function getExerciseActivity(
+  days = 30,
+  limit = 12,
+): Promise<ExerciseActivityRow[]> {
+  return unwrapRows<{
+    symbol: string;
+    name: string | null;
+    owner_name: string;
+    owner_title: string | null;
+    exercised: number;
+    disposed: number;
+    filing_url: string;
+    filed_at: string | Date;
+  }>(
+    await db.execute(sql`
+      SELECT t.symbol, MIN(tk.name) AS name, t.owner_name,
+        MIN(t.owner_title) AS owner_title,
+        SUM(t.shares) FILTER (WHERE t.tx_code = 'M')::float AS exercised,
+        COALESCE(SUM(t.shares) FILTER (WHERE t.tx_code IN ('S','F')), 0)::float
+          AS disposed,
+        t.filing_url, MAX(t.filed_at) AS filed_at
+      FROM insider_trades t
+      LEFT JOIN tickers tk ON tk.symbol = t.symbol
+      WHERE t.filed_at >= now() - (${days} || ' days')::interval
+      GROUP BY t.symbol, t.owner_name, t.filing_url
+      HAVING SUM(t.shares) FILTER (WHERE t.tx_code = 'M') > 0
+      ORDER BY SUM(t.shares) FILTER (WHERE t.tx_code = 'M') DESC
+      LIMIT ${limit}
+    `),
+  ).map((r) => ({
+    symbol: r.symbol,
+    name: r.name,
+    ownerName: r.owner_name,
+    ownerTitle: r.owner_title,
+    exercised: r.exercised,
+    disposed: r.disposed,
+    // Vender más de lo ejercitado (posición previa) trunca a 0: "se quedó
+    // menos que nada" no es un porcentaje.
+    keptPct: Math.max(
+      0,
+      Math.round(((r.exercised - r.disposed) / r.exercised) * 100),
+    ),
+    filingUrl: r.filing_url,
+    filedAt: r.filed_at,
+  }));
+}
+
 // Net buying insider por símbolo para un set concreto — lo consume AI Picks
 // v2 como señal extra de convicción. Map symbol → net $ (P - S, 7d).
 export async function getInsiderNetBySymbols(

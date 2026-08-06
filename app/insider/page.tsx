@@ -16,6 +16,7 @@ import {
   ClusterBuysSection,
   FundStakesSection,
   NotableTradesSection,
+  ExerciseActivitySection,
 } from "@/components/insider/sections";
 import {
   getLatestInsiderDigest,
@@ -26,10 +27,12 @@ import {
   getClusterBuys,
   getRecentStakes,
   getNotableTrades,
+  getExerciseActivity,
   type InsiderFlowRow,
   type ClusterBuyRow,
   type FundStakeRow,
   type NotableTradeRow,
+  type ExerciseActivityRow,
 } from "@/lib/insider/queries";
 
 export const dynamic = "force-dynamic";
@@ -49,6 +52,7 @@ async function loadData(): Promise<{
   newPositions: FundNewPosition[];
   conviction: FundConviction[];
   changes: FundPositionChange[];
+  exercises: ExerciseActivityRow[];
   error?: string;
 }> {
   try {
@@ -61,6 +65,7 @@ async function loadData(): Promise<{
       newPositions,
       conviction,
       changes,
+      exercises,
     ] = await Promise.all([
       getLatestInsiderDigest().catch(() => null),
       getInsiderFlow(),
@@ -70,6 +75,7 @@ async function loadData(): Promise<{
       getFundNewPositions().catch(() => []),
       getFundConviction().catch(() => []),
       getFundPositionChanges().catch(() => []),
+      getExerciseActivity().catch(() => []),
     ]);
     return {
       digest,
@@ -80,6 +86,7 @@ async function loadData(): Promise<{
       newPositions,
       conviction,
       changes,
+      exercises,
     };
   } catch (err) {
     return {
@@ -91,6 +98,7 @@ async function loadData(): Promise<{
       newPositions: [],
       conviction: [],
       changes: [],
+      exercises: [],
       error: err instanceof Error ? err.message : String(err),
     };
   }
@@ -106,11 +114,13 @@ export default async function InsiderPage() {
     newPositions,
     conviction,
     changes,
+    exercises,
     error,
   } = await loadData();
   const empty =
     !flow.length && !clusters.length && !stakes.length && !trades.length &&
-    !newPositions.length && !conviction.length && !changes.length;
+    !newPositions.length && !conviction.length && !changes.length &&
+    !exercises.length;
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -150,6 +160,7 @@ export default async function InsiderPage() {
               <ClusterBuysSection clusters={clusters} />
               <FundStakesSection stakes={stakes} />
               <NotableTradesSection trades={trades} />
+              <ExerciseActivitySection rows={exercises} />
               <FundHoldingsSection
                 newPositions={newPositions}
                 conviction={conviction}
