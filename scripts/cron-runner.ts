@@ -235,6 +235,23 @@ async function main() {
     noteFailure("falsifiers", err);
   }
 
+  // La revisión de cartera del día. Va DESPUÉS de los falsadores a
+  // propósito: si un falsador se cumple hoy, el contraste ya lo refleja
+  // cuando la revisión lee `loadContrasts`. Sólo escribe para las sesiones
+  // del dueño y una vez al día — el índice único la hace idempotente, así
+  // que los otros 143 ticks del día no gastan nada.
+  try {
+    const { runDailyReview } = await import("../lib/coach/daily-review");
+    const out = await runDailyReview();
+    if (out.written > 0) {
+      console.log(
+        `[cron-runner] daily review written for ${out.written}/${out.sessions} session(s)`,
+      );
+    }
+  } catch (err) {
+    noteFailure("daily-review", err);
+  }
+
   // Resumen de sub-jobs rotos. NO se convierte en exit 1 a propósito: los
   // fallos por cuota LLM agotada (brief/picks/digest) son régimen normal en
   // este proyecto, y un workflow rojo cada día enseña a ignorarlo. La alarma

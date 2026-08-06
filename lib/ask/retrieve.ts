@@ -632,7 +632,11 @@ const EARNINGS_READ_MAX_AGE_DAYS = 100;
  * cercano. Sin este join el modelo puede decir "récord de ingresos" pero no
  * si eso batió o falló, que es la única pregunta que importa.
  */
-async function earningsReads(symbols: string[]): Promise<EarningsRead[]> {
+// Exportada (2026-08-06) para que la REVISIÓN DE CARTERA reciba lo mismo
+// que /ask. Era privada, y esa es la razón mecánica de que la revisión
+// opinara sin los comunicados: el arreglo del 31-07 que equilibró la mesa
+// vivía detrás de una función que la otra superficie no podía llamar.
+export async function earningsReads(symbols: string[]): Promise<EarningsRead[]> {
   if (!symbols.length) return [];
   const rows = unwrapRows<{
     symbol: string;

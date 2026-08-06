@@ -9,6 +9,13 @@ import {
 } from "@/lib/ask/portfolio";
 import { reviewPortfolio, type PortfolioReview } from "@/lib/ai/portfolio-review";
 import { extractForwardLedger, type ForwardItem } from "@/lib/ai/forward-ledger";
+import { loadContrasts } from "@/lib/coach/build";
+import { getLatestReview, type StoredReview } from "@/lib/coach/daily-review";
+
+/** Lo que devuelve el GET: la revisión diaria ya redactada, o `null` si el
+ *  cron todavía no ha escrito ninguna para esta sesión. */
+export type DailyReviewResponse = { daily: StoredReview | null };
+import { earningsReads } from "@/lib/ask/retrieve";
 import { isWorkersRuntime, llmAllowed, rateLimited } from "@/lib/ask/gate";
 
 // POST /api/portfolio-review → revisión de la cartera del usuario.
@@ -48,6 +55,27 @@ export type PortfolioReviewResponse = {
   review: PortfolioReview | null;
   note?: string;
 };
+
+/**
+ * La revisión DIARIA ya redactada. Cero coste de proveedor.
+ *
+ * Es lo que hace que "diaria" signifique algo: el cron la escribe una vez y
+ * esto la sirve tantas veces como se mire. Sin este GET, cada visita al
+ * panel dispararía las dos llamadas del POST y la cuota no llegaría al
+ * mediodía.
+ *
+ * Devuelve la última aunque no sea de hoy, CON SU FECHA: un panel vacío
+ * porque el cron no ha corrido se lee como "no hay nada que decir", que es
+ * una afirmación distinta de "esto es de anteayer".
+ */
+export async function GET() {
+  const session = await ensureSessionCookie();
+  const daily = await getLatestReview(session).catch(() => null);
+  return NextResponse.json(
+    { daily },
+    { headers: { "Cache-Control": "no-store" } },
+  );
+}
 
 export async function POST(req: Request) {
   if (isWorkersRuntime && rateLimited(req)) {
@@ -117,7 +145,19 @@ export async function POST(req: Request) {
         citationNumberFor(r),
       ).catch(() => null);
       ledger = extracted?.items ?? [];
-      review = await reviewPortfolio(r, ledger);
+      // La CONVICCIÓN: el mismo objeto que pinta el panel del coach, sin
+      // una sola llamada a proveedor (`loadContrasts` es una consulta y una
+      // tabla en código). Reutilizarlo entero, en vez de rehacer la
+      // consulta aquí, es lo que impide que el panel diga "esperado" y la
+      // revisión diga "review" sobre el mismo hecho. Si falla, la revisión
+      // sigue con lo estructural: degrada, no revienta.
+      const conviction = await Promise.all([
+        loadContrasts(session),
+        earningsReads(live.map((x) => x.symbol)),
+      ])
+        .then(([contrasts, earnings]) => ({ contrasts, earnings }))
+        .catch(() => undefined);
+      review = await reviewPortfolio(r, ledger, conviction);
     } else {
       note = "La revisión con IA es sólo para la sesión del dueño. Debajo tienes los datos calculados.";
     }

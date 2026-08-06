@@ -11,6 +11,7 @@ import {
   type Axes,
 } from "@/lib/coach/frames";
 import { movedAfter } from "@/lib/coach/build";
+import { formatConviction } from "@/lib/ai/portfolio-review";
 import { judgeTrade, verdictLabel } from "@/lib/coach/measure";
 import { verdictHorizonsFor } from "@/lib/coach/horizon";
 
@@ -386,5 +387,85 @@ describe("marco movido después del hecho", () => {
   it("cruza el año sin invertirse (depende del formato YYYY-MM-DD)", () => {
     expect(movedAfter("2026-01-05", "2025-12-31")).toBe(true);
     expect(movedAfter("2025-12-31", "2026-01-05")).toBe(false);
+  });
+});
+
+// El bloque de convicción que ve la revisión de cartera. Lo que se custodia
+// es que lo que FALTA se enseñe: una posición sin tesis que se cayera del
+// bloque haría que el modelo la tratara como si estuviera de acuerdo con
+// una tesis que nadie escribió. Omitir un hueco es afirmar que no lo hay.
+describe("bloque de convicción de la revisión", () => {
+  const base = {
+    symbol: "XYZ",
+    name: null,
+    axes: null,
+    frameLabel: null,
+    core: null,
+    frameSetAt: null,
+    framePrev: null,
+    framePrevLabel: null,
+    frameChangedAfterReport: false,
+    frameChangedAfterThesis: false,
+    thesis: null,
+    thesisAt: null,
+    thesisHorizon: null,
+    thesisAnnotatedLater: false,
+    belief: null,
+    beliefAt: null,
+    beliefHorizon: null,
+    readings: [],
+    reportDate: null,
+    missing: [],
+  };
+
+  it("una posición sin tesis APARECE diciendo que no la tiene", () => {
+    const out = formatConviction([{ ...base } as never]);
+    expect(out).toContain("XYZ");
+    expect(out).toContain("SIN TESIS DECLARADA");
+  });
+
+  it("sin ninguna posición avisa de que no debe suponer una tesis", () => {
+    expect(formatConviction([])).toContain("no supongas una tesis");
+  });
+
+  it("la marca de anotada a posteriori llega al prompt", () => {
+    const out = formatConviction([
+      { ...base, thesis: "creo X", thesisAnnotatedLater: true } as never,
+    ]);
+    expect(out).toContain("ANOTADA A POSTERIORI");
+  });
+
+  // El aviso del log de marcos tiene que cruzar hasta el prompt: una postura
+  // apoyada en un marco que se movió sabiendo el resultado se apoya en algo
+  // que el usuario ajustó después del hecho.
+  it("el marco movido tras el comunicado viaja al prompt", () => {
+    const out = formatConviction([
+      {
+        ...base,
+        frameSetAt: "2026-08-06",
+        framePrevLabel: "compounder",
+        frameChangedAfterReport: true,
+        reportDate: "2026-07-29",
+      } as never,
+    ]);
+    expect(out).toContain("DESPUÉS del comunicado");
+    expect(out).toContain("compounder");
+  });
+
+  it("una atribución sin cita se marca como tal", () => {
+    const out = formatConviction([
+      {
+        ...base,
+        readings: [
+          {
+            attribution: { magnitude: "capex 35,8B$", quote: null },
+            severity: "esperado",
+            note: "",
+          },
+        ],
+      } as never,
+    ]);
+    expect(out).toContain("[esperado]");
+    expect(out).toContain("sin cita de la empresa");
   });
 });

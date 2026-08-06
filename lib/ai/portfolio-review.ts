@@ -18,6 +18,8 @@ import { looksLikeScratchpad } from "@/lib/ai/guards";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
 import type { ForwardItem } from "@/lib/ai/forward-ledger";
 import { buildDecisionFacts, type Pressure } from "@/lib/ask/decision";
+import type { PositionContrast } from "@/lib/coach/build";
+import type { EarningsRead } from "@/lib/ask/retrieve";
 import type { PortfolioRetrieval, PositionFacts } from "@/lib/ask/portfolio";
 import type { PricedPosition } from "@/lib/portfolio";
 
@@ -46,7 +48,7 @@ const SYSTEM_PROMPT = `Eres un analista de mesa revisando la cartera de un inver
 
 Tu único valor es decirle lo que NO puede ver ahí: qué está comprometido a ocurrir y aún no ha ocurrido, con qué plazo, sujeto a qué condición, y qué oferta o demanda futura ya está determinada.
 
-Recibes: (a) la CARTERA con pesos y P&L; (b) PRESIONES: hechos duros con el lado ya asignado por código — las mismas que ve el modo pregunta de /ask; (c) HECHOS por posición calculados por SQL sobre datos regulatorios; (d) el LIBRO DE FUTUROS: compromisos extraídos de los cuerpos de los artículos que todavía no se han resuelto; (e) VENTA PROGRAMADA de directivos con lo que les queda por colocar; (f) la VARA de consenso de los próximos resultados; (g) NOTICIAS numeradas; (h) el CALENDARIO.
+Recibes: (a) la CARTERA con pesos y P&L; (a-bis) la TESIS DEL INVERSOR: qué cree de cada posición, con qué marco la clasificó y cómo se lee lo publicado contra ese marco — es el bloque MÁS IMPORTANTE y va primero; (b) PRESIONES: hechos duros con el lado ya asignado por código — las mismas que ve el modo pregunta de /ask; (c) HECHOS por posición calculados por SQL sobre datos regulatorios; (d) el LIBRO DE FUTUROS: compromisos extraídos de los cuerpos de los artículos que todavía no se han resuelto; (e) VENTA PROGRAMADA de directivos con lo que les queda por colocar; (f) la VARA de consenso de los próximos resultados; (g) NOTICIAS numeradas; (h) el CALENDARIO.
 
 Devuelve SOLO un objeto JSON:
 {"verdict": "...", "positions": [{"symbol": "AAA", "stance": "add|hold|watch|review", "why": "...", "used": [1,4]}], "watchNext": ["...", "..."]}
@@ -63,6 +65,10 @@ Reglas:
 - NO HAGAS ARITMÉTICA. Todos los agregados vienen calculados en el bloque AGREGADOS. Si un número no está escrito literalmente en la entrada, no lo digas.
 - "positions": sólo las posiciones sobre las que tengas algo pendiente o estructural que decir. Omitir es correcto y muy preferible a rellenar. Es mejor devolver tres posiciones con sustancia que siete con relleno.
 - "stance": add = lo pendiente juega a favor · hold = nada pendiente cambia la tesis · watch = hay un desenlace fechado que puede cambiarla · review = hay un compromiso o una constricción futura que la contradice.
+- LA TESIS DEL INVERSOR MANDA SOBRE TU CRITERIO. El bloque TESIS te dice qué cree él de cada posición, con qué marco la clasificó y cómo se lee lo publicado contra ESE marco. No estás valorando la empresa en abstracto: estás comprobando si lo que ha salido sostiene o rompe SU tesis. Un capex disparado en una empresa que él declaró capital intensivo NO es un problema, es lo que compró — y decirle que lo vigile es no haber leído su marco.
+- Las severidades del bloque TESIS vienen calculadas por el mismo código que ve él en su panel. NO las recalcules ni las contradigas: si una lectura dice "esperado", no puedes construir un "review" encima de ella sin un hecho DISTINTO que lo justifique. Si dice "mortal", no puedes poner "add" sin nombrarla.
+- POSICIÓN SIN TESIS DECLARADA: no le inventes una ni supongas por qué la tiene. Dilo en el "why" ("sin tesis declarada, no se puede contrastar") y limita la postura a lo que sostengan los hechos duros.
+- Si la lectura contra su marco no aporta nada nuevo sobre una posición, esa posición NO entra en "positions". Repetirle su propia tesis de vuelta no es análisis.
 - Las PRESIONES traen el lado ya asignado y NO lo reasignas. Tu postura puede discrepar de una presión, pero NUNCA ignorarla: si pones "add" a una posición con presiones hacia recortar (beta, concentración, venta programada), el "why" tiene que nombrar esa presión y decir por qué lo pendiente pesa más. Una postura que contradice una presión sin mencionarla es una respuesta fallida — el usuario ve las dos superficies y una contradicción muda entre ellas destruye la confianza en ambas.
 - QUE UNA EMPRESA PRESENTE RESULTADOS NO ES MOTIVO DE POSTURA. Todas presentan resultados. Si lo único que tienes de una posición es su fecha y su consenso, OMÍTELA de "positions": ya aparece en watchNext y repetirla ahí es relleno. Sólo entra en "positions" lo que tenga un compromiso pendiente, una constricción de oferta futura, una condición regulatoria o una contradicción real.
 - Si todas tus posturas salen iguales, no has encontrado nada que las distinga: devuelve menos posiciones, no todas con la misma etiqueta.
@@ -89,12 +95,27 @@ Reglas:
  * derivada del interés corto, y pasar un número inventado (o 0) haría que
  * el texto de la presión afirmara una estabilidad que nadie midió.
  */
-export function reviewPressures(r: PortfolioRetrieval): Pressure[] {
+export function reviewPressures(
+  r: PortfolioRetrieval,
+  conviction?: Conviction,
+): Pressure[] {
   const held = r.portfolio.positions.map((p) => p.symbol);
   if (!held.length) return [];
   return buildDecisionFacts({
     symbols: held,
     portfolio: r.portfolio,
+    // LOS DOS PARÁMETROS QUE FALTABAN (2026-08-06). /ask los pasaba desde
+    // el 31-07 y esta superficie no, con la misma función delante: por eso
+    // la revisión sonaba genérica y se inclinaba a aguantar. Sin
+    // `earnings`, el lado AMPLIAR sólo podía alimentarse de compras de
+    // insiders y 13D mientras la beta entraba como hecho duro; sin
+    // `frames`, la misma atribución recibía un lado distinto en cada
+    // pantalla — y dos superficies que se contradicen sin saberlo destruyen
+    // la confianza en las dos.
+    earnings: conviction?.earnings ?? [],
+    frames: conviction
+      ? new Map(conviction.contrasts.map((c) => [c.symbol, c.axes]))
+      : undefined,
     facts: r.facts.map((f) => ({
       symbol: f.symbol,
       name: null,
@@ -121,6 +142,86 @@ export function reviewPressures(r: PortfolioRetrieval): Pressure[] {
       shortChangePct: null,
     })),
   }).pressures;
+}
+
+/**
+ * Lo que el usuario CREE, y cómo se lee lo publicado contra ello.
+ *
+ * `PositionContrast` sale de `loadContrasts` — el mismo objeto que pinta el
+ * panel del coach, sin una sola llamada a proveedor. Se reutiliza entero en
+ * vez de rehacer la consulta para que las dos superficies no puedan
+ * divergir: si el panel dice `esperado` y la revisión dice `review` sobre
+ * el mismo hecho, es un fallo, no una discrepancia de criterio.
+ */
+export type Conviction = {
+  contrasts: PositionContrast[];
+  earnings: EarningsRead[];
+};
+
+/**
+ * El bloque de convicción tal como lo lee el modelo.
+ *
+ * Va PRIMERO en el mensaje, antes incluso de las presiones, y el orden es
+ * deliberado por lo mismo que el libro de futuros va antes que las
+ * noticias: un modelo pondera lo que lee antes. Con esto al principio, la
+ * revisión contrasta contra la tesis del usuario; al final, la ignora.
+ *
+ * Se ENSEÑA lo que falta, no se omite. Una posición sin tesis declarada
+ * tiene que aparecer diciendo que no la tiene: si se cayera del bloque, el
+ * modelo la trataría como si estuviera de acuerdo con ella.
+ *
+ * La severidad de cada lectura viene YA CALCULADA por `readingOf` — el
+ * modelo no la recalcula ni la discute. Es un dato de entrada, igual que
+ * el lado de una presión.
+ */
+export function formatConviction(contrasts: PositionContrast[]): string {
+  if (!contrasts.length) {
+    return "TESIS DEL INVERSOR: NINGUNA DECLARADA. No sabes qué cree sobre ninguna posición — no supongas una tesis ni le atribuyas intenciones.";
+  }
+  const lines = contrasts.map((c) => {
+    const partes: string[] = [`- ${c.symbol}`];
+    partes.push(
+      c.frameLabel
+        ? `  marco declarado: ${c.frameLabel} — el núcleo de esta tesis es ${c.core}`
+        : `  marco: SIN CLASIFICAR — no puedes leer si una señal la contradice`,
+    );
+    if (c.thesis) {
+      partes.push(
+        `  escribió al operar (${c.thesisAt ?? "?"}, plazo ${c.thesisHorizon ?? "?"}${
+          c.thesisAnnotatedLater ? ", ANOTADA A POSTERIORI: no es una predicción" : ""
+        }): "${c.thesis}"`,
+      );
+    }
+    if (c.belief) {
+      partes.push(
+        `  cree hoy (${c.beliefAt ?? "?"}, plazo ${c.beliefHorizon ?? "?"}): "${c.belief}"`,
+      );
+    }
+    if (!c.thesis && !c.belief) {
+      partes.push(`  SIN TESIS DECLARADA — no sabes por qué tiene esta posición`);
+    }
+    // El aviso de marco movido después del hecho viaja al prompt: una
+    // postura apoyada en un marco que se cambió sabiendo el resultado se
+    // apoya en algo que el usuario ajustó, y merece decirse.
+    if (c.frameChangedAfterReport) {
+      partes.push(
+        `  AVISO: reclasificó esta posición el ${c.frameSetAt} (antes: ${c.framePrevLabel}), DESPUÉS del comunicado del ${c.reportDate}`,
+      );
+    }
+    for (const rd of c.readings) {
+      partes.push(
+        `  · [${rd.severity ?? "sin lectura"}] ${rd.attribution.magnitude}${
+          rd.attribution.quote ? ` — la empresa: "${rd.attribution.quote}"` : " (sin cita de la empresa)"
+        }`,
+      );
+    }
+    return partes.join("\n");
+  });
+  return [
+    "TESIS DEL INVERSOR Y LECTURA CONTRA SU MARCO.",
+    "Las severidades entre corchetes ya están calculadas contra el marco que él declaró: confirma = la tesis cumpliéndose · esperado = es lo que compró, no una grieta · vigilar = puede tocar la tesis pero no está probado · mortal = va a la raíz de la tesis.",
+    ...lines,
+  ].join("\n");
 }
 
 /** El bloque tal y como lo lee el modelo. Encabezados en español porque
@@ -456,6 +557,7 @@ const STANCES = new Set<Stance>(["add", "hold", "watch", "review"]);
 export async function reviewPortfolio(
   r: PortfolioRetrieval,
   ledger: ForwardItem[] = [],
+  conviction?: Conviction,
 ): Promise<PortfolioReview> {
   if (!r.portfolio.positions.length) {
     return { verdict: "", positions: [], watchNext: [], model: "none" };
@@ -473,10 +575,17 @@ export async function reviewPortfolio(
   const userBlock = [
     formatPortfolio(r),
     "",
+    // La CONVICCIÓN va lo primero de todo. Un modelo pondera lo que lee
+    // antes, y sin este bloque delante la revisión opinaba sobre una cesta
+    // anónima de tickers: no sabía qué creía el usuario ni cómo había
+    // clasificado nada, así que su única salida era describir el mercado —
+    // que es exactamente lo que el prompt le prohíbe hacer.
+    conviction ? formatConviction(conviction.contrasts) : "",
+    conviction ? "" : "",
     // Las presiones van ANTES del libro de futuros: son el suelo compartido
     // con /ask y lo que impide que las dos superficies se contradigan sin
     // enterarse. Un modelo pondera lo que lee antes.
-    formatPressures(reviewPressures(r)),
+    formatPressures(reviewPressures(r, conviction)),
     "",
     formatLedger(ledger),
     "",

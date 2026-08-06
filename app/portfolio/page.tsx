@@ -5,6 +5,7 @@ import { getJournalCash, getTrades, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import { getQuotesMap } from "@/lib/providers/finnhub";
 import { parseAxes } from "@/lib/coach/frames";
+import { isTradeHorizon } from "@/lib/coach/horizon";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -71,6 +72,12 @@ export default async function PortfolioPage() {
                 capital: r.frameCapital,
                 ciclo: r.frameCiclo,
               }),
+              thesis: r.thesis,
+              // Mismo criterio que los ejes: es una columna `text` sin
+              // validar y un plazo viejo no debe romper la página.
+              thesisHorizon: isTradeHorizon(r.thesisHorizon)
+                ? r.thesisHorizon
+                : null,
             }))}
             initialQuotes={quotes}
             initialTrades={trades}

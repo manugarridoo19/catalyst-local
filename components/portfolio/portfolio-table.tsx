@@ -54,6 +54,12 @@ export type PortfolioItem = {
   /** Qué clase de empresa crees que es, en tres ejes. Decide qué señal es
    *  ruido y cuál es mortal para ESTA posición — ver `lib/coach/frames.ts`. */
   axes: Axes | null;
+  /** Lo que crees HOY sobre la posición. Distinta de la tesis del diario:
+   *  aquélla es lo que escribiste AL OPERAR y no se toca; ésta describe el
+   *  presente y se actualiza. Es la única que pueden tener las posiciones
+   *  anteriores al diario — ver `watchlist.thesis` en el esquema. */
+  thesis: string | null;
+  thesisHorizon: TradeHorizon | null;
 };
 
 type QuotesMap = Record<string, QuoteLike>;
@@ -545,6 +551,12 @@ function Row({
           <FramePicker
             symbol={pos.symbol}
             axes={item?.axes ?? null}
+            onSaved={onItems}
+          />
+          <BeliefPicker
+            symbol={pos.symbol}
+            thesis={item?.thesis ?? null}
+            horizon={item?.thesisHorizon ?? null}
             onSaved={onItems}
           />
         </td>
@@ -1048,6 +1060,145 @@ function EjeRow<K extends keyof Axes>({
           {AXIS_LABEL[k][v as never]}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Lo que crees HOY sobre la posición, con su plazo.
+ *
+ * Vive junto al marco y NO en el formulario de operar, porque no es una
+ * operación: es una creencia sobre una posición que ya tienes. 5 de las 7
+ * posiciones reales son anteriores al diario y no tienen ninguna fila que
+ * anotar — sin este control, el coach les pediría para siempre una tesis
+ * que no había forma de escribir.
+ *
+ * Reutiliza `IntentPicker`, el mismo control que piden comprar, vender y
+ * clasificar a posteriori. Una sola definición por el mismo motivo que la
+ * de los plazos: un formulario que ofreciera opciones distintas de las que
+ * evalúa el código produciría datos imposibles de juzgar. De regalo viene
+ * la pista de que el contexto de mercado NO va en la tesis.
+ *
+ * Se guarda con un botón explícito y no al salir del campo, al revés que
+ * el marco: los ejes son tres clics sobre valores cerrados y se pueden
+ * autoguardar sin riesgo, pero un texto a medio escribir guardado por un
+ * blur accidental es una creencia que nadie declaró.
+ */
+function BeliefPicker({
+  symbol,
+  thesis,
+  horizon,
+  onSaved,
+}: {
+  symbol: string;
+  thesis: string | null;
+  horizon: TradeHorizon | null;
+  onSaved: (items: PortfolioItem[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [draft, setDraft] = useState(thesis ?? "");
+  const [h, setH] = useState<TradeHorizon | null>(horizon);
+
+  async function save(next: string | null) {
+    // El plazo es obligatorio para escribir, igual que en una operación:
+    // sin él, `verdictHorizonsFor` no sabe si esta creencia admite un
+    // veredicto de precio. Al RETIRARLA da igual, y por eso el borrado no
+    // lo exige.
+    if (saving || (next !== null && h === null)) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/watchlist", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          believe: { horizon: h ?? "medio", thesis: next },
+        }),
+      });
+      const data = (await r.json().catch(() => ({}))) as {
+        items?: PortfolioItem[];
+      };
+      if (!r.ok || !data.items) {
+        setErr("No se pudo guardar");
+        return;
+      }
+      onSaved(data.items);
+      setOpen(false);
+    } catch {
+      setErr("Error de red");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className={cn(
+          "mt-0.5 block max-w-[22ch] truncate rounded-sm border px-1 py-px text-left font-mono text-[9px] uppercase tracking-[0.1em] transition-colors",
+          thesis
+            ? "border-border/40 text-muted-foreground/60 hover:text-foreground"
+            : "border-amber-600/30 text-amber-700/70 hover:border-amber-600/60 dark:text-amber-300/70",
+        )}
+        title={
+          thesis ??
+          "Sin tesis: el coach no tiene tus palabras contra las que leer lo que se mueve"
+        }
+      >
+        {thesis ? `hoy · ${horizon ?? "?"}` : "sin tesis"}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1 flex flex-col gap-1">
+      <IntentPicker
+        horizon={h}
+        onHorizon={setH}
+        thesis={draft}
+        onThesis={setDraft}
+        tone="buy"
+      />
+      {err ? (
+        <p className="font-mono text-[9px] text-destructive">{err}</p>
+      ) : null}
+      <div className="flex gap-1">
+        <button
+          type="button"
+          disabled={saving || !draft.trim() || h === null}
+          onClick={() => void save(draft.trim())}
+          className="rounded-sm border border-border/60 px-1.5 py-px font-mono text-[9px] uppercase tracking-[0.1em] hover:border-foreground/40 disabled:opacity-40"
+        >
+          {saving ? "…" : "guardar"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(thesis ?? "");
+            setH(horizon);
+            setErr(null);
+            setOpen(false);
+          }}
+          className="rounded-sm border border-border/40 px-1.5 py-px font-mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground/60 hover:text-foreground"
+        >
+          cancelar
+        </button>
+        {thesis ? (
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void save(null)}
+            className="ml-auto rounded-sm border border-border/40 px-1.5 py-px font-mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground/50 hover:text-destructive disabled:opacity-40"
+          >
+            retirar
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

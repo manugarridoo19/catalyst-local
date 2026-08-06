@@ -243,6 +243,53 @@ export const watchlist = pgTable(
 );
 
 /**
+ * La revisión de cartera del día, ya redactada. UNA POR SESIÓN Y DÍA.
+ *
+ * Existe para que la revisión pueda ser DIARIA sin que el usuario pague por
+ * mirarla: el cron la redacta una vez y la ruta la sirve gratis. Sin tabla,
+ * "diaria" significaría que cada visita dispara dos llamadas al LLM (libro
+ * de futuros + redacción) y la cuota se agotaría antes del mediodía.
+ *
+ * `review_date` es texto `YYYY-MM-DD` y no un timestamp: la unidad es el
+ * día natural y con el único índice se consigue la idempotencia — si el
+ * cron corre seis veces, el ON CONFLICT descarta las cinco de más. Un
+ * timestamp haría que cada tick escribiera una fila nueva.
+ *
+ * El cuerpo va en `text` serializado, como `signal_events.meta` y
+ * `earnings_reports.attribution`: es carga útil que se lee entera y nunca
+ * se consulta por dentro en SQL.
+ *
+ * SIN RETENCIÓN por ahora: una fila por día y sesión es ~365 filas al año,
+ * y la serie es justo lo que permitirá mirar atrás y ver qué recomendaba la
+ * mesa el día que tomaste una decisión.
+ */
+export const portfolioReviews = pgTable(
+  "portfolio_reviews",
+  {
+    id: serial("id").primaryKey(),
+    userSession: text("user_session").notNull(),
+    reviewDate: text("review_date").notNull(),
+    verdict: text("verdict").notNull(),
+    /** `PositionVerdict[]` serializado. */
+    positions: text("positions").notNull(),
+    /** `string[]` serializado. */
+    watchNext: text("watch_next").notNull(),
+    model: text("model").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // Una revisión por sesión y día. Es lo que hace idempotente al job:
+    // el cron corre cada 10 min y sin esto escribiría 144 filas diarias.
+    uniqueIndex("portfolio_reviews_session_date_unique").on(
+      t.userSession,
+      t.reviewDate,
+    ),
+  ],
+);
+
+/**
  * Historia de reclasificaciones de una posición. APPEND-ONLY.
  *
  * EXISTE PORQUE EL MARCO ES EL JUEZ, NO UN METADATO. `readingOf()` toma los

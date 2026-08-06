@@ -420,6 +420,12 @@ export async function getWatchlist(session: string) {
       frameMadurez: watchlist.frameMadurez,
       frameCapital: watchlist.frameCapital,
       frameCiclo: watchlist.frameCiclo,
+      // La creencia declarada viaja con la posición: la leen la tabla (para
+      // editarla), el coach (para contrastarla) y la revisión de cartera
+      // (para no opinar sobre una cesta anónima).
+      thesis: watchlist.thesis,
+      thesisHorizon: watchlist.thesisHorizon,
+      thesisDeclaredAt: watchlist.thesisDeclaredAt,
     })
     .from(watchlist)
     .leftJoin(tickers, eq(tickers.symbol, watchlist.symbol))

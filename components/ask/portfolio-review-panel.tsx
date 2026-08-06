@@ -1,9 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2, RefreshCw } from "lucide-react";
-import type { PortfolioReviewResponse } from "@/app/api/portfolio-review/route";
+import type {
+  DailyReviewResponse,
+  PortfolioReviewResponse,
+} from "@/app/api/portfolio-review/route";
+import type { StoredReview } from "@/lib/coach/daily-review";
 import type { Stance } from "@/lib/ai/portfolio-review";
 import { cn } from "@/lib/utils";
 
@@ -60,6 +64,25 @@ export function PortfolioReviewPanel() {
   const [loading, setLoading] = useState(false);
   const [res, setRes] = useState<PortfolioReviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // La revisión que el CRON escribió. Se carga al abrir y NO cuesta cuota:
+  // es un GET contra una fila ya redactada. Sin esto, "diaria" obligaría a
+  // pulsar el botón —dos llamadas al LLM— para ver algo que ya existía.
+  const [daily, setDaily] = useState<StoredReview | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/portfolio-review")
+      .then((r) => (r.ok ? (r.json() as Promise<DailyReviewResponse>) : null))
+      .then((d) => {
+        if (alive && d?.daily) setDaily(d.daily);
+      })
+      // Silencioso: no tener revisión del día es un estado normal (el cron
+      // aún no ha corrido hoy) y no merece un error rojo en pantalla.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   async function run() {
     if (loading) return;
@@ -118,8 +141,61 @@ export function PortfolioReviewPanel() {
         </p>
       ) : null}
 
+      {/* La del cron sólo se enseña mientras no hayas forzado una fresca:
+          dos veredictos en pantalla, uno de hoy y otro de hace diez
+          segundos, se leen como una contradicción del sistema consigo
+          mismo. La fecha va SIEMPRE delante — «esto es de anteayer» y «no
+          hay nada que decir» no son la misma afirmación. */}
+      {!res && daily ? <Daily d={daily} /> : null}
+
       {res ? <Board res={res} /> : null}
     </section>
+  );
+}
+
+function Daily({ d }: { d: StoredReview }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-sm border border-border/50 bg-card/30 px-3 py-2.5">
+      <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-muted-foreground/55">
+        revisión del {d.reviewDate} · {d.model}
+      </p>
+      <p className="font-editorial text-[13px] leading-relaxed text-foreground/90">
+        {d.verdict}
+      </p>
+      {d.positions.length ? (
+        <ul className="flex flex-col gap-1">
+          {d.positions.map((v) => (
+            <li key={v.symbol} className="flex flex-wrap items-baseline gap-1.5">
+              <span className="font-mono text-[11px] font-bold">{v.symbol}</span>
+              <span
+                className={cn(
+                  "rounded-sm border px-1 py-px font-mono text-[9px] uppercase tracking-[0.12em]",
+                  STANCE_TONE[v.stance] ??
+                    "border-border/40 text-muted-foreground/60",
+                )}
+              >
+                {STANCE_LABEL[v.stance] ?? v.stance}
+              </span>
+              <span className="font-editorial text-[12px] leading-snug text-muted-foreground">
+                {v.why}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {d.watchNext.length ? (
+        <ul className="flex flex-col gap-0.5 border-t border-border/40 pt-1.5">
+          {d.watchNext.map((w, i) => (
+            <li
+              key={i}
+              className="font-mono text-[10.5px] leading-relaxed text-muted-foreground/75"
+            >
+              · {w}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 
