@@ -6,7 +6,7 @@ import { TradingViewChart } from "@/components/ticker/tradingview-chart";
 import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerFundamentals } from "@/components/ticker/ticker-fundamentals";
-import { getShortInterest } from "@/lib/short-interest/queries";
+import { getShortInterestSeries } from "@/lib/short-interest/queries";
 import {
   getLatestEarningsReport,
   getSurpriseHistory,
@@ -52,7 +52,7 @@ export default async function TickerPage({
     watchlist,
     metaMap,
     earnings,
-    shortInterest,
+    shortInterestSeries,
     earningsReport,
     surpriseHistory,
   ] = await Promise.all([
@@ -72,8 +72,9 @@ export default async function TickerPage({
     // uso personal); getEarningsCalendar ya degrada a [] en fallo.
     getEarningsCalendar(symbol),
     // Short interest: lectura de NUESTRA tabla (FINRA se ingesta en el cron),
-    // así que no cuesta llamada externa por pageview.
-    getShortInterest(symbol).catch(() => null),
+    // así que no cuesta llamada externa por pageview. La SERIE entera en una
+    // query: el snapshot de la barra es su última fila.
+    getShortInterestSeries(symbol).catch(() => []),
     // Ya generado por el cron: aquí sólo se lee, no se genera nada al vuelo.
     getLatestEarningsReport(symbol).catch(() => null),
     // Serie de sorpresas trimestre a trimestre (consenso snapshoteado al
@@ -220,7 +221,11 @@ export default async function TickerPage({
 
       {/* Fundamentales + peers (FMP, cache 7d) — se rellena async, no ocupa
           espacio hasta tener datos. */}
-      <TickerFundamentals symbol={symbol} shortInterest={shortInterest} />
+      <TickerFundamentals
+        symbol={symbol}
+        shortInterest={shortInterestSeries.at(-1) ?? null}
+        shortInterestTrend={shortInterestSeries}
+      />
 
       {/* Chart left, news right.
           Móvil: una columna, chart altura fija razonable y news debajo

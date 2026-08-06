@@ -5,51 +5,51 @@
 import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 
-export type ShortInterestSnapshot = {
-  symbol: string;
+// (getShortInterest, la lectura de solo-la-última, se retiró el 2026-08-06:
+// su único consumidor era la ticker page, que ahora pide la serie entera y
+// deriva el snapshot de la última fila.)
+
+/** Un punto de la serie quincenal. La tabla no purga a propósito — la
+ *  gracia es la serie histórica — pero hasta ahora solo se leía la última
+ *  liquidación y la tendencia se quedaba en la BD sin pintar. */
+export type ShortInterestPoint = {
   settlementDate: string;
   currentShortQty: number;
-  previousShortQty: number | null;
-  avgDailyVolume: number | null;
   daysToCover: number | null;
   changePercent: number | null;
 };
 
-/** Última quincena publicada para un símbolo, o null si no la seguimos. */
-export async function getShortInterest(
+/** Serie quincenal ASC (la más vieja primero: es para pintar tendencia).
+ *  FINRA publica 2 liquidaciones/mes → 13 puntos ≈ medio año. */
+export async function getShortInterestSeries(
   symbol: string,
-): Promise<ShortInterestSnapshot | null> {
+  limit = 13,
+): Promise<ShortInterestPoint[]> {
   const rows = unwrapRows<{
-    symbol: string;
     settlement_date: string;
     current_short_qty: string | number;
-    previous_short_qty: string | number | null;
-    avg_daily_volume: string | number | null;
     days_to_cover: number | null;
     change_percent: number | null;
   }>(
     await db.execute(sql`
-      SELECT symbol, settlement_date, current_short_qty, previous_short_qty,
-             avg_daily_volume, days_to_cover, change_percent
-      FROM short_interest
-      WHERE symbol = ${symbol.toUpperCase()}
-      ORDER BY settlement_date DESC
-      LIMIT 1
+      SELECT settlement_date, current_short_qty, days_to_cover, change_percent
+      FROM (
+        SELECT settlement_date, current_short_qty, days_to_cover, change_percent
+        FROM short_interest
+        WHERE symbol = ${symbol.toUpperCase()}
+        ORDER BY settlement_date DESC
+        LIMIT ${limit}
+      ) t
+      ORDER BY settlement_date ASC
     `),
   );
-  const r = rows[0];
-  if (!r) return null;
-  // bigint llega como STRING por el driver: normalizar o los formatos de la
-  // UI harían concatenación de texto en vez de aritmética.
-  const n = (v: string | number | null): number | null =>
-    v === null ? null : typeof v === "number" ? v : Number(v);
-  return {
-    symbol: r.symbol,
+  return rows.map((r) => ({
     settlementDate: r.settlement_date,
-    currentShortQty: n(r.current_short_qty) ?? 0,
-    previousShortQty: n(r.previous_short_qty),
-    avgDailyVolume: n(r.avg_daily_volume),
+    currentShortQty:
+      typeof r.current_short_qty === "number"
+        ? r.current_short_qty
+        : Number(r.current_short_qty),
     daysToCover: r.days_to_cover,
     changePercent: r.change_percent,
-  };
+  }));
 }

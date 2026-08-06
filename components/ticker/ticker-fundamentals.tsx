@@ -49,6 +49,48 @@ export type ShortInterestProps = {
   changePercent: number | null;
 };
 
+export type ShortInterestTrendPoint = {
+  settlementDate: string;
+  daysToCover: number | null;
+  changePercent: number | null;
+};
+
+/** Sparkline inline del days-to-cover. SVG a mano y no una librería: son
+ *  ≤13 puntos y una polyline — el estilo terminal del proyecto no necesita
+ *  ejes ni tooltips por punto (el title del bloque lista la serie). */
+function Sparkline({ values }: { values: number[] }) {
+  const w = 84;
+  const h = 22;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const pts = values
+    .map((v, i) => {
+      const x = values.length === 1 ? w / 2 : (i / (values.length - 1)) * w;
+      const y = h - 2 - ((v - min) / span) * (h - 4);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      className="text-primary"
+      aria-hidden
+    >
+      <polyline
+        points={pts}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function compactShares(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
@@ -59,11 +101,15 @@ function compactShares(n: number): string {
 export function TickerFundamentals({
   symbol,
   shortInterest,
+  shortInterestTrend = [],
 }: {
   symbol: string;
   // Viene por props desde el server component: ya está en NUESTRA BD, así que
   // no hay fetch de cliente ni llamada a FINRA por pageview.
   shortInterest?: ShortInterestProps | null;
+  /** Serie quincenal ASC. Con 2-3 puntos se pinta como texto (4.4 → 5.2);
+   *  con ≥4, sparkline. FINRA publica 2/mes: la serie se llena sola. */
+  shortInterestTrend?: ShortInterestTrendPoint[];
 }) {
   const [state, setState] = useState<{ symbol: string; data: Fundamentals | null } | null>(
     null,
@@ -111,6 +157,40 @@ export function TickerFundamentals({
     });
   }
 
+  // Tendencia del DTC quincena a quincena. La serie completa va al title:
+  // el hover responde "¿desde cuándo?" sin gastar un panel entero.
+  const dtc = shortInterestTrend.filter(
+    (p): p is ShortInterestTrendPoint & { daysToCover: number } =>
+      p.daysToCover != null,
+  );
+  const trendNode =
+    dtc.length >= 2 ? (
+      <div
+        className="flex flex-col"
+        title={shortInterestTrend
+          .map(
+            (p) =>
+              `${p.settlementDate}: DTC ${p.daysToCover?.toFixed(1) ?? "—"}${
+                p.changePercent != null
+                  ? ` · short ${p.changePercent > 0 ? "+" : ""}${p.changePercent.toFixed(1)}%`
+                  : ""
+              }`,
+          )
+          .join("\n")}
+      >
+        <span className="font-mono text-[8.5px] uppercase tracking-[0.2em] text-muted-foreground/70">
+          DTC trend
+        </span>
+        {dtc.length >= 4 ? (
+          <Sparkline values={dtc.map((p) => p.daysToCover)} />
+        ) : (
+          <span className="tick font-mono text-[13px] font-semibold tabular-nums text-foreground">
+            {dtc.map((p) => p.daysToCover.toFixed(1)).join(" → ")}
+          </span>
+        )}
+      </div>
+    ) : null;
+
   // Los fundamentales de FMP se rellenan async; si aún no están (o no hay),
   // la barra se pinta igual con lo que haya.
   if (!loaded || !data) {
@@ -121,6 +201,7 @@ export function TickerFundamentals({
           {stats.map((s) => (
             <Stat key={s.label} label={s.label} value={s.value} title={s.title} />
           ))}
+          {trendNode}
         </div>
       </section>
     );
@@ -144,6 +225,7 @@ export function TickerFundamentals({
         {stats.map((s) => (
           <Stat key={s.label} label={s.label} value={s.value} title={s.title} />
         ))}
+        {trendNode}
         {data.peers.length > 0 && (
           <div className="flex min-w-0 flex-1 flex-col">
             <span className="font-mono text-[8.5px] uppercase tracking-[0.2em] text-muted-foreground/70">
