@@ -1,8 +1,16 @@
 import { Header } from "@/components/header";
 import { InsiderDigestPanel } from "@/components/insider/digest-panel";
 import { FundHoldingsSection } from "@/components/insider/fund-holdings-section";
-import { getFundNewPositions, getFundConviction } from "@/lib/funds/queries";
-import type { FundConviction, FundNewPosition } from "@/lib/funds/queries";
+import {
+  getFundNewPositions,
+  getFundConviction,
+  getFundPositionChanges,
+} from "@/lib/funds/queries";
+import type {
+  FundConviction,
+  FundNewPosition,
+  FundPositionChange,
+} from "@/lib/funds/queries";
 import {
   InsiderFlowTables,
   ClusterBuysSection,
@@ -40,20 +48,39 @@ async function loadData(): Promise<{
   trades: NotableTradeRow[];
   newPositions: FundNewPosition[];
   conviction: FundConviction[];
+  changes: FundPositionChange[];
   error?: string;
 }> {
   try {
-    const [digest, flow, clusters, stakes, trades, newPositions, conviction] =
-      await Promise.all([
-        getLatestInsiderDigest().catch(() => null),
-        getInsiderFlow(),
-        getClusterBuys(),
-        getRecentStakes(),
-        getNotableTrades(),
-        getFundNewPositions().catch(() => []),
-        getFundConviction().catch(() => []),
-      ]);
-    return { digest, flow, clusters, stakes, trades, newPositions, conviction };
+    const [
+      digest,
+      flow,
+      clusters,
+      stakes,
+      trades,
+      newPositions,
+      conviction,
+      changes,
+    ] = await Promise.all([
+      getLatestInsiderDigest().catch(() => null),
+      getInsiderFlow(),
+      getClusterBuys(),
+      getRecentStakes(),
+      getNotableTrades(),
+      getFundNewPositions().catch(() => []),
+      getFundConviction().catch(() => []),
+      getFundPositionChanges().catch(() => []),
+    ]);
+    return {
+      digest,
+      flow,
+      clusters,
+      stakes,
+      trades,
+      newPositions,
+      conviction,
+      changes,
+    };
   } catch (err) {
     return {
       digest: null,
@@ -63,17 +90,27 @@ async function loadData(): Promise<{
       trades: [],
       newPositions: [],
       conviction: [],
+      changes: [],
       error: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 export default async function InsiderPage() {
-  const { digest, flow, clusters, stakes, trades, newPositions, conviction, error } =
-    await loadData();
+  const {
+    digest,
+    flow,
+    clusters,
+    stakes,
+    trades,
+    newPositions,
+    conviction,
+    changes,
+    error,
+  } = await loadData();
   const empty =
     !flow.length && !clusters.length && !stakes.length && !trades.length &&
-    !newPositions.length && !conviction.length;
+    !newPositions.length && !conviction.length && !changes.length;
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -116,6 +153,7 @@ export default async function InsiderPage() {
               <FundHoldingsSection
                 newPositions={newPositions}
                 conviction={conviction}
+                changes={changes}
               />
             </>
           )}

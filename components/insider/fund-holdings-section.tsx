@@ -1,8 +1,13 @@
 import Link from "next/link";
-import type { FundConviction, FundNewPosition } from "@/lib/funds/queries";
+import type {
+  FundConviction,
+  FundNewPosition,
+  FundPositionChange,
+} from "@/lib/funds/queries";
 
-// Carteras 13F de los fondos curados: aperturas del último trimestre y
-// dónde COINCIDEN varias gestoras. Server component, cero LLM.
+// Carteras 13F de los fondos curados: aperturas del último trimestre,
+// cambios trimestre a trimestre y dónde COINCIDEN varias gestoras. Server
+// component, cero LLM.
 
 function usd(n: number): string {
   if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
@@ -10,14 +15,47 @@ function usd(n: number): string {
   return `$${n.toLocaleString("en-US")}`;
 }
 
+function changeChip(c: FundPositionChange): React.ReactNode {
+  if (c.action === "exited") {
+    return (
+      <span className="shrink-0 rounded-sm border border-rose-500/30 bg-rose-500/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-rose-700 dark:text-rose-300">
+        exited
+      </span>
+    );
+  }
+  const up = c.action === "added";
+  return (
+    <span
+      className={`shrink-0 rounded-sm border px-1.5 py-0.5 font-mono text-[9px] tabular-nums ${
+        up
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+          : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+      }`}
+    >
+      {c.sharesPct != null
+        ? `${c.sharesPct > 0 ? "+" : ""}${c.sharesPct.toFixed(0)}% shs`
+        : up
+          ? "added"
+          : "trimmed"}
+    </span>
+  );
+}
+
 export function FundHoldingsSection({
   newPositions,
   conviction,
+  changes = [],
 }: {
   newPositions: FundNewPosition[];
   conviction: FundConviction[];
+  changes?: FundPositionChange[];
 }) {
-  if (newPositions.length === 0 && conviction.length === 0) return null;
+  if (
+    newPositions.length === 0 &&
+    conviction.length === 0 &&
+    changes.length === 0
+  )
+    return null;
 
   // La fecha de presentación manda: un 13F se conoce hasta 45 días DESPUÉS
   // del cierre del trimestre, y ocultarlo haría leer posiciones viejas como
@@ -73,6 +111,52 @@ export function FundHoldingsSection({
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {changes.length > 0 && (
+          <div className="rounded-sm border border-border/60 bg-card/40">
+            <div className="border-b border-border/60 px-3 py-2">
+              <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground">
+                Position changes — quarter over quarter
+              </span>
+            </div>
+            <ul className="divide-y divide-border/40">
+              {changes.map((c) => (
+                <li
+                  key={`${c.fundName}-${c.symbol}-${c.action}`}
+                  className="flex items-baseline gap-3 px-3 py-2"
+                >
+                  <Link
+                    href={`/ticker/${c.symbol}`}
+                    className="tick w-16 shrink-0 font-mono text-[12px] font-semibold text-foreground hover:text-primary"
+                  >
+                    {c.symbol}
+                  </Link>
+                  <span className="min-w-0 flex-1 truncate font-editorial text-[12px] text-muted-foreground">
+                    {c.fundName}
+                  </span>
+                  {changeChip(c)}
+                  {/* El trimestre por fila, mismo criterio que las aperturas:
+                      cada fondo declara cuando quiere. En una salida el
+                      trimestre que se enseña es el del filing que ya NO trae
+                      la posición. */}
+                  <span
+                    className="shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground/60"
+                    title={`${c.prevPeriod} → ${c.period}`}
+                  >
+                    {c.period}
+                  </span>
+                  <span className="tick shrink-0 font-mono text-[11px] tabular-nums text-foreground/90">
+                    {usd(c.value)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="border-t border-border/40 px-3 py-1.5 font-editorial text-[10px] leading-snug text-muted-foreground/50">
+              Share-count changes ≥25% between consecutive filed quarters.
+              Value moves alone are the market, not the manager.
+            </p>
           </div>
         )}
 
