@@ -1,6 +1,12 @@
 import { Header } from "@/components/header";
 import { PortfolioTable } from "@/components/portfolio/portfolio-table";
 import { CoachPanel } from "@/components/portfolio/coach-panel";
+import { TrackRecordSection } from "@/components/portfolio/track-record";
+import {
+  getLabReference,
+  getTrackRecord,
+  type LabReference,
+} from "@/lib/coach/track-record";
 import { getJournalCash, getTrades, getWatchlist } from "@/lib/db/queries";
 import { getSessionId } from "@/lib/session";
 import { getQuotesMap } from "@/lib/providers/finnhub";
@@ -28,11 +34,17 @@ export default async function PortfolioPage() {
   // `journal` se agrega en el servidor sobre el diario COMPLETO; `trades`
   // es el corte de 200 que se pinta. Con `null` (BD caída) el componente
   // degrada a calcular sobre el corte, que es el comportamiento antiguo.
-  const [rows, trades, journal] = await Promise.all([
+  const [rows, trades, journal, trackRecord] = await Promise.all([
     getWatchlist(session).catch(() => []),
     getTrades(session).catch(() => []),
     getJournalCash(session).catch(() => null),
+    getTrackRecord(session).catch(() => null),
   ]);
+  // La referencia del Lab solo se paga cuando hay algún veredicto que
+  // comparar: para un visitante anónimo (diario vacío) es una query menos.
+  const labRef: LabReference = trackRecord?.stats.length
+    ? await getLabReference().catch(() => ({}))
+    : {};
   const symbols = rows.map((r) => r.symbol);
   const quotes = symbols.length
     ? await getQuotesMap(symbols).catch(() => ({}))
@@ -83,6 +95,10 @@ export default async function PortfolioPage() {
             initialTrades={trades}
             initialJournal={journal}
           />
+
+          {trackRecord ? (
+            <TrackRecordSection record={trackRecord} labRef={labRef} />
+          ) : null}
 
           <section>
             <h2 className="eyebrow mb-1 text-[10px] text-foreground">Coach</h2>
