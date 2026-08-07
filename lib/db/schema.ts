@@ -670,6 +670,51 @@ export const earningsEvents = pgTable(
   ],
 );
 
+/**
+ * La VARA, fotografiada cada día. Append-only.
+ *
+ * `earnings_events` guarda el consenso VIGENTE y nada más: su `ON CONFLICT
+ * DO UPDATE` machaca `eps_estimate`/`revenue_estimate` en cada refresh
+ * (~1/símbolo/día), así que la pregunta «¿han bajado las expectativas antes
+ * de este trimestre?» era incontestable por construcción. No es un dato
+ * menor: un consenso recortado un 8% en tres semanas es MEDIA respuesta a
+ * "cómo se espera que salga", y batir una vara que acaban de bajar no es lo
+ * mismo que batir la de hace un mes.
+ *
+ * Una fila por (símbolo, fecha del evento, DÍA de captura): el refresh corre
+ * más de una vez al día y no interesa una fila por tick, sino la serie
+ * diaria. ~7 filas/día con la watchlist actual — irrelevante en disco frente
+ * al guard de 512 MB de Neon.
+ *
+ * Se escribe con lo que el refresh YA descarga: cero llamadas nuevas a
+ * Finnhub. Y nunca se borra al mover una fecha — el propósito es justo
+ * conservar lo que `earnings_events` tira.
+ */
+export const earningsEstimateSnapshots = pgTable(
+  "earnings_estimate_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    symbol: text("symbol").notNull(),
+    /** Fecha del evento al que se refiere la estimación (yyyy-mm-dd). */
+    eventDate: text("event_date").notNull(),
+    /** Día de captura (yyyy-mm-dd, UTC). Es la clave de la serie. */
+    capturedOn: text("captured_on").notNull(),
+    epsEstimate: text("eps_estimate"),
+    revenueEstimate: text("revenue_estimate"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("earnings_estimate_snapshots_unique").on(
+      t.symbol,
+      t.eventDate,
+      t.capturedOn,
+    ),
+    index("earnings_estimate_snapshots_symbol_idx").on(t.symbol, t.eventDate),
+  ],
+);
+
 // Author Watch — tweets crudos del autor seguido (@Couch_Investor) scrapeados
 // 1×/día desde el Mac con la sesión del usuario. `tickers` = cashtags $XYZ
 // que el autor mencionó (extraídos en ingesta). El brief diario los cruza

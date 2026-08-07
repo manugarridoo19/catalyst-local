@@ -2,7 +2,7 @@
 
 import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
-import { surprisePct } from "@/lib/ask/retrieve";
+import { surprisePct } from "@/lib/earnings/surprise";
 
 /**
  * Consenso más cercano (±5 días) en `earnings_events` a la fecha de un

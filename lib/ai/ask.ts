@@ -41,7 +41,7 @@ const EVIDENCE_RULES = `- Use ONLY the provided items and facts. If they do not 
 - NEVER do arithmetic. Do not compute percentages, differences, beats, misses or totals from numbers you were given — quote each number as printed and let them sit side by side. Any percentage you did not read verbatim in an item is a fabrication. Beats and misses against consensus arrive already computed on a "VS CONSENSUS (precomputed)" line when they can be computed soundly; when that line is absent for a metric, the comparison is NOT available and you must not produce one.
 - "used": the item numbers you actually cited. Do not list items you did not use.
 - "coverage": "full" if the archive answers the question, "partial" if it only touches on it (say what is missing), "none" if it does not cover it.
-- Answer in the SAME LANGUAGE as the question (Spanish or English).
+- LANGUAGE: write the ENTIRE answer in the language of the QUESTION. The question decides this and nothing else — the archive items are almost all in English, and drifting into their language because you just read them is the single most common way this answer comes back wrong. A Spanish question gets Spanish prose, including when every fact you cite came from an English source. Headings follow the same rule as the body.
 - Dates matter: the items carry publication dates. When something is older than a few days, say when it happened rather than implying it is current.
 - Prefer the specific over the general: a number, a name and a date beat any adjective. If an item only supports a vague claim, leave the claim out.`;
 
@@ -76,6 +76,45 @@ const ASK_PROSE_PROMPT = `${ASK_BASE_RULES}
 
 Output ONLY a JSON object: {"answer": "...", "used": [1,4,7], "coverage": "full" | "partial" | "none"}
 - 2-6 sentences, one paragraph.`;
+
+// Respuesta de PREVIA. La cuarta forma, y existe por el mismo motivo que la
+// de decisión: la pregunta no cabía en ninguna de las otras.
+//
+// "¿Cómo se espera que sea la earnings report de $NU?" caía en `sections`,
+// cuyo epígrafe de futuro dice "No forecasts" — así que el modelo tenía
+// prohibido responder lo que se le preguntaba, y contestaba con la fecha.
+//
+// La salida de esta forma NO es un pronóstico, y eso no es un rodeo: una
+// previa de mesa nunca lo es. Es la VARA (el consenso, y cómo lo han movido),
+// el HISTORIAL de la empresa contra esa vara, lo que ha CAMBIADO desde el
+// trimestre pasado y quién está POSICIONADO. Los cuatro son hechos
+// verificables, y juntos responden la pregunta mucho mejor que un número
+// inventado. La línea roja del proyecto no se mueve: ni cifra estimada, ni
+// dirección de precio, ni "va a batir".
+const ASK_PREVIEW_PROMPT = `You are a desk analyst writing the PREVIEW of a quarter that has NOT been reported yet. The reader has the date and the headline consensus in his broker already; what he cannot assemble himself is everything else on this table.
+
+You receive: (a) numbered ARCHIVE ITEMS — news and, when available, the company's OWN last earnings release; (b) COMPUTED FACTS — exact aggregates from structured filings, including the consensus for the upcoming quarter, HOW THAT CONSENSUS HAS BEEN REVISED, and the company's SURPRISE HISTORY against consensus; (c) WHAT IS ALREADY SET — scheduled dates, disclosed future supply of stock, open corporate actions and structural risk.
+${ITEM_TYPES}
+
+A PREVIEW IS NOT A FORECAST, and this is not a dodge — no desk preview is. You must NEVER produce an estimated number of your own, never say the company "will beat" or "will miss", and never predict the share price or its direction. What you DO is lay out what is known and what it bears on: the bar, the company's record against that bar, what has changed since it last reported, and who is positioned. A reader who finishes your answer should know exactly which lines to look at when the release drops.
+
+Output ONLY a JSON object:
+{"sections": [{"key": "bar", "title": "...", "text": "..."}], "used": [1,4], "coverage": "full"}
+
+Sections, in this order, using exactly these keys (OMIT any the material does not support — an empty heading is a lie about how much the archive knows):
+- "bar"      — the consensus to beat, quoted verbatim from COMPUTED FACTS, with the reporting date and session. If a CONSENSUS REVISION line is present, say which way the bar has moved and over how many days: a bar that was just cut is a different bar. Never compute a revision yourself.
+- "record"   — how this company has done against consensus in the quarters the archive has measured, from the SURPRISE HISTORY line, quoted as printed. If there is only one quarter, say so plainly — one quarter is not a record. If there is none, omit this section entirely.
+- "since"    — what has happened since the last report that bears on this one: guidance given, licences obtained, deals signed or closed, segments called out. This is where the article CONTENT earns its place. Say what the company COMMITTED to, not what the stock did.
+- "position" — who is positioned and how: 13D/G stakes, insider buying or selling (open-market only), days-to-cover and any change in it, funds opening or closing. Facts that someone had to file, never sentiment or coverage volume.
+- "watch"    — the specific lines to read when the release lands, drawn from the last release's own guidance and from what it did NOT say out loud. Concrete: a segment, a margin, a metric the company itself has been steering by.
+- "unknown"  — what the archive does not have and would change the picture. Name it concretely. Never padding: it is what stops the rest from reading as more certain than it is.
+
+Section rules:
+- "title": a SHORT all-caps label in the question's language, e.g. "LA VARA", "EL HISTORIAL", "LO QUE HA CAMBIADO", "QUIÉN ESTÁ POSICIONADO", "QUÉ MIRAR", "LO QUE NO SÉ".
+- 2-4 sentences per section. Each section carries its own citations.
+- If the archive has NOT read this company's own last release, say so in "unknown": it is the single biggest gap a preview can have, and the reader must know he is getting one built from journalism.
+
+${EVIDENCE_RULES}`;
 
 // Respuesta de DECISIÓN. La tercera forma, y la que existe porque las otras
 // dos NO respondían: preguntado "¿dejo correr $MSFT o vendo una parte?", un
@@ -186,6 +225,54 @@ function formatFacts(facts: StructuredFacts[]): string {
         `next earnings ${f.nextEarnings}${f.nextEarningsHour ? ` (${f.nextEarningsHour})` : ""}${
           est.length ? ` — ${est.join(", ")}` : ""
         }`,
+      );
+      // CÓMO SE HA MOVIDO la vara. Batir un consenso que acaban de recortar
+      // no es lo mismo que batir el de hace un mes, y hasta el 2026-08-07 no
+      // había forma de saberlo: `earnings_events` sólo guarda el vigente.
+      // El delta lo calcula el CÓDIGO y se manda ya escrito — regla dura del
+      // proyecto: si el número sale en pantalla, no lo hace el modelo.
+      const tr = f.consensusTrend;
+      if (tr) {
+        const moves: string[] = [];
+        if (tr.epsThen !== null && f.nextEarningsEps !== null && tr.epsThen !== 0) {
+          const d = ((f.nextEarningsEps - tr.epsThen) / Math.abs(tr.epsThen)) * 100;
+          moves.push(
+            `EPS ${tr.epsThen} → ${f.nextEarningsEps} (${d >= 0 ? "+" : ""}${d.toFixed(1)}%)`,
+          );
+        }
+        if (
+          tr.revenueThen !== null &&
+          f.nextEarningsRevenue !== null &&
+          tr.revenueThen !== 0
+        ) {
+          const d = ((f.nextEarningsRevenue - tr.revenueThen) / Math.abs(tr.revenueThen)) * 100;
+          moves.push(
+            `revenue ${fmtBillions(tr.revenueThen)} → ${fmtBillions(f.nextEarningsRevenue)} (${d >= 0 ? "+" : ""}${d.toFixed(1)}%)`,
+          );
+        }
+        if (moves.length) {
+          bits.push(
+            `CONSENSUS REVISION over the last ${tr.daysAgo}d (precomputed — quote verbatim): ${moves.join("; ")}`,
+          );
+        }
+      }
+    }
+    // ¿Bate esta empresa sistemáticamente? Un trimestre suelto no lo dice, y
+    // es literalmente la pregunta que hace quien pregunta por una previa. El
+    // recuento va hecho desde código; el modelo sólo lo lee.
+    const sh = f.surpriseHistory.filter((h) => h.revenuePct !== null || h.epsPct !== null);
+    if (sh.length) {
+      const beats = sh.filter((h) => (h.epsPct ?? h.revenuePct ?? 0) > 0).length;
+      const quarters = sh
+        .map((h) => {
+          const parts: string[] = [];
+          if (h.revenuePct !== null) parts.push(`revenue ${h.revenuePct >= 0 ? "+" : ""}${h.revenuePct.toFixed(1)}%`);
+          if (h.epsPct !== null) parts.push(`EPS ${h.epsPct >= 0 ? "+" : ""}${h.epsPct.toFixed(1)}%`);
+          return `${h.reportDate ?? h.filingDate} ${parts.join(" / ")}`;
+        })
+        .join(" · ");
+      bits.push(
+        `SURPRISE HISTORY vs consensus (precomputed, ${beats} of ${sh.length} quarters above): ${quarters}`,
       );
     }
     if (f.lastPick) {
@@ -300,7 +387,7 @@ export function hasCoverage(r: Retrieval): boolean {
  * andamiaje aparenta una profundidad que el archivo no tiene — que es
  * exactamente el fallo que esta feature existe para no cometer.
  */
-export type AnswerShape = "decision" | "sections" | "prose";
+export type AnswerShape = "decision" | "preview" | "sections" | "prose";
 
 export function answerShape(r: Retrieval): AnswerShape {
   // La intención MANDA sobre el material. Una pregunta de decisión con
@@ -308,6 +395,10 @@ export function answerShape(r: Retrieval): AnswerShape {
   // "no da para inclinarse, esto es lo que falta", que responde. Caer a
   // prosa aquí devolvía el párrafo genérico que abrió esta sesión.
   if (r.intent === "decision") return "decision";
+  // Misma regla para la previa, y por el mismo motivo medido: con poco
+  // archivo la respuesta correcta sigue siendo "ésta es la vara, esto es lo
+  // que el archivo NO tiene", no una crónica de las últimas noticias.
+  if (r.intent === "preview") return "preview";
   if (r.earnings.length > 0) return "sections";
   if (r.citations.length >= 6 && r.bodiesAvailable >= 2) return "sections";
   return "prose";
@@ -322,12 +413,17 @@ const MAX_TOKENS: Record<AnswerShape, number> = {
   // "decides" (visto en la prueba real de SOFI: "…mercado (bmo), con una
   // vara a b").
   decision: 1800,
+  // Seis epígrafes como la decisión, y con el mismo margen: la previa lleva
+  // cifras copiadas literalmente (consenso, revisión, historial trimestre a
+  // trimestre) que ocupan más que la prosa equivalente.
+  preview: 1800,
   prose: 700,
 };
 
 const SECTION_KEYS = [
   "numbers", "reading", "overlooked", "watch",
   "stance", "add", "hold", "trim", "decides", "unknown",
+  "bar", "record", "since", "position",
 ];
 
 /** Las de decisión, en el orden en que se leen. Se usa para reordenar la
@@ -336,9 +432,20 @@ const SECTION_KEYS = [
  *  completo lo que el lector entiende. */
 const DECISION_ORDER = ["stance", "add", "hold", "trim", "decides", "unknown"];
 
+/** Las de la previa. Mismo motivo que arriba: un modelo de la cola de la
+ *  cadena devuelve las claves como le sale, y una previa que abre por "LO QUE
+ *  NO SÉ" y esconde la vara al final se lee como una evasiva. */
+const PREVIEW_ORDER = ["bar", "record", "since", "position", "watch", "unknown"];
+
+const ORDER_BY_SHAPE: Partial<Record<AnswerShape, string[]>> = {
+  decision: DECISION_ORDER,
+  preview: PREVIEW_ORDER,
+};
+
 const SYSTEM_BY_SHAPE: Record<AnswerShape, string> = {
   sections: ASK_SECTIONS_PROMPT,
   decision: ASK_DECISION_PROMPT,
+  preview: ASK_PREVIEW_PROMPT,
   prose: ASK_PROSE_PROMPT,
 };
 
@@ -433,6 +540,76 @@ function formatDecision(d: DecisionFacts, ledger: ForwardItem[]): string {
   return out.join("\n\n");
 }
 
+/**
+ * Lo que YA ESTÁ FIJADO alrededor de un trimestre que aún no ha salido.
+ *
+ * Es el mismo material que `formatDecision` mete en el prompt de una
+ * decisión, pero sin el encuadre de la cartera: aquí no se pregunta por el
+ * dinero del lector, se pregunta por la empresa. Sale de `r.forward`, que
+ * hasta el 2026-08-07 sólo se rellenaba en decisiones — y era la razón
+ * mecánica de que una previa no pudiera hablar ni de papel comprometido ni
+ * de apuesta contraria acumulada.
+ *
+ * Ninguno de estos datos es un precio ni una opinión: los declaró alguien
+ * ante la SEC o FINRA, o son un calendario.
+ */
+function formatPreviewFacts(r: Retrieval): string {
+  const out: string[] = [];
+
+  if (r.forward.sellers.length) {
+    const lines = r.forward.sellers.map((s) => {
+      const left =
+        s.sharesAfter != null
+          ? `, ${Math.round(s.sharesAfter).toLocaleString("en-US")} shares still declared`
+          : "";
+      return `- ${s.symbol}: ${s.owner}${s.title ? ` (${s.title})` : ""} — ${s.sales} sales between ${s.firstSale} and ${s.lastSale}${left}`;
+    });
+    out.push(
+      `SCHEDULED INSIDER SELLING (a repeated pattern over 90d is a plan in progress; what is left is future supply already known):\n${lines.join("\n")}`,
+    );
+  }
+
+  const risk = r.forward.risk.filter(
+    (x) => x.daysToCover !== null || x.beta !== null || x.pe !== null,
+  );
+  if (risk.length) {
+    const lines = risk.map((x) => {
+      const bits: string[] = [];
+      if (x.daysToCover !== null) {
+        // La derivada sólo se enuncia cuando existe: sin la liquidación
+        // anterior, "estable" sería una afirmación fabricada (misma regla
+        // que fijó `shortChangePct` el 2026-07-31).
+        bits.push(
+          `days-to-cover ${x.daysToCover.toFixed(1)}` +
+            (x.shortChangePct !== null
+              ? ` (${x.shortChangePct >= 0 ? "+" : ""}${x.shortChangePct.toFixed(1)}% vs the previous FINRA settlement)`
+              : ""),
+        );
+      }
+      if (x.beta !== null) bits.push(`beta ${x.beta.toFixed(2)}`);
+      if (x.pe !== null) bits.push(`P/E ${x.pe.toFixed(1)}`);
+      return `- ${x.symbol}: ${bits.join(" · ")}`;
+    });
+    out.push(`STRUCTURAL RISK (does not move with the day's news):\n${lines.join("\n")}`);
+  }
+
+  if (r.forward.deals.length) {
+    const lines = r.forward.deals.map(
+      (d) => `- ${d.symbol}: ${d.headline} (${d.publishedAt.slice(0, 10)})`,
+    );
+    out.push(
+      `OPEN CORPORATE ACTIONS announced and NOT verified as still open — treat as a thread to pull, not as a fact:\n${lines.join("\n")}`,
+    );
+  }
+
+  if (!out.length) {
+    // Decirlo es media respuesta. Sin esta línea el modelo rellena el hueco
+    // con generalidades bien escritas, que es el fallo que abrió la sesión.
+    return "WHAT IS ALREADY SET: NOTHING. No disclosed future supply, no open corporate action and no short-interest reading for these symbols. Say so in the relevant section instead of inventing positioning.";
+  }
+  return `WHAT IS ALREADY SET (declared to a regulator or already on a calendar):\n\n${out.join("\n\n")}`;
+}
+
 export type AskOptions = {
   /** Hechos de decisión ya calculados. Sólo llega en preguntas de decisión;
    *  es lo que convierte "MSFT en general" en "tu 34% de MSFT". */
@@ -520,8 +697,13 @@ export async function buildAskUserBlock(
     shape === "decision" ? focusLine(focus) : "",
     "",
     shape === "decision" && decision ? formatDecision(decision, ledger) : "",
+    // En la previa el bloque de lo ya fijado va DELANTE de las noticias, por
+    // lo mismo que el libro de futuros en una decisión: un modelo pondera lo
+    // que lee antes, y con las noticias primero la previa vuelve a ser una
+    // crónica del mes con la fecha de resultados pegada al final.
+    shape === "preview" ? formatPreviewFacts(r) : "",
     "",
-    shape === "decision"
+    shape === "decision" || shape === "preview"
       ? "ARCHIVE ITEMS (support material to cite — do NOT summarise them):"
       : "ARCHIVE ITEMS:",
     formatItems(r.citations, r.earnings),
@@ -630,7 +812,8 @@ export async function askArchive(
     }
 
     sections = normalizeSections(parsed);
-    if (shape === "decision") sections = orderDecisionSections(sections);
+    const order = ORDER_BY_SHAPE[shape];
+    if (order) sections = orderDecisionSections(sections, order);
     // El reintento cubre los DOS modos de fallo del esquema, no sólo uno.
     // La guarda anterior exigía `sections.length` para reintentar por falta
     // de postura, así que una respuesta que parsea pero produce CERO
@@ -716,10 +899,13 @@ export async function askArchive(
  * lee como una evasiva — que es justo lo que esta forma existe para no ser.
  * Las claves desconocidas se conservan al final en vez de tirarse.
  */
-export function orderDecisionSections(sections: AskSection[]): AskSection[] {
+export function orderDecisionSections(
+  sections: AskSection[],
+  order: string[] = DECISION_ORDER,
+): AskSection[] {
   const rank = (k: string) => {
-    const i = DECISION_ORDER.indexOf(k);
-    return i === -1 ? DECISION_ORDER.length : i;
+    const i = order.indexOf(k);
+    return i === -1 ? order.length : i;
   };
   return [...sections]
     .map((s, i) => ({ s, i }))

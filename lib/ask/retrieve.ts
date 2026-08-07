@@ -26,7 +26,9 @@ import {
   type PendingDeal,
   type SystematicSeller,
 } from "@/lib/ask/forward";
-import { DECISION_NOISE, type AskIntent } from "@/lib/ask/intent";
+import { DECISION_NOISE, PREVIEW_NOISE, type AskIntent } from "@/lib/ask/intent";
+import { surprisePct, type EarningsSurprise } from "@/lib/earnings/surprise";
+import { getSurpriseHistory, type SurpriseHistoryRow } from "@/lib/earnings/queries";
 import { parseAttributions, type Attribution } from "@/lib/coach/frames";
 import { COMMON_WORD_DENYLIST } from "@/lib/tickers/alias-denylist";
 import { mentionsTicker } from "@/lib/providers/google-news-tickers";
@@ -74,6 +76,36 @@ export type StructuredFacts = {
   nextEarningsHour: string | null;
   nextEarningsEps: number | null;
   nextEarningsRevenue: number | null;
+  /**
+   * Cómo se ha MOVIDO esa vara. La primera foto guardada del consenso del
+   * próximo evento y la de hoy, con los días entre medias.
+   *
+   * `earnings_events` sólo guarda el consenso vigente (su `ON CONFLICT DO
+   * UPDATE` machaca el anterior en cada refresh), así que "¿han bajado las
+   * expectativas?" era incontestable por construcción. Batir una vara que
+   * acaban de recortar un 8% no es lo mismo que batir la de hace un mes, y
+   * ésa es media respuesta a "cómo se espera que salga".
+   *
+   * `null` mientras `earnings_estimate_snapshots` no tenga dos capturas del
+   * mismo evento — la serie empieza el 2026-08-07 y no se puede reconstruir
+   * hacia atrás (Finnhub free no sirve consensos históricos: medido, 0 filas
+   * para NU en cualquier ventana pasada).
+   */
+  consensusTrend: {
+    firstSeenOn: string;
+    daysAgo: number;
+    epsThen: number | null;
+    revenueThen: number | null;
+  } | null;
+  /**
+   * ¿Bate esta empresa sistemáticamente? Un trimestre suelto no lo dice.
+   *
+   * `getSurpriseHistory` estaba escrita desde el 29-07 con su lector en
+   * /ticker y /ask nunca la llamó. Hoy devuelve pocas filas —el barrido
+   * empezó en julio y hay un trimestre por símbolo—, así que su valor es
+   * ACUMULATIVO: crece sola porque `earnings_reports` no purga.
+   */
+  surpriseHistory: SurpriseHistoryRow[];
   lastPick: { thesis: string; generatedAt: string } | null;
   newsCount7d: number;
   avgSentiment7d: number | null;
@@ -116,52 +148,13 @@ export type EarningsRead = {
   attributions: Attribution[];
 };
 
-/** Real contra consenso de una métrica, con la base contable declarada.
- *  `pct` sale de `surprisePct`, nunca de un modelo. */
-export type EarningsSurprise = {
-  metric: "revenue" | "eps";
-  label: string;
-  actual: number;
-  estimate: number;
-  basis: string;
-  pct: number;
-};
-
-/**
- * Desviación porcentual de lo reportado contra el consenso.
- *
- * Existe en CÓDIGO por la regla dura del proyecto: si el número va a salir en
- * pantalla, no lo calcula el LLM. En la primera prueba de la revisión de
- * cartera el modelo estimaba a ojo y acertaba por poco — el modo de fallo que
- * nadie audita porque el resultado parece razonable.
- *
- * Devuelve null —y esto es la mitad del valor de la función— cuando comparar
- * sería mentir:
- *
- *  1. **Sin base contable declarada.** Una empresa publica ingresos GAAP Y
- *     ajustados con puntos de diferencia (SoFi Q2-26: 1,22B GAAP vs 1,2B
- *     ajustado). Comparar la base equivocada da un beat con pinta de exacto.
- *  2. **Desajuste de ESCALA.** El extractor puede devolver 1,22 en vez de
- *     1.220.000.000 (el comunicado imprime "$1.2 billion" y las tablas van
- *     "in thousands"), y 1,22 es un número perfectamente válido que ningún
- *     saneado local puede rechazar. Aquí sí se ve: si real y consenso no
- *     están en el mismo orden de magnitud, uno de los dos tiene otra unidad.
- *     Un factor 10 de tolerancia deja pasar cualquier sorpresa real —nadie
- *     bate el consenso por 10×— y ataja los errores de unidad, que son de
- *     1.000× para arriba.
- *  3. **Consenso cero o ausente**, que no admite división.
- */
-export function surprisePct(
-  actual: number | null,
-  estimate: number | null,
-  basis: string | null,
-): number | null {
-  if (actual === null || estimate === null || !basis) return null;
-  if (!Number.isFinite(actual) || !Number.isFinite(estimate) || estimate === 0) return null;
-  const ratio = Math.abs(actual) / Math.abs(estimate);
-  if (ratio === 0 || Math.abs(Math.log10(ratio)) > 1) return null;
-  return ((actual - estimate) / Math.abs(estimate)) * 100;
-}
+// `surprisePct` y `EarningsSurprise` viven en `lib/earnings/surprise.ts` desde
+// el 2026-08-07 (módulo hoja, sin BD) y se RE-EXPORTAN aquí: `earnings/queries`
+// las importaba de este archivo, así que dejarlas aquí impedía que /ask
+// llamase a `getSurpriseHistory` sin cerrar un ciclo. Nadie tuvo que cambiar
+// su import.
+export { surprisePct };
+export type { EarningsSurprise };
 
 /**
  * Riesgo ESTRUCTURAL de un símbolo: lo que no cambia con la noticia del día.
@@ -356,7 +349,8 @@ export function keywords(question: string, intent: AskIntent = "archive"): strin
             w.length >= 4 &&
             !STOPWORDS.has(w) &&
             !STOPWORDS.has(bare(w)) &&
-            !(intent === "decision" && DECISION_NOISE.has(bare(w))),
+            !(intent === "decision" && DECISION_NOISE.has(bare(w))) &&
+            !(intent === "preview" && PREVIEW_NOISE.has(bare(w))),
         ),
     ),
   ].slice(0, 6);
@@ -632,6 +626,9 @@ async function factsForSymbol(
         FROM fund_stakes WHERE symbol = ${symbol}
         ORDER BY filed_at DESC LIMIT 4
       `);
+  // Nota: el nombre del declarante se DESESCAPA abajo. El XML de portada del
+  // 13D/G trae entidades (`Baillie Gifford &amp; Co`) y el prompt las pasaba
+  // literales al modelo, que las copiaba tal cual a la respuesta.
   // earnings_events.date es TEXT yyyy-mm-dd (sortable) — se compara como
   // texto contra la fecha de hoy, no con operadores de fecha.
   //
@@ -647,6 +644,19 @@ async function factsForSymbol(
         FROM earnings_events
         WHERE symbol = ${symbol} AND date >= to_char(current_date, 'YYYY-MM-DD')
         ORDER BY date ASC LIMIT 2
+      `);
+  // La PRIMERA foto guardada del consenso del próximo evento. Se compara
+  // arriba contra la vigente para dar la revisión. `DISTINCT ON` con el
+  // orden ascendente de `captured_on` = la más antigua de cada evento.
+  const trendQ = db.execute(sql`
+        SELECT DISTINCT ON (event_date)
+               event_date AS "eventDate", captured_on AS "capturedOn",
+               NULLIF(regexp_replace(COALESCE(eps_estimate,''),'[^0-9.\\-]','','g'),'')::float8 AS eps,
+               NULLIF(regexp_replace(COALESCE(revenue_estimate,''),'[^0-9.\\-]','','g'),'')::float8 AS revenue,
+               (current_date - captured_on::date)::int AS "daysAgo"
+        FROM earnings_estimate_snapshots
+        WHERE symbol = ${symbol} AND event_date >= to_char(current_date, 'YYYY-MM-DD')
+        ORDER BY event_date ASC, captured_on ASC
       `);
   // ai_picks guarda UN JSON array por generación, no una fila por
   // símbolo: hay que desplegarlo para encontrar la tesis de este ticker.
@@ -666,9 +676,14 @@ async function factsForSymbol(
         WHERE nt.ticker = ${symbol} AND n.published_at >= now() - interval '7 days'
       `);
 
-  const [metaR, insiderR, stakesR, earnR, pickR, covR] = await Promise.all([
-    metaQ, insiderQ, stakesQ, earnQ, pickQ, covQ,
-  ]);
+  // El historial de sorpresas es una query aparte (`lib/earnings/queries`,
+  // fuente única — la comparte con /ticker) y vuela con las demás.
+  const historyQ = getSurpriseHistory(symbol, 8).catch(() => [] as SurpriseHistoryRow[]);
+
+  const [metaR, insiderR, stakesR, earnR, pickR, covR, trendR, history] =
+    await Promise.all([
+      metaQ, insiderQ, stakesQ, earnQ, pickQ, covQ, trendQ, historyQ,
+    ]);
   const [meta] = unwrapRows<{ name: string | null }>(metaR);
   const [insider] = unwrapRows<{
     net7: number | null;
@@ -676,7 +691,9 @@ async function factsForSymbol(
     buyers: number;
     sellers: number;
   }>(insiderR);
-  const stakes = unwrapRows<{ filer: string | null; pct: number | null; filedAt: string }>(stakesR);
+  const stakes = unwrapRows<{ filer: string | null; pct: number | null; filedAt: string }>(
+    stakesR,
+  ).map((s) => ({ ...s, filer: decodeXmlEntities(s.filer) }));
   const earnRows = unwrapRows<{
     d: string;
     hour: string | null;
@@ -690,6 +707,33 @@ async function factsForSymbol(
   const reported = await reportedP;
   const earn = earnRows.find((r) => !reported.has(r.d)) ?? null;
 
+  // La tendencia es del MISMO evento que se anuncia como próximo. Casarlas
+  // por fecha y no quedarse con la primera fila evita el caso en que el
+  // evento de la foto ya se publicó y el "próximo" es otro: ahí la revisión
+  // hablaría de una vara distinta de la que se enseña.
+  const trendRows = unwrapRows<{
+    eventDate: string;
+    capturedOn: string;
+    eps: number | null;
+    revenue: number | null;
+    daysAgo: number;
+  }>(trendR);
+  const t = earn ? trendRows.find((x) => x.eventDate === earn.d) : undefined;
+  // Una sola captura no es una tendencia: `daysAgo === 0` significa que la
+  // serie empezó hoy para este evento y no hay contra qué comparar. Decir
+  // "sin cambios" ahí sería afirmar algo que nadie ha medido — el mismo
+  // criterio que hizo omitir la comparación de cortos cuando falta la
+  // liquidación anterior (2026-07-31).
+  const consensusTrend =
+    t && t.daysAgo > 0
+      ? {
+          firstSeenOn: t.capturedOn,
+          daysAgo: t.daysAgo,
+          epsThen: t.eps,
+          revenueThen: t.revenue,
+        }
+      : null;
+
   return {
     symbol,
     name: meta?.name ?? null,
@@ -702,6 +746,8 @@ async function factsForSymbol(
     nextEarningsHour: earn?.hour ?? null,
     nextEarningsEps: earn?.eps ?? null,
     nextEarningsRevenue: earn?.revenue ?? null,
+    consensusTrend,
+    surpriseHistory: history,
     lastPick: pick ?? null,
     newsCount7d: cov?.n ?? 0,
     avgSentiment7d: cov?.avg ?? null,
@@ -892,9 +938,14 @@ export async function retrieve(opts: {
   const extracted = await extractQuestionSymbols(question);
   const symbols = extracted.length ? extracted : (opts.carrySymbols ?? []);
   // Los HECHOS prospectivos (vara de consenso, vendedores sistemáticos,
-  // operaciones abiertas, riesgo) siguen siendo de las decisiones: son
-  // insumo de `buildDecisionFacts`, que sólo se construye ahí.
-  const forwardOn = intent === "decision" && symbols.length > 0;
+  // operaciones abiertas, riesgo estructural). Los enciende la decisión —son
+  // insumo de `buildDecisionFacts`— y desde el 2026-08-07 también la PREVIA,
+  // donde son literalmente el objeto de la pregunta: qué vara hay que batir,
+  // quién tiene papel comprometido a colocar, qué operación puede aparecer en
+  // el trimestre y cuánta apuesta contraria hay acumulada. Dejarlos apagados
+  // ahí era la razón mecánica de que una previa sólo pudiera dar la fecha.
+  const forwardOn =
+    (intent === "decision" || intent === "preview") && symbols.length > 0;
   // El canal de CITAS por símbolo, en cambio, se enciende siempre que la
   // pregunta nombre un valor (2026-08-07). Es el arreglo del agujero que
   // dejaba una pregunta de archivo leyendo sólo `news_embeddings`, o sea
@@ -1004,8 +1055,15 @@ export async function retrieve(opts: {
   for (const c of fwdCandidates) {
     const key = `n${c.newsId}`;
     if (seen.has(key)) continue;
-    seen.add(key);
     const text = normalizeHeadline(c.headline);
+    // El dedup TEXTUAL también aquí. Este bucle alimentaba `seenText` y
+    // nunca lo consultaba, así que sólo protegía a los canales de abajo y no
+    // a sí mismo: medido el 2026-08-07 en la previa de NU, "NU Stock Rises As
+    // Nubank Wins Key Mexico Bank License" ocupaba TRES citas —la misma
+    // historia por gnews, marketbeat y un agregador—, con tres cuerpos
+    // distintos que decían lo mismo. Tres plazas de dieciséis.
+    if (text && seenText.has(text)) continue;
+    seen.add(key);
     if (text) seenText.add(text);
     citations.push({
       n: citations.length + 1,
@@ -1129,6 +1187,25 @@ export function ledgerCandidates(r: Retrieval): {
  *  puntuación, sin el sufijo del sindicador ni el nombre del medio tras un
  *  guion. Dos noticias que colapsan al mismo esqueleto son el mismo
  *  teletipo redistribuido. */
+/**
+ * Las cinco entidades XML predefinidas. No es un decodificador de HTML: los
+ * nombres de la portada de un 13D/G vienen de un XML de EDGAR, y ahí sólo
+ * pueden aparecer éstas. Un decodificador general traería una dependencia y
+ * una superficie de escape que este campo no necesita.
+ */
+export function decodeXmlEntities(s: string | null): string | null {
+  if (!s) return s;
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    // El `&amp;` va el ÚLTIMO: hacerlo antes convertiría `&amp;lt;` —un `&lt;`
+    // literal correctamente escapado— en `<`, que es justo lo que el doble
+    // escape quería evitar.
+    .replace(/&amp;/g, "&");
+}
+
 export function normalizeHeadline(h: string): string {
   return h
     .toLowerCase()

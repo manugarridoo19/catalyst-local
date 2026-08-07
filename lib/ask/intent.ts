@@ -14,7 +14,64 @@
 // porque despliega bloques ("a favor de recortar") que no vienen a cuento.
 // De ahí la conjunción de abajo.
 
-export type AskIntent = "decision" | "archive";
+export type AskIntent = "decision" | "preview" | "archive";
+
+/**
+ * PREVIA de un resultado que aún no ha salido.
+ *
+ * El tercer agujero, medido el 2026-08-07 con "¿cómo se espera que sea la
+ * earnings report de $NU?". Sólo había dos clases de pregunta, así que ésta
+ * caía en `archive` — y `archive` es el BIBLIOTECARIO: el prompt le prohíbe
+ * opinar y su única sección de futuro le prohíbe además pronosticar. Encima
+ * apagaba el canal prospectivo entero (vara de consenso, vendedores
+ * sistemáticos, operaciones abiertas, riesgo). Lo máximo que podía contestar
+ * era la fecha y el consenso, que es exactamente lo que contestó.
+ *
+ * Una previa NO es una predicción y el prompt de abajo lo sostiene: es la
+ * VARA, el historial de la empresa contra esa vara, lo que ha cambiado desde
+ * el trimestre pasado y quién está posicionado. Todo eso son hechos.
+ *
+ * Se clasifica SOLA, sin exigir símbolo: "¿qué se espera de los resultados de
+ * la banca?" también merece esta forma. Pero cede ante `decision` — "¿compro
+ * antes de resultados?" pregunta por el dinero, no por el trimestre.
+ */
+const PREVIEW = [
+  // Español
+  /\b(como|que|cual)\s+.{0,20}\bse\s+espera\b/,
+  /\bque\s+(se\s+)?esperan?\s+(de|para|del)\b/,
+  /\bque\s+esperas\b/,
+  /\bprevia\b/,
+  /\bexpectativas?\b/,
+  /\bva\s+a\s+(batir|superar|fallar|decepcionar)\b/,
+  /\b(batira|superara|fallara|decepcionara)\b/,
+  /\bcomo\s+(va\s+a\s+salir|saldra|saldran)\b/,
+  /\bconsenso\b/,
+  /\bantes\s+de\s+(los\s+)?(resultados|earnings)\b/,
+  // Inglés
+  /\bwhat\s+to\s+expect\b/,
+  /\bexpectations?\s+(for|on)\b/,
+  /\b(earnings\s+)?preview\b/,
+  /\bconsensus\s+(for|on)\b/,
+  /\bwill\s+.{0,20}\b(beat|miss|top)\b/,
+  /\bis\s+.{0,20}\bexpected\s+to\b/,
+  /\bhow\s+is\s+.{0,25}\bexpected\b/,
+  /\bahead\s+of\s+(the\s+)?(earnings|results|print|quarter)\b/,
+];
+
+/**
+ * Ruido de la propia pregunta de PREVIA, para el canal léxico. Mismo motivo
+ * que `DECISION_NOISE`: en "¿cómo se espera que sea la earnings report de
+ * $NU?" las plazas se las comen "espera", "earnings" y "report", y ninguna
+ * distingue una noticia de otra dentro del propio ticker.
+ */
+export const PREVIEW_NOISE = new Set([
+  "espera", "esperan", "esperas", "esperado", "esperada", "expectativa",
+  "expectativas", "previa", "consenso", "resultados", "trimestre",
+  "batir", "superar", "fallar", "decepcionar", "batira", "superara",
+  "salir", "saldra", "antes",
+  "expect", "expected", "expectations", "preview", "consensus", "earnings",
+  "report", "quarter", "results", "beat", "miss", "ahead", "print",
+]);
 
 /**
  * Verbos de ACCIÓN sobre una posición. Ojo: sólo formas verbales, nunca el
@@ -48,6 +105,10 @@ const ACTION = [
   /\btake\s+profits?\b/,
   /\b(double|average)\s+down\b/,
   /\bcut\s+(my|the)\s+(loss|losses|position)\b/,
+  // "add" suelto es seguro AQUÍ y no lo sería en `OPINION`: esta lista sólo
+  // abre la puerta en CONJUNCIÓN con primera persona o petición de juicio,
+  // así que "What are insiders adding lately?" sigue siendo archivo.
+  /\badd(ing)?\b/,
 ];
 
 /**
@@ -123,6 +184,22 @@ const ADVISORY = [
   /\bshould\s+(i|we)\b/,
   /\bworth\s+(it|holding|selling|buying|keeping)\b/,
   /\bbetter\s+to\s+(sell|hold|buy|trim|wait)\b/,
+  // Añadidas el 2026-08-07. El agujero medido: "¿debería comprar más $NU?"
+  // clasificaba ARCHIVO y contestaba el bibliotecario, que tiene prohibido
+  // opinar — la queja original con otra redacción. Lleva verbo de acción
+  // ("comprar") pero ninguna marca de primera persona escrita ni ninguna de
+  // las peticiones de juicio que había aquí. Lo mismo con "¿tiene sentido
+  // ampliar en $SOFI?" y "¿es buen momento para entrar en $RKLB?".
+  //
+  // SÓLO las formas de primera persona de deber: "debo", "debemos",
+  // "debería", "deberíamos". "debe" / "debes" / "deben" quedan FUERA a
+  // propósito — son tercera persona y "¿la empresa debe vender su división?"
+  // es una pregunta de archivo perfectamente legítima que lleva verbo de
+  // acción y entraría en modo decisión con bloques sobre el dinero de nadie.
+  /\bdeb(o|emos|eria|eriamos)\b/,
+  /\btiene\s+sentido\b/,
+  /\bes\s+(un\s+)?(buen|mal)\s+momento\b/,
+  /\bgood\s+time\s+to\b/,
 ];
 
 /**
@@ -236,8 +313,14 @@ export function classifyIntent(question: string): AskIntent {
   const q = normalizeQuestion(question);
   if (OPINION.some((re) => re.test(q))) return "decision";
   const hasAction = ACTION.some((re) => re.test(q));
-  if (!hasAction) return "archive";
   const hasSelf = SELF.some((re) => re.test(q));
   const hasAdvisory = ADVISORY.some((re) => re.test(q));
-  return hasSelf || hasAdvisory ? "decision" : "archive";
+  if (hasAction && (hasSelf || hasAdvisory)) return "decision";
+  // La PREVIA va después de la decisión y antes del archivo. El orden no es
+  // arbitrario: "¿compro $NU antes de resultados?" casa los dos —lleva verbo
+  // de acción, primera persona Y "antes de resultados"— y pregunta por el
+  // dinero, no por el trimestre. Quien pregunta qué hacer con su posición
+  // quiere un veredicto, no una previa.
+  if (PREVIEW.some((re) => re.test(q))) return "preview";
+  return "archive";
 }

@@ -49,6 +49,30 @@ describe("classifyIntent", () => {
     expect(classifyIntent("is it worth holding TSLA?")).toBe("decision");
   });
 
+  it("«¿debería comprar más $NU?» es una DECISIÓN, no una consulta de archivo", () => {
+    // Medido el 2026-08-07: las cuatro caían en `archive`, o sea que las
+    // contestaba el bibliotecario, que tiene prohibido opinar. Llevan verbo
+    // de acción pero ninguna marca de primera persona ESCRITA, y las
+    // peticiones de juicio que había no cubrían estas formas — que son de
+    // las más naturales que hay para preguntar exactamente esto.
+    expect(classifyIntent("¿debería comprar más $NU?")).toBe("decision");
+    expect(classifyIntent("¿tiene sentido ampliar en $SOFI?")).toBe("decision");
+    expect(classifyIntent("¿es buen momento para entrar en $RKLB?")).toBe("decision");
+    expect(classifyIntent("is it a good time to add $PLTR?")).toBe("decision");
+  });
+
+  it("la tercera persona de «deber» NO convierte una consulta de archivo en decisión", () => {
+    // La contrapartida del test anterior, y la razón de que sólo entren las
+    // formas de primera persona: "debe"/"deben" hablan de la empresa, no del
+    // lector, y con un verbo de acción dentro entrarían en modo decisión
+    // desplegando bloques sobre el dinero de nadie.
+    expect(classifyIntent("¿la empresa debe vender su división de nube?")).toBe("archive");
+    expect(classifyIntent("¿por qué deben comprar más terrenos?")).toBe("archive");
+    // Y "add" suelto, que se añadió a ACTION para el caso inglés de arriba,
+    // no puede arrastrar la pregunta de ejemplo de la propia UI.
+    expect(classifyIntent("What are insiders adding lately?")).toBe("archive");
+  });
+
   it("no se despista con tildes ni mayúsculas", () => {
     expect(normalizeQuestion("¿Qué HAGO con mi posición?")).toBe(
       "¿que hago con mi posicion?",
@@ -56,6 +80,26 @@ describe("classifyIntent", () => {
     expect(classifyIntent("¿QUÉ HAGO CON MI POSICIÓN EN $SOFI, la amplío?")).toBe(
       "decision",
     );
+  });
+
+  it("una PREVIA de resultados es su propia clase de pregunta", () => {
+    // La queja del 2026-08-07. Sin este intent caía en `archive`, cuya única
+    // sección de futuro prohíbe pronosticar, y encima apagaba el canal
+    // prospectivo entero: lo máximo que podía contestar era la fecha.
+    expect(classifyIntent("¿cómo se espera que sea la earnings report de $NU?")).toBe(
+      "preview",
+    );
+    expect(classifyIntent("what to expect from $RKLB earnings?")).toBe("preview");
+    expect(classifyIntent("previa de resultados de $ZETA")).toBe("preview");
+    expect(classifyIntent("¿va a batir el consenso $PLTR?")).toBe("preview");
+  });
+
+  it("la DECISIÓN gana a la previa cuando se pregunta por el dinero", () => {
+    // "antes de resultados" es disparador de previa Y aparece en preguntas
+    // de decisión. Quien pregunta qué hacer con su posición quiere un
+    // veredicto, no una previa — de ahí el orden en `classifyIntent`.
+    expect(classifyIntent("¿compro $NU antes de resultados?")).toBe("decision");
+    expect(classifyIntent("¿conviene vender AAPL antes de resultados?")).toBe("decision");
   });
 
   it("una consulta de archivo sin verbo de acción ni petición de opinión es archivo", () => {
@@ -360,6 +404,8 @@ function facts(over: Partial<StructuredFacts> = {}): StructuredFacts {
     insiderBuyers30d: 0,
     insiderSellers30d: 0,
     stakes: [],
+    consensusTrend: null,
+    surpriseHistory: [],
     nextEarnings: null,
     nextEarningsHour: null,
     nextEarningsEps: null,

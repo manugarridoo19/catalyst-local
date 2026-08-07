@@ -128,6 +128,14 @@ export function reviewPressures(
       nextEarningsHour: f.earningsHour,
       nextEarningsEps: null,
       nextEarningsRevenue: null,
+      // La revisión trae su propia vara en `r.forward.earningsBars` y su
+      // propio bloque de comunicados, así que estos dos no se rellenan aquí.
+      // Van a null/[] EXPLÍCITAMENTE y no por omisión: `buildDecisionFacts`
+      // no los mira hoy, y el día que lo haga tiene que ser una decisión
+      // tomada, no un campo que se coló vacío. Ver `formatFacts` de
+      // lib/ai/ask.ts para lo que /ask sí construye con ellos.
+      consensusTrend: null,
+      surpriseHistory: [],
       lastPick: null,
       newsCount7d: f.news7d,
       avgSentiment7d: f.avgSentiment7d,

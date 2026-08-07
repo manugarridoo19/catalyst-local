@@ -24,6 +24,7 @@ type Args = {
   embed: boolean;
   harvest: boolean;
   statsOnly: boolean;
+  answer: boolean;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -34,6 +35,7 @@ function parseArgs(argv: string[]): Args {
     embed: !flags.has("--no-embed"),
     harvest: !flags.has("--no-harvest"),
     statsOnly: flags.has("--stats"),
+    answer: flags.has("--answer"),
   };
 }
 
@@ -177,6 +179,23 @@ async function main() {
   if (!args.statsOnly) {
     console.log("\n──────── MENSAJE DE USUARIO (literal) ────────\n");
     console.log(userBlock);
+  }
+
+  // --answer SÍ gasta prosa (1 llamada, 2 si el JSON viene roto). Es la única
+  // forma de ver lo que el usuario lee, y por eso está detrás de un flag: el
+  // uso normal del probe es mirar el material, que no cuesta cuota.
+  if (args.answer) {
+    const { askArchive } = await import("../lib/ai/ask");
+    console.log("\n──────── RESPUESTA ────────\n");
+    const a = await askArchive(r, args.question, { decision, focus });
+    console.log(`modelo: ${a.model} · cobertura: ${a.coverage} · citas usadas: ${a.citations.length}`);
+    for (const s of a.sections) {
+      console.log(`\n${s.title ?? "—"}\n${s.text}`);
+    }
+    if (a.citations.length) {
+      console.log("\nFuentes:");
+      for (const c of a.citations) console.log(`  [${c.n}] ${c.headline.slice(0, 80)}`);
+    }
   }
 }
 

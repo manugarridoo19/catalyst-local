@@ -19,6 +19,26 @@ export type EarningsRefreshResult = {
 };
 
 export async function runRefreshEarningsCron(): Promise<EarningsRefreshResult> {
+  // Siembra de la serie de consenso desde lo que YA hay en la cache.
+  //
+  // Sin esto la serie sólo empezaría cuando a cada símbolo le tocara refresco
+  // (hasta 20h), y para un símbolo que reporta en días eso puede ser la mitad
+  // de la ventana útil. Se fecha con el `fetched_at` de la propia fila y no
+  // con hoy: la foto es de cuando se descargó, y fecharla hoy afirmaría una
+  // medición que no se hizo — el mismo criterio que hace `null` a la
+  // tendencia con una sola captura.
+  //
+  // Idempotente por el UNIQUE, así que corre en cada tick sin coste real.
+  await db.execute(sql`
+    INSERT INTO earnings_estimate_snapshots
+      (symbol, event_date, captured_on, eps_estimate, revenue_estimate, created_at)
+    SELECT symbol, date,
+           to_char(fetched_at at time zone 'utc','YYYY-MM-DD'),
+           eps_estimate, revenue_estimate, fetched_at
+    FROM earnings_events
+    ON CONFLICT (symbol, event_date, captured_on) DO NOTHING
+  `);
+
   // Símbolos de watchlist cuya cache falta o está rancia. La frescura se mide
   // por `fetched_at` de sus filas, pero eso deja fuera al símbolo SIN filas:
   // cuando Finnhub responde "no hay earnings en 90 días" —el estado normal
@@ -92,6 +112,26 @@ export async function runRefreshEarningsCron(): Promise<EarningsRefreshResult> {
             hour = EXCLUDED.hour, quarter = EXCLUDED.quarter,
             year = EXCLUDED.year, eps_estimate = EXCLUDED.eps_estimate,
             revenue_estimate = EXCLUDED.revenue_estimate, fetched_at = now()
+        `);
+        // La FOTO del consenso de hoy, antes de que el DO UPDATE de mañana
+        // lo machaque. Es el mismo dato que acaba de llegar en `cal`, así que
+        // no cuesta ni una llamada más; lo que compra es la única forma de
+        // contestar "¿han bajado la vara antes de este trimestre?", que hasta
+        // ahora era incontestable porque el histórico no existía en ninguna
+        // parte. Una fila por símbolo/evento/DÍA: el refresh corre varias
+        // veces al día y la serie que interesa es la diaria.
+        //
+        // DO NOTHING y no DO UPDATE: dentro del mismo día la primera captura
+        // manda. Reescribirla convertiría la serie en "lo último de cada
+        // día", que es otra cosa y menos estable.
+        await db.execute(sql`
+          INSERT INTO earnings_estimate_snapshots
+            (symbol, event_date, captured_on, eps_estimate, revenue_estimate)
+          VALUES (${symbol}, ${e.date},
+            to_char(now() at time zone 'utc','YYYY-MM-DD'),
+            ${e.epsEstimate != null ? String(e.epsEstimate) : null},
+            ${e.revenueEstimate != null ? String(e.revenueEstimate) : null})
+          ON CONFLICT (symbol, event_date, captured_on) DO NOTHING
         `);
         events++;
       }

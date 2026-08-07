@@ -267,6 +267,13 @@
       "when": 1786040611236,
       "tag": "0037_steep_rocket_racer",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1786137380158,
+      "tag": "0038_condemned_victor_mancha",
+      "breakpoints": true
     }
   ]
 }
