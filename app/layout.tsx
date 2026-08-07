@@ -43,6 +43,18 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} ${newsreader.variable} h-full antialiased`}
     >
       <body className="ambient-bg min-h-full flex flex-col bg-background text-foreground">
+        {/* El bundler de @opennextjs/cloudflare (esbuild con keepNames)
+            inyecta llamadas a su helper `__name` DENTRO de la función que
+            next-themes serializa con toString() para su script inline: en el
+            navegador `__name` no existe y el script anti-flash del tema
+            muere con ReferenceError (solo en el Worker; `next start` local
+            no pasa por esbuild). El shim tiene que ir ANTES del
+            ThemeProvider para ejecutarse primero. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: "self.__name=self.__name||function(f){return f}",
+          }}
+        />
         <ThemeProvider>
           <div aria-hidden className="ambient-grid" />
           {children}

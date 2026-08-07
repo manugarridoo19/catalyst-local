@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { PriceChart } from "@/components/ticker/price-chart";
 
 // TradingView Advanced Chart widget. Free, no API key, realtime para
 // cualquier ticker global. Reemplaza nuestro chart de Yahoo (que
@@ -48,8 +49,23 @@ const CONFIG = {
 
 export function TradingViewChart({ symbol }: { symbol: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // TradingView deniega el canal de datos ("bad auth token" en bucle, chart
+  // negro) cuando el Referer del embed es *.workers.dev — medido 2026-08-06:
+  // misma config funciona con Referer localhost y sin Referer (carga
+  // directa), falla solo embebida en el Worker. Es bloqueo de dominio en su
+  // lado, no configurable desde aquí: en ese host se pinta nuestro chart
+  // (lightweight-charts sobre /api/bars, cuyo egress CF sí funciona).
+  const [fallback, setFallback] = useState(false);
 
   useEffect(() => {
+    if (window.location.hostname.endsWith(".workers.dev")) {
+      // En efecto y no en el estado inicial: depende de `window`, y
+      // decidirlo durante el render rompería la hidratación (el server
+      // siempre pinta la variante widget).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setFallback(true);
+      return;
+    }
     const el = containerRef.current;
     if (!el) return;
     // Limpiar contenido previo (cuando navegas entre tickers).
@@ -69,6 +85,10 @@ export function TradingViewChart({ symbol }: { symbol: string }) {
     script.textContent = JSON.stringify({ ...CONFIG, symbol });
     el.appendChild(script);
   }, [symbol]);
+
+  if (fallback) {
+    return <PriceChart symbol={symbol} initial={[]} initialPeriod="3m" />;
+  }
 
   return (
     <div

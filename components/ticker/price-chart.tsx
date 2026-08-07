@@ -115,7 +115,9 @@ export function PriceChart({
   // Cambiar periodo → fetch nuevo set de bars.
   useEffect(() => {
     let cancelled = false;
-    if (period === initialPeriod && bars === initial) return;
+    // Sin datos iniciales (montado como fallback del widget) hay que ir a
+    // buscar también el primer periodo, no solo los cambios.
+    if (period === initialPeriod && bars === initial && initial.length > 0) return;
     fetch(`/api/bars?symbol=${symbol}&period=${period}`)
       // Si la respuesta no es OK, vaciamos: dejar las barras del periodo
       // ANTERIOR bajo la etiqueta del nuevo es mentir con un gráfico. El
@@ -149,7 +151,7 @@ export function PriceChart({
   }, [period, symbol]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border/60 px-4 py-2">
         <div className="flex items-baseline gap-3">
           {change && (
