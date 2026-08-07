@@ -26,6 +26,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { attachExtracts, type Citation } from "@/lib/ask/retrieve";
 import { kindLabel } from "@/lib/signals/kinds";
+import { getFundPositionChanges, type FundPositionChange } from "@/lib/funds/queries";
 import {
   earningsBars,
   harvestBodies,
@@ -134,6 +135,12 @@ export type ForwardLayer = {
   earningsBars: EarningsBar[];
   sellers: SystematicSeller[];
   deals: PendingDeal[];
+  /** Movimientos 13F trimestre a trimestre de las gestoras curadas sobre
+   *  ESTAS posiciones. `fund_holdings` tenía 1.782 filas y su único lector
+   *  era la página /insider: la revisión de la cartera no sabía que Tiger
+   *  Global, Coatue y Appaloosa habían recortado MSFT entre un 28% y un 82%
+   *  en el mismo trimestre (auditado 2026-08-07). */
+  fundChanges: FundPositionChange[];
   /** Cuántos cuerpos se extrajeron en esta pasada y cuántos se intentaron:
    *  si es 0/20 el archivo no dio material y la revisión debe decirlo en
    *  vez de fingir profundidad. */
@@ -379,6 +386,7 @@ const EMPTY_FORWARD: ForwardLayer = {
   earningsBars: [],
   sellers: [],
   deals: [],
+  fundChanges: [],
   harvested: 0,
   attempted: 0,
   bodiesAvailable: 0,
@@ -409,8 +417,10 @@ export async function retrievePortfolio(
   }
 
   const syms = symbolList(symbols);
-  const [insR, stkR, earnR, sigR, fndR, covR, shrR, newsR, fwdCandidates, bars, sellers, deals] =
-    await Promise.all([
+  const [
+    insR, stkR, earnR, sigR, fndR, covR, shrR, newsR,
+    fwdCandidates, bars, sellers, deals, fundChanges,
+  ] = await Promise.all([
       insiderQuery(syms),
       stakesQuery(syms),
       earningsQuery(syms),
@@ -423,6 +433,7 @@ export async function retrievePortfolio(
       earningsBars(symbols),
       systematicSellers(symbols),
       pendingDeals(symbols),
+      getFundPositionChanges(24, symbols).catch(() => []),
     ]);
 
   // LA operación que cambia el resultado: ir a buscar los cuerpos que
@@ -559,6 +570,7 @@ export async function retrievePortfolio(
     earningsBars: bars,
     sellers,
     deals,
+    fundChanges,
     harvested: harvest.harvested,
     attempted: harvest.attempted,
     bodiesAvailable: candidates.filter((c) => c.body && c.body.length >= 200).length,

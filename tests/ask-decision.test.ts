@@ -345,7 +345,7 @@ describe("answerShape", () => {
       citations: [],
       facts: [],
       earnings: [],
-      forward: { bars: [], sellers: [], deals: [], risk: [] },
+      forward: { bars: [], sellers: [], deals: [], risk: [], fundChanges: [] },
       vectorUsed: true,
       harvested: 0,
       attempted: 0,
@@ -445,6 +445,83 @@ describe("positionContexts", () => {
 
   it("sin cartera devuelve vacío en vez de inventar contexto", () => {
     expect(positionContexts(["MSFT"], null)).toEqual([]);
+  });
+});
+
+describe("buildDecisionFacts — los 13F", () => {
+  const cambio = (over: Record<string, unknown> = {}) => ({
+    symbol: "MSFT",
+    issuerName: "Microsoft",
+    fundName: "Tiger Global",
+    action: "trimmed" as const,
+    sharesPct: -54.4,
+    value: 1_000_000,
+    period: "2026-03-31",
+    prevPeriod: "2025-12-31",
+    ...over,
+  });
+
+  // `fund_holdings` tenía 1.782 filas y su único lector era /insider. Lo que
+  // se perdía: nueve movimientos de gestoras discrecionales sobre MSFT y
+  // META, TODOS reduciendo, cuando esas dos son el 44% de la cartera.
+  it("un recorte de un fondo empuja a RECORTAR y una ampliación a AMPLIAR", () => {
+    const trim = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: null,
+      facts: [facts()],
+      fundChanges: [cambio()],
+    }).pressures.filter((p) => p.text.startsWith("13F:"));
+    expect(trim).toHaveLength(1);
+    expect(trim[0].side).toBe("trim");
+    expect(trim[0].provenance).toBe("declared");
+
+    const add = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: null,
+      facts: [facts()],
+      fundChanges: [cambio({ action: "added", sharesPct: 60 })],
+    }).pressures.filter((p) => p.text.startsWith("13F:"));
+    expect(add[0].side).toBe("add");
+  });
+
+  // LA FECHA ES OBLIGATORIA Y VA DENTRO DEL TEXTO. Un 13F declara la foto del
+  // cierre de trimestre y se presenta hasta 45 días después: en agosto, "el
+  // último trimestre" cerró el 31 de marzo. Sin la fecha delante, el modelo
+  // lo escribe en presente ("los fondos están saliendo"), que sería falso.
+  it("la presión SIEMPRE dice de qué trimestre es y que llega con retraso", () => {
+    const [p] = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: null,
+      facts: [facts()],
+      fundChanges: [cambio()],
+    }).pressures.filter((x) => x.text.startsWith("13F:"));
+    expect(p.text).toContain("2026-03-31");
+    expect(p.text).toContain("45 días");
+    expect(p.text).toContain("NO es un movimiento de esta semana");
+  });
+
+  it("una salida completa se nombra como tal, sin porcentaje inventado", () => {
+    const [p] = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: null,
+      facts: [facts()],
+      fundChanges: [cambio({ action: "exited", sharesPct: null })],
+    }).pressures.filter((x) => x.text.startsWith("13F:"));
+    expect(p.text).toContain("cerró la posición entera");
+    expect(p.text).not.toContain("%");
+  });
+
+  it("acota por símbolo: seis movimientos del mismo valor no ahogan la mesa", () => {
+    const seis = Array.from({ length: 6 }, (_, i) =>
+      cambio({ fundName: `Fondo ${i}` }),
+    );
+    const p = buildDecisionFacts({
+      symbols: ["MSFT"],
+      portfolio: null,
+      facts: [facts()],
+      fundChanges: seis,
+    }).pressures.filter((x) => x.text.startsWith("13F:"));
+    expect(p.length).toBeLessThanOrEqual(3);
   });
 });
 
@@ -665,7 +742,7 @@ describe("ledgerCandidates", () => {
     citations: [],
     facts: [],
     earnings: [],
-    forward: { bars: [], sellers: [], deals: [], risk: [] },
+    forward: { bars: [], sellers: [], deals: [], risk: [], fundChanges: [] },
     vectorUsed: true,
     harvested: 0,
     attempted: 0,

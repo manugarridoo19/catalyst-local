@@ -177,6 +177,11 @@ export function reviewPressures(
     })),
     bars: r.forward.earningsBars,
     sellers: r.forward.sellers,
+    // El 13F. Va aquí y no sólo en /ask por la lección que este archivo lleva
+    // repetida cuatro veces: un dato conectado a UNA superficie de decisión y
+    // no a su gemela acaba haciendo que las dos digan cosas distintas del
+    // mismo valor el mismo día.
+    fundChanges: r.forward.fundChanges,
     risk: r.facts.map((f) => ({
       symbol: f.symbol,
       beta: f.beta,

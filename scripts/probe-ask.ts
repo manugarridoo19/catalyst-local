@@ -118,6 +118,7 @@ async function main() {
         sellers: r.forward.sellers,
         deals: r.forward.deals,
         risk: r.forward.risk,
+        fundChanges: r.forward.fundChanges,
         earnings: r.earnings,
         frames,
       });

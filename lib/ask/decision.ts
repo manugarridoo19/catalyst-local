@@ -15,6 +15,7 @@
 import { concentrationFlags, type Portfolio } from "@/lib/portfolio";
 import type { EarningsRead, RiskFact, StructuredFacts } from "@/lib/ask/retrieve";
 import type { EarningsBar, PendingDeal, SystematicSeller } from "@/lib/ask/forward";
+import type { FundPositionChange } from "@/lib/funds/queries";
 import {
   POSITIVE_SIGNALS,
   SIGNAL_LABEL,
@@ -34,6 +35,11 @@ import {
  * recortar es una respuesta defendible a una pregunta concreta, y ese listón
  * es más bajo porque la pregunta ya la hizo el usuario.
  */
+/** Cuántos movimientos de fondos entran por símbolo. Llegan ordenados por
+ *  valor de la posición, así que se quedan los de las gestoras con más piel
+ *  en el juego. Seis presiones del mismo tipo sobre MSFT ahogarían la mesa. */
+const FUND_CHANGES_PER_SYMBOL = 3;
+
 export const DECISION_THRESHOLDS = {
   /** Peso por encima del cual "recortar una parte" reduce riesgo real y no
    *  es sólo mover dinero de sitio. */
@@ -203,6 +209,22 @@ export function buildDecisionFacts(input: {
    *  un trimestre excepcional entraba como cita blanda mientras la beta
    *  entraba como hecho duro — el partner acababa siempre en aguantar. */
   earnings?: EarningsRead[];
+  /**
+   * Movimientos trimestre a trimestre de los 13F curados.
+   *
+   * `fund_holdings` tenía 1.782 filas y su ÚNICO lector era la página
+   * /insider: ni /ask, ni la revisión, ni el coach sabían nada de ella
+   * (auditado 2026-08-07). Lo que se perdía no era menor — medido sobre esta
+   * cartera: Tiger Global −54%, Coatue −52% y Appaloosa −82% en MSFT, con
+   * Lone Pine y Third Point fuera del todo; Coatue −25,6%, Appaloosa −27,3%
+   * y ARK −48,4% en META. Nueve movimientos, todos reduciendo, sobre las dos
+   * posiciones que suman el 44% de la cartera.
+   *
+   * Son gestoras DISCRECIONALES curadas (los cuantitativos se excluyeron de
+   * la ingesta justo porque su 13F es rebalanceo), así que un −82% es una
+   * decisión y no ruido.
+   */
+  fundChanges?: FundPositionChange[];
   /** El MARCO declarado de cada posición (los ejes del coach). Decide el
    *  lado de cada atribución con el MISMO lector que el panel del coach
    *  (`readingOf`): las dos superficies no pueden discrepar sin saberlo. */
@@ -215,6 +237,14 @@ export function buildDecisionFacts(input: {
   const factsBy = new Map(facts.map((f) => [f.symbol, f]));
   const barsBy = new Map((input.bars ?? []).map((b) => [b.symbol, b]));
   const riskBy = new Map((input.risk ?? []).map((r) => [r.symbol, r]));
+  // Varios fondos pueden mover el mismo símbolo, así que se agrupa en vez de
+  // indexar por clave única. Tope por símbolo: en MSFT son seis movimientos y
+  // seis presiones del mismo tipo ahogarían al resto de la mesa.
+  const fundsBy = new Map<string, FundPositionChange[]>();
+  for (const c of input.fundChanges ?? []) {
+    const prev = fundsBy.get(c.symbol) ?? [];
+    if (prev.length < FUND_CHANGES_PER_SYMBOL) fundsBy.set(c.symbol, [...prev, c]);
+  }
   const ctxBy = new Map(contexts.map((c) => [c.symbol, c]));
   // Los pesos por SECTOR ya los calcula `buildPortfolio`; sólo había que
   // mirarlos. Ver el bloque de abajo para por qué cambian la respuesta.
@@ -346,6 +376,27 @@ export function buildDecisionFacts(input: {
         symbol,
         side: "add",
         text: `13D/G de ${s.filer ?? "declarante no identificado"}${s.pct !== null ? ` con ${s.pct}% del capital` : ""} declarado el ${s.filedAt} — hay un tercero acumulando con intención declarada`,
+        provenance: "declared",
+      });
+    }
+
+    // Los 13F. LA FECHA VA DENTRO DEL TEXTO, no como metadato: un 13F
+    // declara la foto del cierre de trimestre y se presenta hasta 45 días
+    // después, así que en agosto "el último trimestre" cerró el 31 de marzo.
+    // Sin la fecha delante, el modelo lo lee como movimiento reciente y
+    // escribe "los fondos están saliendo" en presente — que sería falso.
+    // Es la misma disciplina que hace `neutral` a la comparación de cortos
+    // cuando falta la liquidación anterior: el dato vale, la afirmación que
+    // permite es más estrecha de lo que parece.
+    for (const c of fundsBy.get(symbol) ?? []) {
+      const qué =
+        c.action === "exited"
+          ? "cerró la posición entera"
+          : `${c.action === "added" ? "amplió" : "recortó"} un ${Math.abs(c.sharesPct ?? 0).toFixed(0)}% en acciones`;
+      pressures.push({
+        symbol,
+        side: c.action === "added" ? "add" : "trim",
+        text: `13F: ${c.fundName} ${qué} en el trimestre cerrado el ${c.period} (declarado con hasta 45 días de retraso — NO es un movimiento de esta semana)`,
         provenance: "declared",
       });
     }

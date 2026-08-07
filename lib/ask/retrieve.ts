@@ -32,6 +32,7 @@ import { getSurpriseHistory, type SurpriseHistoryRow } from "@/lib/earnings/quer
 import { parseAttributions, type Attribution } from "@/lib/coach/frames";
 import { COMMON_WORD_DENYLIST } from "@/lib/tickers/alias-denylist";
 import { mentionsTicker } from "@/lib/providers/google-news-tickers";
+import { getFundPositionChanges, type FundPositionChange } from "@/lib/funds/queries";
 
 export type Citation = {
   n: number;
@@ -185,6 +186,9 @@ export type AskForward = {
   sellers: SystematicSeller[];
   deals: PendingDeal[];
   risk: RiskFact[];
+  /** Movimientos 13F trimestre a trimestre de las gestoras curadas. Ver
+   *  `buildDecisionFacts` para por qué llevan la fecha dentro del texto. */
+  fundChanges: FundPositionChange[];
 };
 
 export type Retrieval = {
@@ -389,6 +393,11 @@ const SELECT_COLS = sql`
  * explica el movimiento, la regulación sectorial), pero es una guarnición.
  */
 const VECTOR_GLOBAL_QUOTA = 3;
+
+/** Techo global de movimientos 13F recuperados. `buildDecisionFacts` acota
+ *  además por símbolo; esto sólo evita traer el universo entero cuando la
+ *  pregunta toca varios valores muy seguidos por fondos. */
+const FUND_CHANGES_MAX = 24;
 
 /** Por debajo de esto, "el archivo tiene material de este valor" es falso y
  *  la pregunta se trata como temática. Ver el comentario de `globalLimit`. */
@@ -965,8 +974,10 @@ export async function retrieve(opts: {
   // vuelan a la vez y los hechos sólo la esperan al final.
   const earningsP = earningsReads(symbols);
 
-  const [vector, lexical, facts, earnings, fwdCandidates, bars, sellers, rawDeals, risk] =
-    await Promise.all([
+  const [
+    vector, lexical, facts, earnings, fwdCandidates,
+    bars, sellers, rawDeals, risk, fundChanges,
+  ] = await Promise.all([
     queryVec ? vectorSearch(queryVec, symbols, limit) : Promise.resolve([]),
     lexicalSearch(question, symbols, limit, intent),
     structuredFacts(
@@ -1004,6 +1015,11 @@ export async function retrieve(opts: {
     forwardOn ? systematicSellers(symbols) : Promise.resolve([]),
     forwardOn ? pendingDeals(symbols) : Promise.resolve([]),
     forwardOn ? riskFacts(symbols) : Promise.resolve([]),
+    // El 13F entra por la misma puerta que el resto de lo prospectivo. Una
+    // sola query para todos los símbolos, cero cuota.
+    forwardOn
+      ? getFundPositionChanges(FUND_CHANGES_MAX, symbols).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   // `pendingDeals` levanta TODA noticia de categoría MA ligada al símbolo, y
@@ -1130,7 +1146,7 @@ export async function retrieve(opts: {
     citations,
     facts,
     earnings,
-    forward: { bars, sellers, deals, risk },
+    forward: { bars, sellers, deals, risk, fundChanges },
     vectorUsed: Boolean(queryVec),
     harvested,
     attempted,

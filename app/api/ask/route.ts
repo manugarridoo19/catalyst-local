@@ -215,6 +215,9 @@ export async function POST(req: Request) {
         sellers: r.forward.sellers,
         deals: r.forward.deals,
         risk: r.forward.risk,
+        // Los 13F de las gestoras curadas. `fund_holdings` llevaba 1.782
+        // filas leídas SÓLO por la página /insider (auditado 2026-08-07).
+        fundChanges: r.forward.fundChanges,
         // El comunicado leído + el marco declarado: es lo que convierte
         // "ingresos récord y guía elevada" en presión dura del lado
         // AMPLIAR, con el mismo lector que el coach (2026-07-31).

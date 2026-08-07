@@ -101,9 +101,23 @@ const MIN_CHANGE_PCT = 25;
  * ⚠️ Hereda la limitación conocida de las enmiendas (backlog Fase 3): un
  * 13F-HR/A que retire una posición deja la fila vieja como holding
  * fantasma; afecta igual a las demás vistas de esta página.
+ *
+ * ⚠️ EL DATO ES VIEJO POR NATURALEZA. Un 13F declara la foto del cierre de
+ * trimestre y se presenta hasta 45 días después: en agosto, "el último
+ * trimestre" es el que cerró el 31 de marzo. Por eso `period` viaja en cada
+ * fila y todo consumidor tiene que enseñarlo — presentar esto como
+ * movimiento reciente sería falso.
+ *
+ * `symbols` acota a una cartera (2026-08-07): los consumidores de decisión
+ * necesitan los cambios de SUS valores, no el top del universo por valor.
+ * Se añadió aquí en vez de escribir una consulta paralela porque dos
+ * consultas del mismo hecho acaban discrepando — y ésta ya tiene dentro las
+ * dos decisiones que cuestan: comparar por ACCIONES y agregar por
+ * (fondo, símbolo).
  */
 export async function getFundPositionChanges(
   limit = 14,
+  symbols?: string[],
 ): Promise<FundPositionChange[]> {
   return unwrapRows<{
     symbol: string;
@@ -116,12 +130,29 @@ export async function getFundPositionChanges(
     prev_period: string;
   }>(
     await db.execute(sql`
-      WITH ranked AS (
+      WITH periodos AS (
+        -- Los DOS trimestres vigentes del UNIVERSO, no los de cada fondo.
+        --
+        -- El ranking era PARTITION BY fund_cik sin más, así que un fondo
+        -- del que sólo tenemos datos viejos producía un "cambio" con la forma
+        -- de uno fresco: medido el 2026-08-07, Scion Asset Management
+        -- aparecía SALIENDO de META comparando 2025-06-30 contra 2025-09-30
+        -- —hace un año— y no porque vendiera, sino porque nuestra ingesta no
+        -- tiene sus trimestres siguientes. Una salida inventada por el
+        -- ranking es peor que un hueco: se lee como la decisión de un gestor
+        -- de convicción y ahora, además, alimenta posturas de cartera.
+        SELECT DISTINCT period_of_report AS p
+        FROM fund_holdings
+        ORDER BY p DESC LIMIT 2
+      ),
+      ranked AS (
         SELECT fund_cik, period_of_report,
                ROW_NUMBER() OVER (
                  PARTITION BY fund_cik ORDER BY period_of_report DESC
                ) AS rn
-        FROM fund_holdings GROUP BY fund_cik, period_of_report
+        FROM fund_holdings
+        WHERE period_of_report IN (SELECT p FROM periodos)
+        GROUP BY fund_cik, period_of_report
       ),
       latest AS (
         SELECT h.fund_cik, MIN(h.fund_name) AS fund_name, h.symbol,
@@ -169,6 +200,14 @@ export async function getFundPositionChanges(
             AND l.symbol = p.symbol
         )
       ) changes
+      ${
+        symbols?.length
+          ? sql`WHERE symbol IN (${sql.join(
+              symbols.map((s) => sql`${s.toUpperCase()}`),
+              sql`, `,
+            )})`
+          : sql``
+      }
       ORDER BY value DESC
       LIMIT ${limit}
     `),
