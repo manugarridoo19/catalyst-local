@@ -21,19 +21,22 @@ import { cn } from "@/lib/utils";
 // falta de respaldo se pinta COMO TAL en vez de esconderse: que el modelo
 // quisiera decir algo sin evidencia es información para quien lee.
 
+// Cuatro veredictos ACCIONABLES, los mismos que da /ask en modo decisión.
+// Antes eran observaciones (reforzar/mantener/vigilar/revisar) y no había
+// forma de decir que vendieras: el esquema es el techo de la respuesta.
 const STANCE_LABEL: Record<Stance, string> = {
-  add: "reforzar",
-  hold: "mantener",
-  watch: "vigilar",
-  review: "revisar",
+  ampliar: "ampliar",
+  aguantar: "aguantar",
+  recortar: "recortar",
+  salir: "salir",
   none: "sin evidencia",
 };
 
 const STANCE_TONE: Record<Stance, string> = {
-  add: "border-emerald-600/40 text-emerald-700 dark:text-emerald-300",
-  hold: "border-border/60 text-muted-foreground",
-  watch: "border-amber-600/40 text-amber-700 dark:text-amber-300",
-  review: "border-rose-600/40 text-rose-700 dark:text-rose-300",
+  ampliar: "border-emerald-600/40 text-emerald-700 dark:text-emerald-300",
+  aguantar: "border-border/60 text-muted-foreground",
+  recortar: "border-amber-600/40 text-amber-700 dark:text-amber-300",
+  salir: "border-rose-600/40 text-rose-700 dark:text-rose-300",
   none: "border-border/40 text-muted-foreground/50",
 };
 
@@ -437,6 +440,19 @@ function Board({ res }: { res: PortfolioReviewResponse }) {
                       </a>
                     ))}
                   </p>
+                  {/* La NOVEDAD, aparte y sólo si la hay. Va marcada porque
+                      es lo único que cambia de un día para otro: la postura
+                      de una tesis de años se repite a propósito, y sin
+                      separar los dos campos el lector no distingue "sigo
+                      pensando lo mismo" de "hoy ha pasado algo". */}
+                  {v.news ? (
+                    <p className="mt-1.5 border-l-2 border-primary/40 pl-2 font-editorial text-[12px] leading-relaxed text-foreground/75">
+                      <span className="mr-1.5 font-mono text-[9.5px] uppercase tracking-[0.12em] text-primary/70">
+                        nuevo
+                      </span>
+                      {v.news}
+                    </p>
+                  ) : null}
                   {v.degraded ? (
                     <p className="mt-1 font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground/50">
                       sin cita ni dato duro que lo respalde — postura retirada

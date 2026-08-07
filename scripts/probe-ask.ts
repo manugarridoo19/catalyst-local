@@ -48,7 +48,7 @@ async function main() {
 
   const { classifyIntent, classifyFocus } = await import("../lib/ask/intent");
   const { retrieve } = await import("../lib/ask/retrieve");
-  const { buildAskUserBlock, hasCoverage, answerShape } = await import("../lib/ai/ask");
+  const { buildAskUserBlock, hasCoverage } = await import("../lib/ai/ask");
   const { buildDecisionFacts } = await import("../lib/ask/decision");
   const { getWatchlist } = await import("../lib/db/queries");
   const { getQuotesMap } = await import("../lib/providers/finnhub");

@@ -15,23 +15,56 @@
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { warnIfTruncated } from "@/lib/providers/response";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
+import { formatEarningsContent } from "@/lib/ai/ask";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
 import type { ForwardItem } from "@/lib/ai/forward-ledger";
 import { buildDecisionFacts, type Pressure } from "@/lib/ask/decision";
 import type { PositionContrast } from "@/lib/coach/build";
+import type { Falsifier } from "@/lib/coach/falsifiers";
 import type { EarningsRead } from "@/lib/ask/retrieve";
 import type { PortfolioRetrieval, PositionFacts } from "@/lib/ask/portfolio";
 import type { PricedPosition } from "@/lib/portfolio";
 
-/** Postura sobre una posición. Tokens estables en inglés: la traducción
- *  vive en la UI, así el prompt no cambia si mañana se pinta en otro
- *  idioma. `none` NO lo produce el modelo — lo pone el gate de evidencia. */
-export type Stance = "add" | "hold" | "watch" | "review" | "none";
+/**
+ * Postura sobre una posición. Tokens estables en inglés: la traducción vive
+ * en la UI, así el prompt no cambia si mañana se pinta en otro idioma.
+ * `none` NO lo produce el modelo — lo pone el gate de evidencia.
+ *
+ * ── POR QUÉ CAMBIÓ EL VOCABULARIO (2026-08-07) ────────────────────────────
+ *
+ * Era `add | hold | watch | review`, y esas cuatro son OBSERVACIONES, no
+ * decisiones: "watch" = hay un desenlace fechado, "review" = algo contradice
+ * la tesis. **No existía ninguna forma de decir que vendas.** La UI las
+ * pintaba "reforzar · mantener · vigilar · revisar".
+ *
+ * El esquema es el TECHO de la respuesta: un modelo no puede recomendar lo
+ * que el esquema no contempla. Es exactamente la lección que /ask aprendió el
+ * 2026-07-31 —"cuatro lados, no tres: `add` existe"— y que nunca se propagó a
+ * la superficie hermana, igual que pasó con `earnings`/`frames` el 06-08. El
+ * usuario pidió que le dijera "si es buena idea comprar más, vender,
+ * mantener" y el tipo no tenía dónde escribirlo.
+ *
+ * Ahora son los MISMOS cuatro veredictos que ya usa /ask en modo decisión,
+ * para que las dos superficies no puedan discrepar por vocabulario.
+ */
+export type Stance = "ampliar" | "aguantar" | "recortar" | "salir" | "none";
 
 export type PositionVerdict = {
   symbol: string;
   stance: Stance;
   why: string;
+  /**
+   * Qué ha CAMBIADO desde la revisión anterior. Vacío es una respuesta
+   * legítima y frecuente.
+   *
+   * Existe porque la postura pasó a ser obligatoria para todas las
+   * posiciones, y sin separar los dos campos eso reintroduce exactamente el
+   * relleno que el diseño anterior evitaba omitiendo posiciones: el modelo
+   * tendría que decir algo nuevo cada día sobre siete valores que casi nunca
+   * tienen algo nuevo. Con `news` aparte, "mi postura sigue siendo aguantar y
+   * hoy no ha pasado nada" se puede expresar sin inventar.
+   */
+  news: string | null;
   used: number[];
   /** true si el gate degradó la postura por falta de respaldo. */
   degraded?: boolean;
@@ -51,7 +84,7 @@ Tu único valor es decirle lo que NO puede ver ahí: qué está comprometido a o
 Recibes: (a) la CARTERA con pesos y P&L; (a-bis) la TESIS DEL INVERSOR: qué cree de cada posición, con qué marco la clasificó y cómo se lee lo publicado contra ese marco — es el bloque MÁS IMPORTANTE y va primero; (b) PRESIONES: hechos duros con el lado ya asignado por código — las mismas que ve el modo pregunta de /ask; (c) HECHOS por posición calculados por SQL sobre datos regulatorios; (d) el LIBRO DE FUTUROS: compromisos extraídos de los cuerpos de los artículos que todavía no se han resuelto; (e) VENTA PROGRAMADA de directivos con lo que les queda por colocar; (f) la VARA de consenso de los próximos resultados; (g) NOTICIAS numeradas; (h) el CALENDARIO.
 
 Devuelve SOLO un objeto JSON:
-{"verdict": "...", "positions": [{"symbol": "AAA", "stance": "add|hold|watch|review", "why": "...", "used": [1,4]}], "watchNext": ["...", "..."]}
+{"verdict": "...", "positions": [{"symbol": "AAA", "stance": "ampliar|aguantar|recortar|salir", "why": "...", "news": "..." o null, "used": [1,4]}], "watchNext": ["...", "..."]}
 
 PROHIBIDO — si escribes cualquiera de estas cosas, la respuesta no sirve:
 - Mencionar movimientos de precio: "cae un 8%", "sube tras el anuncio", "la acción se desploma". Los ve él.
@@ -63,21 +96,23 @@ PROHIBIDO — si escribes cualquiera de estas cosas, la respuesta no sirve:
 Reglas:
 - "verdict": 2-4 frases sobre la CARTERA COMO CONJUNTO. Lo que se juega y CUÁNDO: concentración de eventos en el calendario, exposición a un mismo desenlace pendiente, oferta futura de papel acumulada. No describas la composición, que ya la conoce.
 - NO HAGAS ARITMÉTICA. Todos los agregados vienen calculados en el bloque AGREGADOS. Si un número no está escrito literalmente en la entrada, no lo digas.
-- "positions": sólo las posiciones sobre las que tengas algo pendiente o estructural que decir. Omitir es correcto y muy preferible a rellenar. Es mejor devolver tres posiciones con sustancia que siete con relleno.
-- "stance": add = lo pendiente juega a favor · hold = nada pendiente cambia la tesis · watch = hay un desenlace fechado que puede cambiarla · review = hay un compromiso o una constricción futura que la contradice.
+- "positions": UNA ENTRADA POR CADA POSICIÓN DE LA CARTERA, sin excepción. Él no puede decidir sobre lo que no le nombras, y una posición ausente se lee como "no hay nada que decir", que no es lo mismo que "la mantengo". Si de una posición sabes poco, la postura correcta suele ser aguantar y lo que falta va en el "why".
+- "stance": TE MOJAS. Elige uno de los cuatro: **ampliar** (meter dinero nuevo) · **aguantar** (dejarla como está) · **recortar** (quitar una parte) · **salir** (cerrarla). No hay opción de "vigilar": vigilar no es una decisión, es aplazarla, y él ya sabe que hay que vigilar. Son los MISMOS cuatro veredictos que da el modo pregunta de /ask, para que las dos superficies no se contradigan por vocabulario.
+- LA POSTURA VA SOBRE LA EXPOSICIÓN, NUNCA SOBRE EL PRECIO. "recortar" significa que su dinero está más expuesto de lo que la tesis justifica, no que la acción vaya a bajar. Nunca predigas precio ni dirección, y nunca digas cuántas acciones ni cuánto dinero: no conoces su fiscalidad, su horizonte ni sus otros activos.
+- "news": SÓLO lo que ha cambiado desde la revisión anterior, cuya fecha y posturas tienes arriba. Si no ha cambiado nada, pon null — es la respuesta más frecuente y es correcta. NO repitas aquí lo que ya está en el "why". Si tu postura cambia respecto a la anterior, el motivo del cambio va aquí y es obligatorio.
+- QUE UNA POSTURA SE REPITA DÍA TRAS DÍA ES LO NORMAL, no un fallo. Una tesis de años no cambia porque hoy sea miércoles. Lo que no puede repetirse es el "news".
 - LA TESIS DEL INVERSOR MANDA SOBRE TU CRITERIO. El bloque TESIS te dice qué cree él de cada posición, con qué marco la clasificó y cómo se lee lo publicado contra ESE marco. No estás valorando la empresa en abstracto: estás comprobando si lo que ha salido sostiene o rompe SU tesis. Un capex disparado en una empresa que él declaró capital intensivo NO es un problema, es lo que compró — y decirle que lo vigile es no haber leído su marco.
-- Las severidades del bloque TESIS vienen calculadas por el mismo código que ve él en su panel. NO las recalcules ni las contradigas: si una lectura dice "esperado", no puedes construir un "review" encima de ella sin un hecho DISTINTO que lo justifique. Si dice "mortal", no puedes poner "add" sin nombrarla.
-- POSICIÓN SIN TESIS DECLARADA: no le inventes una ni supongas por qué la tiene. Dilo en el "why" ("sin tesis declarada, no se puede contrastar") y limita la postura a lo que sostengan los hechos duros.
-- Si la lectura contra su marco no aporta nada nuevo sobre una posición, esa posición NO entra en "positions". Repetirle su propia tesis de vuelta no es análisis.
-- Las PRESIONES traen el lado ya asignado y NO lo reasignas. Tu postura puede discrepar de una presión, pero NUNCA ignorarla: si pones "add" a una posición con presiones hacia recortar (beta, concentración, venta programada), el "why" tiene que nombrar esa presión y decir por qué lo pendiente pesa más. Una postura que contradice una presión sin mencionarla es una respuesta fallida — el usuario ve las dos superficies y una contradicción muda entre ellas destruye la confianza en ambas.
-- QUE UNA EMPRESA PRESENTE RESULTADOS NO ES MOTIVO DE POSTURA. Todas presentan resultados. Si lo único que tienes de una posición es su fecha y su consenso, OMÍTELA de "positions": ya aparece en watchNext y repetirla ahí es relleno. Sólo entra en "positions" lo que tenga un compromiso pendiente, una constricción de oferta futura, una condición regulatoria o una contradicción real.
-- Si todas tus posturas salen iguales, no has encontrado nada que las distinga: devuelve menos posiciones, no todas con la misma etiqueta.
+- Las severidades del bloque TESIS vienen calculadas por el mismo código que ve él en su panel. NO las recalcules ni las contradigas: si una lectura dice "esperado", no puedes apoyar un "recortar" en ella sin un hecho DISTINTO que lo justifique. Si dice "mortal", no puedes poner "ampliar" sin nombrarla.
+- POSICIÓN SIN TESIS DECLARADA: no le inventes una ni supongas por qué la tiene. Dilo en el "why" ("sin tesis declarada, no se puede contrastar") y apoya la postura sólo en los hechos duros.
+- Las PRESIONES traen el lado ya asignado y NO lo reasignas. Tu postura puede discrepar de una presión, pero NUNCA ignorarla: si pones "ampliar" a una posición con presiones hacia recortar (beta, concentración, venta programada), el "why" tiene que nombrar esa presión y decir por qué lo pendiente pesa más. Una postura que contradice una presión sin mencionarla es una respuesta fallida — el usuario ve las dos superficies y una contradicción muda entre ellas destruye la confianza en ambas.
+- QUE UNA EMPRESA PRESENTE RESULTADOS NO ES MOTIVO DE POSTURA, y este es el fallo más medido de esta superficie. Todas presentan resultados. "Reporta el día X con un consenso de Y" describe el calendario, no la posición: esa frase ya está en watchNext y en el bloque de la VARA. Si es lo único que tienes de un valor, la postura es aguantar y el "why" tiene que decir POR QUÉ la tesis aguanta hasta entonces — no cuándo reporta.
+- Si las siete posturas salen iguales, mira otra vez las presiones y las lecturas contra marco antes de darlas por buenas: una cartera de siete valores con marcos distintos rara vez pide lo mismo en todos. Pero si de verdad son iguales, dilo — inventar diferencias es peor.
 - NO escribas marcadores [n] dentro de "why". Los números van SÓLO en "used".
-- "why": UNA frase que contenga un plazo, una condición o una cantidad futura. Ejemplos válidos: "cierre de la compra de Iridium sujeto a aprobación antimonopolio, previsto para el primer semestre de 2027 [3]"; "el consejero X lleva 5 ventas programadas y le quedan 81.109 acciones por colocar"; "reporta el 29 con un consenso de 7,38$ de BPA tras haber guiado por debajo". Ejemplo inválido: "los insiders están vendiendo y el sentimiento cae".
+- "why": 1-2 frases que SOSTENGAN LA POSTURA, no que describan el valor. Tienen que apoyarse en algo que él no vea en su bróker: una lectura contra su marco, una presión con su lado, un compromiso del libro de futuros, una cifra del comunicado de la empresa, oferta futura declarada. Ejemplos válidos: "aguantar — el capex disparado va a la capa de inversión y su marco lo declara capital intensivo, así que es la tesis ejecutándose, no una grieta [3]"; "recortar — pesa el 27,6% con beta 2,15 y el consejero X tiene 81.109 acciones declaradas por colocar". Ejemplo inválido: "reporta el 13 con un consenso de 0,2087$" — eso es el calendario.
 - "used": los números de las noticias que sostienen el "why". Si sale sólo de los hechos calculados, deja [] — pero el dato exacto tiene que aparecer en la frase.
 - "watchNext": 2-5 puntos, cada uno un DESENLACE PENDIENTE con su plazo o su condición, sacados del LIBRO DE FUTUROS o del CALENDARIO. Ordénalos por proximidad. Si el libro de futuros viene vacío, dilo explícitamente en vez de rellenar con generalidades.
 - NUNCA uses tu propio conocimiento sobre estas empresas. Tus datos de entrenamiento están caducados y el usuario no puede distinguirlo.
-- Si un valor aparece SIN COBERTURA, menciónalo en el veredicto como punto ciego y no le pongas postura.
+- Si un valor aparece SIN COBERTURA, sigue llevando postura —la cartera no deja de tenerlo porque el archivo no sepa nada— pero el "why" tiene que empezar diciendo que se decide a ciegas, y el veredicto lo nombra como punto ciego.
 - Español. Registro de mesa: concreto, sin coletillas, sin descargos, sin "como IA".`;
 
 /**
@@ -164,6 +199,20 @@ export function reviewPressures(
 export type Conviction = {
   contrasts: PositionContrast[];
   earnings: EarningsRead[];
+  /**
+   * Los falsadores que el usuario APROBÓ, y su estado.
+   *
+   * Por diseño son "la ÚNICA puerta a un veredicto duro": el modelo los
+   * propone, el usuario los aprueba y el cron los comprueba contra cada
+   * comunicado. Y no aparecían en ninguno de los nueve bloques del prompt de
+   * la revisión — el modelo opinaba sobre una posición sin saber qué había
+   * aceptado su dueño que la refutaría, que es la información más cara que
+   * hay aquí porque la escribió él y no un generador.
+   *
+   * Un falsador CUMPLIDO (`trippedAt`) es el único hecho de todo el prompt
+   * que autoriza a decir "la tesis está rota" en vez de "hay una grieta".
+   */
+  falsifiers?: Falsifier[];
 };
 
 /**
@@ -182,7 +231,39 @@ export type Conviction = {
  * modelo no la recalcula ni la discute. Es un dato de entrada, igual que
  * el lado de una presión.
  */
-export function formatConviction(contrasts: PositionContrast[]): string {
+/**
+ * Los falsadores aprobados, agrupados por símbolo. Van DENTRO del bloque de
+ * convicción porque son parte de la tesis: es lo que el propio inversor
+ * aceptó que la refutaría, escrito antes de saber el resultado.
+ */
+function formatFalsifiers(falsifiers: Falsifier[]): string {
+  const aprobados = falsifiers.filter((f) => f.status === "aprobado");
+  if (!aprobados.length) return "";
+  const bySymbol = new Map<string, Falsifier[]>();
+  for (const f of aprobados) {
+    bySymbol.set(f.symbol, [...(bySymbol.get(f.symbol) ?? []), f]);
+  }
+  const lines = [...bySymbol.entries()].map(([symbol, fs]) => {
+    const items = fs.map((f) => {
+      const estado = f.trippedAt
+        ? `CUMPLIDO el ${f.trippedAt}${f.trippedEvidence ? ` — la empresa: "${f.trippedEvidence}"` : ""}`
+        : "no cumplido";
+      return `    · ${f.text} → ${estado}`;
+    });
+    return `  ${symbol}:\n${items.join("\n")}`;
+  });
+  return [
+    "",
+    "FALSADORES QUE ÉL APROBÓ (si se cumplen, la tesis está rota — lo decidió él, no tú).",
+    "Un falsador CUMPLIDO es lo ÚNICO en toda esta mesa que autoriza a decir que la tesis se ha roto; sin ninguno cumplido, lo más fuerte que puedes decir es que hay una grieta. Y ninguno cumplido con la posición cayendo NO es una tesis rota: es exactamente el caso para el que se escribieron.",
+    ...lines,
+  ].join("\n");
+}
+
+export function formatConviction(
+  contrasts: PositionContrast[],
+  falsifiers: Falsifier[] = [],
+): string {
   if (!contrasts.length) {
     return "TESIS DEL INVERSOR: NINGUNA DECLARADA. No sabes qué cree sobre ninguna posición — no supongas una tesis ni le atribuyas intenciones.";
   }
@@ -229,6 +310,39 @@ export function formatConviction(contrasts: PositionContrast[]): string {
     "TESIS DEL INVERSOR Y LECTURA CONTRA SU MARCO.",
     "Las severidades entre corchetes ya están calculadas contra el marco que él declaró: confirma = la tesis cumpliéndose · esperado = es lo que compró, no una grieta · vigilar = puede tocar la tesis pero no está probado · mortal = va a la raíz de la tesis.",
     ...lines,
+    formatFalsifiers(falsifiers),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * EL COMUNICADO DE LA EMPRESA, entero.
+ *
+ * La revisión recibía los `EarningsRead` completos desde el 2026-08-06 y sólo
+ * usaba `.attributions` para calcular presiones. Los bullets con las cifras,
+ * el "lo que no se dijo en voz alta" y —sobre todo— la SORPRESA ya calculada
+ * contra el consenso se quedaban fuera del prompt. Medido: el fallo de BPA de
+ * META (−16,0%) y el de ZETA (−85,2%) nunca llegaron al modelo que tenía que
+ * opinar sobre esas dos posiciones. Es la queja del usuario en su forma más
+ * literal: lo NO obvio del comunicado estaba en la BD y se tiraba.
+ *
+ * Reusa `formatEarningsContent` de /ask en vez de reescribirlo: si las dos
+ * superficies formatean la misma cifra de dos maneras, acaban diciendo cosas
+ * distintas del mismo trimestre.
+ */
+function formatEarnings(earnings: EarningsRead[]): string {
+  if (!earnings.length) return "";
+  const blocks = earnings.map((e) => {
+    const head = `── ${e.symbol} · comunicado del ${e.reportDate ?? e.filingDate}${
+      e.headline ? `: ${e.headline}` : ""
+    }`;
+    return `${head}\n${formatEarningsContent(e)}`;
+  });
+  return [
+    "COMUNICADOS DE RESULTADOS DE LAS PROPIAS EMPRESAS (primera mano — mandan sobre cualquier crónica periodística de más abajo).",
+    "Las líneas VS CONSENSUS vienen YA CALCULADAS: cítalas literales y no recalcules ninguna.",
+    ...blocks,
   ].join("\n");
 }
 
@@ -474,6 +588,26 @@ function formatCalendar(r: PortfolioRetrieval): string {
  * cuenta un dato que alguien tuvo que declarar ante la SEC o una fecha ya
  * publicada.
  */
+/**
+ * Señales que cuentan como respaldo DURO.
+ *
+ * Sólo lo que alguien tuvo que declarar ante la SEC o FINRA. Quedan fuera las
+ * que genera el propio Catalyst (`ai_pick`, `analyst_upgrade`, `author_call`)
+ * y el motivo no es doctrinal: es que su propio Signal Lab las mide en
+ * NEGATIVO contra SPY a 7 días — analyst_upgrade −4,21% (n=77), author_call
+ * −2,42% (n=14), ai_pick −0,72% (n=42). Aceptar como prueba dura la salida de
+ * un generador que no bate al índice es circular: el sistema se daba la razón
+ * a sí mismo.
+ *
+ * `hasDecisionEvidence` (lib/ask/decision.ts) ya las excluía por
+ * `provenance: "self"` desde que existe. Esta función, su gemela, contaba
+ * `f.signals.length` sin mirar el `kind`. Otra vez el mismo patrón: los
+ * arreglos no se propagan solos entre las dos superficies.
+ *
+ * Siguen viajando al prompt como contexto — que es su papel legítimo.
+ */
+const HARD_SIGNAL_KINDS = new Set(["cluster_buy", "insider_net_buy", "stake_13d"]);
+
 function hasHardEvidence(f: PositionFacts | undefined): boolean {
   if (!f) return false;
   // `nextEarnings` NO cuenta, y quitarlo es lo que hace que este gate muerda.
@@ -488,7 +622,7 @@ function hasHardEvidence(f: PositionFacts | undefined): boolean {
     f.insiderNet7d ||
       f.insiderNet30d ||
       f.stakes.length ||
-      f.signals.length ||
+      f.signals.some((s) => HARD_SIGNAL_KINDS.has(s.kind)) ||
       (f.daysToCover !== null && f.daysToCover >= 5),
   );
 }
@@ -508,6 +642,21 @@ function hasHardEvidence(f: PositionFacts | undefined): boolean {
 export function applyEvidenceGate(
   positions: PositionVerdict[],
   r: PortfolioRetrieval,
+  /**
+   * Símbolos cuyo COMUNICADO propio se ha leído.
+   *
+   * Cuenta como respaldo duro, y añadirlo (2026-08-07) arregla un agujero
+   * medido en la primera ejecución real del vocabulario nuevo: ZETA y RKLB
+   * volvieron con posturas argumentadas desde el comunicado —"aceleración de
+   * ingresos y expansión del margen EBITDA"— y el gate las degradó a `none`
+   * porque no llevaban número de cita y `hasHardEvidence` no sabía nada de
+   * comunicados. Es el patrón de siempre en este archivo: el comunicado se
+   * metió en el PROMPT y no en la COMPROBACIÓN que lo juzga.
+   *
+   * Y es la evidencia más dura que hay aquí: un 8-K/6-K es la empresa
+   * hablando de sí misma ante el regulador, no una crónica sobre ella.
+   */
+  earningsSymbols: Set<string> = new Set(),
 ): PositionVerdict[] {
   const inPortfolio = new Set(r.portfolio.positions.map((p) => p.symbol));
   const factsBySymbol = new Map(r.facts.map((f) => [f.symbol, f]));
@@ -521,16 +670,47 @@ export function applyEvidenceGate(
     r.citations.map((c) => [c.n, new Set(c.symbols)]),
   );
 
-  return positions
+  const out = positions
     .filter((p) => inPortfolio.has(p.symbol))
     .map((p) => {
       const { why, inline } = splitInlineMarkers(p.why);
       const merged = [...new Set([...(p.used ?? []), ...inline])];
       const used = merged.filter((n) => symbolsOfCitation.get(n)?.has(p.symbol));
-      const backed = used.length > 0 || hasHardEvidence(factsBySymbol.get(p.symbol));
-      if (backed) return { ...p, why, used };
-      return { ...p, why, used, stance: "none" as Stance, degraded: true };
+      const backed =
+        used.length > 0 ||
+        earningsSymbols.has(p.symbol) ||
+        hasHardEvidence(factsBySymbol.get(p.symbol));
+      // La NOVEDAD también pasa por el gate: es la parte que afirma que algo
+      // ha CAMBIADO, o sea la más fácil de fabricar y la que el lector menos
+      // puede auditar. Sin respaldo se borra en vez de degradarse.
+      const news = backed ? p.news : null;
+      if (backed) return { ...p, why, used, news };
+      return { ...p, why, used, news, stance: "none" as Stance, degraded: true };
     });
+
+  // NINGUNA POSICIÓN SE CAE DE LA LISTA (2026-08-07).
+  //
+  // El usuario pidió veredicto de todas, y el prompt lo exige — pero un
+  // prompt es una petición y esto es una comprobación. Un símbolo que el
+  // modelo se salta desaparecía de la pantalla sin rastro, y una posición
+  // ausente se lee como "no hay nada que decir", que es justo lo que no
+  // sabemos. Se rellena con `none` diciendo la verdad: el generador no se
+  // pronunció.
+  const seen = new Set(out.map((p) => p.symbol));
+  for (const p of r.portfolio.positions) {
+    if (seen.has(p.symbol)) continue;
+    out.push({
+      symbol: p.symbol,
+      stance: "none",
+      why: "El generador no se pronunció sobre esta posición en esta revisión.",
+      news: null,
+      used: [],
+      degraded: true,
+    });
+  }
+  // Orden estable por peso: la posición que más pesa se lee primero.
+  const weight = new Map(r.portfolio.positions.map((p) => [p.symbol, p.weightPct ?? 0]));
+  return out.sort((a, b) => (weight.get(b.symbol) ?? 0) - (weight.get(a.symbol) ?? 0));
 }
 
 /**
@@ -542,7 +722,7 @@ export function applyEvidenceGate(
  * perder la señal (a veces el modelo cita mejor en línea que en `used`) y
  * se limpian del texto.
  */
-function splitInlineMarkers(text: string): { why: string; inline: number[] } {
+export function splitInlineMarkers(text: string): { why: string; inline: number[] } {
   const inline: number[] = [];
   const why = text
     .replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (_m, group: string) => {
@@ -552,6 +732,14 @@ function splitInlineMarkers(text: string): { why: string; inline: number[] } {
       }
       return "";
     })
+    // EN ESTE ESQUEMA UN CORCHETE SIGNIFICA UNA COSA: un número de cita.
+    // Misma doctrina que `cleanBrackets` en lib/ai/ask.ts, y aquí faltaba.
+    // Medido el 2026-08-07 con el vocabulario nuevo: el modelo cerraba las
+    // frases con el TICKER entre corchetes — "el capex subió a 35.802M$
+    // [MSFT]" —, que en pantalla se lee como una fuente verificable y no lo
+    // es: es el propio símbolo devuelto al lector. La UI, además, pinta los
+    // [n] reales como enlaces, así que un [MSFT] suelto parece un enlace roto.
+    .replace(/\[[^\]]*\]/g, "")
     // La limpieza deja huecos y puntuación colgando (" . ", " ,").
     .replace(/\s+([.,;:])/g, "$1")
     .replace(/\s{2,}/g, " ")
@@ -560,12 +748,68 @@ function splitInlineMarkers(text: string): { why: string; inline: number[] } {
   return { why: why ? `${why}.` : "", inline };
 }
 
-const STANCES = new Set<Stance>(["add", "hold", "watch", "review"]);
+const STANCES = new Set<Stance>(["ampliar", "aguantar", "recortar", "salir"]);
+
+/** Sinónimos que la cadena de reserva devuelve pese al esquema. No es
+ *  cortesía: `llama-3.1-8b` está al final de la cadena y contesta en inglés
+ *  la mitad de las veces, y un token no reconocido caía al valor por defecto
+ *  — que antes era `watch` y volvía inerte una postura que el modelo sí
+ *  había tomado. */
+const STANCE_ALIASES: Record<string, Stance> = {
+  add: "ampliar",
+  buy: "ampliar",
+  increase: "ampliar",
+  hold: "aguantar",
+  keep: "aguantar",
+  maintain: "aguantar",
+  trim: "recortar",
+  reduce: "recortar",
+  sell: "salir",
+  exit: "salir",
+  close: "salir",
+};
+
+function normalizeStance(raw: unknown): Stance | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim().toLowerCase();
+  if (STANCES.has(s as Stance)) return s as Stance;
+  return STANCE_ALIASES[s] ?? null;
+}
+
+/**
+ * La revisión ANTERIOR, reducida a lo que el redactor necesita: qué dijo y
+ * cuándo. Es el ancla contra la que se mide la NOVEDAD — sin ella, "qué ha
+ * cambiado desde la última vez" no tiene referente y el modelo lo rellena
+ * con lo primero que encuentre en las noticias, que es exactamente el
+ * relleno que este campo existe para evitar.
+ *
+ * Tipo propio y mínimo a propósito: importar `StoredReview` de
+ * `lib/coach/daily-review` cerraría un ciclo (ese módulo importa de éste).
+ */
+export type PreviousReview = {
+  reviewDate: string;
+  positions: Array<{ symbol: string; stance: Stance; why: string }>;
+};
+
+function formatPrevious(prev: PreviousReview | null | undefined): string {
+  if (!prev || !prev.positions.length) {
+    return "REVISIÓN ANTERIOR: NINGUNA. Es la primera, así que TODOS los \"news\" van a null — no hay nada anterior contra lo que algo pueda haber cambiado.";
+  }
+  const lines = prev.positions.map(
+    (p) => `- ${p.symbol}: ${p.stance} — ${p.why}`,
+  );
+  return [
+    `TU REVISIÓN ANTERIOR (${prev.reviewDate}). Es el ancla de "news": sólo es novedad lo que no estuviera ya aquí.`,
+    "Si hoy cambias una postura respecto a ésta, el motivo del cambio es OBLIGATORIO y va en el \"news\" de esa posición.",
+    ...lines,
+  ].join("\n");
+}
 
 export async function reviewPortfolio(
   r: PortfolioRetrieval,
   ledger: ForwardItem[] = [],
   conviction?: Conviction,
+  previous?: PreviousReview | null,
 ): Promise<PortfolioReview> {
   if (!r.portfolio.positions.length) {
     return { verdict: "", positions: [], watchNext: [], model: "none" };
@@ -588,12 +832,27 @@ export async function reviewPortfolio(
     // anónima de tickers: no sabía qué creía el usuario ni cómo había
     // clasificado nada, así que su única salida era describir el mercado —
     // que es exactamente lo que el prompt le prohíbe hacer.
-    conviction ? formatConviction(conviction.contrasts) : "",
-    conviction ? "" : "",
+    conviction
+      ? formatConviction(conviction.contrasts, conviction.falsifiers ?? [])
+      : "",
+    "",
+    // El comunicado va justo detrás de la tesis y DELANTE de las presiones:
+    // es primera mano y es lo que se contrasta contra el marco declarado.
+    conviction ? formatEarnings(conviction.earnings) : "",
+    "",
     // Las presiones van ANTES del libro de futuros: son el suelo compartido
     // con /ask y lo que impide que las dos superficies se contradigan sin
     // enterarse. Un modelo pondera lo que lee antes.
     formatPressures(reviewPressures(r, conviction)),
+    "",
+    formatPrevious(previous),
+    "",
+    // Los priors del Lab suben aquí desde el FINAL del mensaje, donde
+    // quedaban detrás de ~19.000 chars de noticias. Son calibración de cuánto
+    // exigir a cada clase de señal, así que tienen que leerse ANTES de juzgar,
+    // no después. El propio archivo aplica esa doctrina de orden a todo lo
+    // demás y se la saltaba con este bloque.
+    priors ?? "",
     "",
     formatLedger(ledger),
     "",
@@ -605,7 +864,6 @@ export async function reviewPortfolio(
     "",
     "NOTICIAS DEL ARCHIVO (material de apoyo para citar — NO las resumas):",
     formatCitations(r),
-    priors ?? "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -620,7 +878,13 @@ export async function reviewPortfolio(
   let maxTokens = 1800;
   let parsed: {
     verdict?: string;
-    positions?: Array<{ symbol?: string; stance?: string; why?: string; used?: number[] }>;
+    positions?: Array<{
+      symbol?: string;
+      stance?: string;
+      why?: string;
+      news?: string | null;
+      used?: number[];
+    }>;
     watchNext?: string[];
   } = {};
   let model = "none";
@@ -673,8 +937,15 @@ export async function reviewPortfolio(
     .filter((p) => typeof p.symbol === "string" && typeof p.why === "string")
     .map((p) => ({
       symbol: (p.symbol as string).toUpperCase(),
-      stance: STANCES.has(p.stance as Stance) ? (p.stance as Stance) : "watch",
+      // Sin postura reconocible el veredicto es `none`, NO un valor por
+      // defecto. Antes caía a "watch", que es una postura de verdad: el
+      // modelo no había dicho nada y la pantalla afirmaba "vigilar".
+      stance: normalizeStance(p.stance) ?? ("none" as Stance),
       why: (p.why as string).trim(),
+      news:
+        typeof p.news === "string" && p.news.trim().length > 2
+          ? p.news.trim()
+          : null,
       used: Array.isArray(p.used) ? p.used.filter(Number.isInteger) : [],
     }))
     .filter((p) => p.why.length > 0);
@@ -686,7 +957,11 @@ export async function reviewPortfolio(
 
   return {
     verdict,
-    positions: applyEvidenceGate(raw, r),
+    positions: applyEvidenceGate(
+      raw,
+      r,
+      new Set((conviction?.earnings ?? []).map((e) => e.symbol)),
+    ),
     watchNext,
     model,
   };

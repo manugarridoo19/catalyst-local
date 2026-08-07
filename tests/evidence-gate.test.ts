@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyEvidenceGate,
   reviewPressures,
+  splitInlineMarkers,
   type PositionVerdict,
 } from "@/lib/ai/portfolio-review";
 import { buildPortfolio } from "@/lib/portfolio";
@@ -74,18 +75,33 @@ function retrieval(over: Partial<PortfolioRetrieval> = {}): PortfolioRetrieval {
 }
 
 function verdict(over: Partial<PositionVerdict> = {}): PositionVerdict {
-  return { symbol: "AAA", stance: "watch", why: "porque sí", used: [], ...over };
+  return { symbol: "AAA", stance: "aguantar", why: "porque sí", news: null, used: [], ...over };
 }
 
 describe("applyEvidenceGate — qué entra", () => {
   it("descarta símbolos que no están en la cartera", () => {
     const out = applyEvidenceGate([verdict({ symbol: "ZZZ", used: [1] })], retrieval());
-    expect(out).toEqual([]);
+    expect(out.some((p) => p.symbol === "ZZZ")).toBe(false);
+  });
+
+  // Desde el 2026-08-07 la postura es OBLIGATORIA para todas las posiciones,
+  // así que el gate ya no puede devolver una lista más corta que la cartera:
+  // una posición ausente de la pantalla se lee como "no hay nada que decir",
+  // que no es lo que sabemos. Si el modelo se la salta, se rellena diciendo
+  // exactamente eso.
+  it("ninguna posición de la cartera se cae de la lista", () => {
+    const out = applyEvidenceGate([], retrieval());
+    expect(out.map((p) => p.symbol).sort()).toEqual(["AAA", "BBB", "CCC"]);
+    for (const p of out) {
+      expect(p.stance).toBe("none");
+      expect(p.degraded).toBe(true);
+      expect(p.why).toContain("no se pronunció");
+    }
   });
 
   it("una cita válida del propio símbolo sostiene la postura", () => {
     const out = applyEvidenceGate([verdict({ symbol: "AAA", used: [1] })], retrieval());
-    expect(out[0].stance).toBe("watch");
+    expect(out[0].stance).toBe("aguantar");
     expect(out[0].used).toEqual([1]);
     expect(out[0].degraded).toBeUndefined();
   });
@@ -112,7 +128,8 @@ describe("applyEvidenceGate — qué cuenta como hecho duro", () => {
     ["venta neta de insiders a 30d", { insiderNet30d: -1_000_000 }],
     ["compra neta de insiders a 7d", { insiderNet7d: 500_000 }],
     ["un 13D/G declarado", { stakes: [{ filer: "F", pct: 6, filedAt: "2026-07-01" }] }],
-    ["una señal del Lab", { signals: [{ kind: "ai_pick", label: "AI Pick", detectedAt: "2026-07-01", matured: false }] }],
+    // Sólo las señales cuyo origen es un REGISTRO ante la SEC/FINRA.
+    ["una compra en racimo de insiders", { signals: [{ kind: "cluster_buy", label: "Cluster buy", detectedAt: "2026-07-01", matured: false }] }],
     ["days-to-cover alto", { daysToCover: 7 }],
   ] as const;
 
@@ -120,7 +137,7 @@ describe("applyEvidenceGate — qué cuenta como hecho duro", () => {
     it(`${nombre} sostiene una postura SIN cita`, () => {
       const r = retrieval({ facts: [facts("AAA", over as Record<string, unknown>)] });
       const out = applyEvidenceGate([verdict({ symbol: "AAA", used: [] })], r);
-      expect(out[0].stance).toBe("watch");
+      expect(out[0].stance).toBe("aguantar");
       expect(out[0].degraded).toBeUndefined();
     });
   }
@@ -148,7 +165,7 @@ describe("applyEvidenceGate — qué cuenta como hecho duro", () => {
       facts: [facts("AAA", { nextEarnings: "2026-08-01", insiderNet30d: -1_000_000 })],
     });
     const out = applyEvidenceGate([verdict({ symbol: "AAA", used: [] })], r);
-    expect(out[0].stance).toBe("watch");
+    expect(out[0].stance).toBe("aguantar");
     expect(out[0].degraded).toBeUndefined();
   });
 
@@ -168,9 +185,47 @@ describe("applyEvidenceGate — qué cuenta como hecho duro", () => {
       [verdict({ symbol: "AAA", why: "buenas vibraciones", used: [] })],
       retrieval(),
     );
-    expect(out).toHaveLength(1);
-    expect(out[0].why).toContain("buenas vibraciones");
-    expect(out[0].degraded).toBe(true);
+    const aaa = out.find((p) => p.symbol === "AAA")!;
+    // Se CONSERVA su texto: que el modelo quisiera decir algo sin evidencia
+    // es información para quien lee, distinta de "no se pronunció".
+    expect(aaa.why).toContain("buenas vibraciones");
+    expect(aaa.degraded).toBe(true);
+  });
+
+  // El comunicado de la propia empresa es la evidencia MÁS dura que hay: es
+  // la empresa hablando de sí misma ante el regulador, no una crónica sobre
+  // ella. Sin esta rama, una postura argumentada desde el release —"la
+  // aceleración de ingresos y la expansión del margen EBITDA confirman la
+  // tesis"— se degradaba a `none` por no llevar número de cita. Medido con
+  // ZETA y RKLB en la primera ejecución del vocabulario nuevo.
+  it("un comunicado leído de ese símbolo sostiene la postura SIN cita", () => {
+    const out = applyEvidenceGate(
+      [verdict({ symbol: "AAA", used: [] })],
+      retrieval(),
+      new Set(["AAA"]),
+    );
+    const aaa = out.find((p) => p.symbol === "AAA")!;
+    expect(aaa.stance).toBe("aguantar");
+    expect(aaa.degraded).toBeUndefined();
+  });
+
+  it("pero el comunicado de OTRO símbolo no sostiene nada", () => {
+    const out = applyEvidenceGate(
+      [verdict({ symbol: "AAA", used: [] })],
+      retrieval(),
+      new Set(["BBB"]),
+    );
+    expect(out.find((p) => p.symbol === "AAA")!.stance).toBe("none");
+  });
+
+  it("la NOVEDAD también pasa por el gate y se borra sin respaldo", () => {
+    // Es la parte que afirma que algo ha CAMBIADO: la más fácil de fabricar
+    // y la que el lector menos puede auditar.
+    const out = applyEvidenceGate(
+      [verdict({ symbol: "AAA", news: "hoy se ha girado la tesis", used: [] })],
+      retrieval(),
+    );
+    expect(out.find((p) => p.symbol === "AAA")!.news).toBeNull();
   });
 });
 
@@ -263,5 +318,22 @@ describe("reviewPressures — el suelo compartido con /ask", () => {
     const vacio = retrieval();
     vacio.portfolio.positions = [];
     expect(reviewPressures(vacio)).toEqual([]);
+  });
+});
+
+describe("splitInlineMarkers — un corchete es un número de cita y nada más", () => {
+  it("extrae los numéricos y BORRA los demás", () => {
+    // Medido el 2026-08-07 con el vocabulario accionable nuevo: el modelo
+    // cerraba las frases con el ticker entre corchetes ("el capex subió a
+    // 35.802M$ [MSFT]"), que en pantalla se lee como fuente verificable
+    // siendo el propio símbolo devuelto al lector — y la UI pinta los [n]
+    // reales como enlaces, así que un [MSFT] suelto parece un enlace roto.
+    const { why, inline } = splitInlineMarkers(
+      "el capex subió a 35.802M$ [MSFT] frente a 17.079M$ [3], con guía al alza [ver nota]",
+    );
+    expect(inline).toEqual([3]);
+    expect(why).not.toContain("[");
+    expect(why).toContain("el capex subió a 35.802M$");
+    expect(why).toContain("17.079M$");
   });
 });

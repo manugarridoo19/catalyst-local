@@ -7,6 +7,7 @@ import { earningsReads } from "@/lib/ask/retrieve";
 import { extractForwardLedger } from "@/lib/ai/forward-ledger";
 import { reviewPortfolio, type PositionVerdict } from "@/lib/ai/portfolio-review";
 import { loadContrasts } from "@/lib/coach/build";
+import { getFalsifiers } from "@/lib/coach/falsifiers";
 import { claimableSessionIds } from "@/lib/session";
 
 // La revisión de cartera DIARIA.
@@ -145,11 +146,21 @@ export async function runDailyReview(): Promise<{
     const conviction = await Promise.all([
       loadContrasts(session),
       earningsReads(live.map((r) => r.symbol)),
+      // Los falsadores que él aprobó. Es una consulta, cero cuota, y es lo
+      // único del prompt que autoriza a decir "la tesis está rota".
+      getFalsifiers(session),
     ])
-      .then(([contrasts, earnings]) => ({ contrasts, earnings }))
+      .then(([contrasts, earnings, falsifiers]) => ({
+        contrasts,
+        earnings,
+        falsifiers,
+      }))
       .catch(() => undefined);
 
-    const review = await reviewPortfolio(retrieval, ledger, conviction);
+    // La revisión de AYER (o la última que haya) como ancla de la novedad.
+    // Es la misma consulta que sirve el GET, así que cero coste extra.
+    const previous = await getLatestReview(session).catch(() => null);
+    const review = await reviewPortfolio(retrieval, ledger, conviction, previous);
     // Una revisión sin veredicto es un fallo del redactor, no un día
     // tranquilo. Guardarla dejaría el panel enseñando un hueco y el guard
     // de arriba impediría reintentarlo hasta mañana.

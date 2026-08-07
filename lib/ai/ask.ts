@@ -291,7 +291,12 @@ function formatFacts(facts: StructuredFacts[]): string {
  * aterriza en el exhibit del 8-K en EDGAR. Un bloque suelto sería
  * inverificable, que es justo lo que esta feature no puede permitirse.
  */
-function formatEarningsContent(e: EarningsRead): string {
+// Exportada (2026-08-07) para que la REVISIÓN DE CARTERA pinte el comunicado
+// igual que /ask. Recibía los `EarningsRead` COMPLETOS y sólo leía
+// `.attributions`: la sorpresa de BPA de META (−16,0%) y la de ZETA (−85,2%)
+// contra consenso no llegaban a su prompt, teniéndolas en la mano. Mismo
+// patrón que obligó a exportar `earningsReads` el 06-08.
+export function formatEarningsContent(e: EarningsRead): string {
   const lines = e.summary.map((b) => `      • ${b}`);
   const out = [`    CONTENT (the company's own release):`, ...lines];
   if (e.readBetweenLines) {

@@ -10,6 +10,7 @@ import {
 import { reviewPortfolio, type PortfolioReview } from "@/lib/ai/portfolio-review";
 import { extractForwardLedger, type ForwardItem } from "@/lib/ai/forward-ledger";
 import { loadContrasts } from "@/lib/coach/build";
+import { getFalsifiers } from "@/lib/coach/falsifiers";
 import { getLatestReview, type StoredReview } from "@/lib/coach/daily-review";
 
 /** Lo que devuelve el GET: la revisión diaria ya redactada, o `null` si el
@@ -154,10 +155,20 @@ export async function POST(req: Request) {
       const conviction = await Promise.all([
         loadContrasts(session),
         earningsReads(live.map((x) => x.symbol)),
+        getFalsifiers(session),
       ])
-        .then(([contrasts, earnings]) => ({ contrasts, earnings }))
+        .then(([contrasts, earnings, falsifiers]) => ({
+          contrasts,
+          earnings,
+          falsifiers,
+        }))
         .catch(() => undefined);
-      review = await reviewPortfolio(r, ledger, conviction);
+      review = await reviewPortfolio(
+        r,
+        ledger,
+        conviction,
+        await getLatestReview(session).catch(() => null),
+      );
     } else {
       note = "La revisión con IA es sólo para la sesión del dueño. Debajo tienes los datos calculados.";
     }
