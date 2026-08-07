@@ -1039,7 +1039,13 @@ export async function retrieve(opts: {
       headline: e.headline ?? `${e.symbol}: comunicado de resultados ${e.filingDate}`,
       summary: null,
       url: e.exhibitUrl,
-      source: "sec-edgar (8-K ex. 99.1)",
+      // El rótulo se DEDUCE de la URL en vez de afirmar "8-K ex. 99.1": desde
+      // que se leen también los 6-K de emisores extranjeros (2026-08-07) esa
+      // etiqueta fija sería falsa para NU, ASML o TSM, y el lector pincha la
+      // cita y aterriza en un documento que no es lo que el rótulo dice.
+      source: /_?6-?k/i.test(e.exhibitUrl)
+        ? "sec-edgar (6-K, emisor extranjero)"
+        : "sec-edgar (8-K ex. 99.1)",
       symbols: [e.symbol],
       publishedAt: `${e.reportDate ?? e.filingDate}T00:00:00Z`,
       impact: 5,
