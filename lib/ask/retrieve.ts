@@ -373,15 +373,42 @@ const SELECT_COLS = sql`
   to_char(published_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "publishedAt"
 `;
 
+/**
+ * Cuántas plazas puede llevarse el tramo GLOBAL cuando la pregunta NOMBRA un
+ * símbolo. Es una cuota y no un umbral, y el porqué está medido.
+ *
+ * Hasta el 2026-08-07 los dos tramos pedían `ceil(limit/2)` cada uno, así que
+ * la MITAD de las plazas estaba reservada por construcción a ítems que no
+ * hablaban del valor preguntado. Medido con "¿cómo se espera que sea la
+ * earnings report de $NU?": 10 de 20 citas eran de NuScale (SMR), Novartis,
+ * Novo Nordisk, Northrop Grumman y Nucor — 2.507 chars del prompt gastados en
+ * los resultados de otras cinco empresas, y el canal léxico sin una sola
+ * plaza porque el bucle de dedup cortaba en `limit` antes de llegar a él.
+ *
+ * Por qué NO se arregla con la distancia: los ajenos entraron a 0,298-0,310 y
+ * los de NU estaban en 0,250-0,327. Se SOLAPAN, porque "NuScale + earnings"
+ * es de verdad vecino semántico de "earnings de NU" — el embedding no se
+ * equivoca, es que la pregunta no es semántica sino de pertenencia. Cualquier
+ * umbral que dejara fuera a Novartis dejaría fuera también a media NU.
+ *
+ * El tramo global se queda porque su caso de uso es real (el competidor que
+ * explica el movimiento, la regulación sectorial), pero es una guarnición.
+ */
+const VECTOR_GLOBAL_QUOTA = 3;
+
+/** Por debajo de esto, "el archivo tiene material de este valor" es falso y
+ *  la pregunta se trata como temática. Ver el comentario de `globalLimit`. */
+const VECTOR_OWN_THIN = 5;
+
 async function vectorSearch(
   queryVec: number[],
   symbols: string[],
   limit: number,
 ): Promise<Citation[]> {
   const vec = `[${queryVec.join(",")}]`;
-  // Con símbolos: primero los que hablan de ESE ticker, después el resto
-  // por semejanza pura. Sin el segundo tramo, una pregunta sobre NVDA no
-  // vería la noticia de un competidor que la explica.
+  // Con símbolos: primero los que hablan de ESE ticker, y con TODO el
+  // presupuesto a su disposición — antes pedía la mitad y devolvía menos
+  // material del que el archivo tenía sobre el valor preguntado.
   const filtered = symbols.length
     ? unwrapRows<Row>(
         await db.execute(sql`
@@ -393,14 +420,51 @@ async function vectorSearch(
         `),
       )
     : [];
-  const global = unwrapRows<Row>(
-    await db.execute(sql`
-      SELECT ${SELECT_COLS}, (embedding <=> ${vec}::halfvec)::float8 AS dist
-      FROM news_embeddings
-      ORDER BY embedding <=> ${vec}::halfvec
-      LIMIT ${limit}
-    `),
-  );
+  // El tramo global se abre en proporción INVERSA a lo que el archivo tenga
+  // del valor preguntado.
+  //
+  // - Sin símbolos, ES el canal: la pregunta es temática y no hay
+  //   pertenencia que exigir.
+  // - Con cobertura propia de sobra, se cierra. Medido con NU: sus 3 plazas
+  //   se las llevaban NuScale, Novo Nordisk y Novartis, vecinas del
+  //   embedding por el PREFIJO DEL NOMBRE ("Nu…", "No…") y no por el tema.
+  //   Teniendo 15 noticias del propio valor, una cita ajena no es contexto:
+  //   es una plaza menos.
+  // - Con cobertura propia ESCASA se abre entero, y esta rama no es teórica:
+  //   `extractQuestionSymbols` acierta casi siempre pero no siempre, y "¿qué
+  //   se ha dicho de los centros de datos de IA?" extrae **IA** como ticker.
+  //   Un símbolo sin nada en el archivo es indistinguible de una pregunta
+  //   temática, y tratarlo como específico dejaba esa pregunta en 3 citas.
+  //   Vale igual para un ticker legítimo recién llegado al universo.
+  const own = filtered.length;
+  const globalLimit =
+    symbols.length === 0
+      ? limit
+      : own >= Math.ceil(limit / 2)
+        ? 0
+        : own < VECTOR_OWN_THIN
+          ? limit - own
+          : Math.max(0, Math.min(VECTOR_GLOBAL_QUOTA, limit - own));
+  // Con símbolos el tramo global EXCLUYE los del propio símbolo. Si no, sus
+  // 3 plazas se las llevarían las mismas filas que ya trae `filtered` (son
+  // las más cercanas del archivo entero, no sólo del ticker), el dedup las
+  // tiraría y la cuota compraría cero diversidad — que es justo lo contrario
+  // de para lo que existe el segundo tramo.
+  const global = globalLimit
+    ? unwrapRows<Row>(
+        await db.execute(sql`
+          SELECT ${SELECT_COLS}, (embedding <=> ${vec}::halfvec)::float8 AS dist
+          FROM news_embeddings
+          ${
+            symbols.length
+              ? sql`WHERE NOT (symbols && ARRAY[${list(symbols)}]::text[])`
+              : sql``
+          }
+          ORDER BY embedding <=> ${vec}::halfvec
+          LIMIT ${globalLimit}
+        `),
+      )
+    : [];
   return rowsToCitations([...filtered, ...global], "vector");
 }
 
@@ -411,19 +475,61 @@ async function lexicalSearch(
   intent: AskIntent,
 ): Promise<Citation[]> {
   const terms = keywords(question, intent);
-  const conds: SQL[] = [];
+  const termConds: SQL[] = terms.map(
+    (t) => sql`(headline ILIKE ${"%" + t + "%"} OR summary ILIKE ${"%" + t + "%"})`,
+  );
+
+  // CON SÍMBOLO, el filtro es CONJUNTIVO: del ticker preguntado Y que hable
+  // del tema. Hasta el 2026-08-07 los dos iban unidos por OR y el orden era
+  // `published_at DESC`, así que la condición de símbolo no restringía nada —
+  // sólo añadía candidatos, y ganaban los más RECIENTES de todo el archivo
+  // que casaran cualquier término suelto. Medido con la pregunta de NU: 0 de
+  // 10 filas del canal léxico hablaban de NU.
+  //
+  // No se ve en la superficie del dueño porque ahí el vectorial tapa el
+  // agujero. Se ve donde no hay vectorial: el Worker ANÓNIMO (`allowLlm`
+  // false) y el dueño con el embed caído — es decir, justo el modo degradado
+  // que existe para seguir respondiendo cuando falla la cuota.
+  //
+  // Si la conjunción se queda corta se RELAJA a sólo el símbolo, nunca a
+  // sólo los términos: sin el ticker la fila no responde a la pregunta.
   if (symbols.length) {
-    conds.push(sql`symbols && ARRAY[${list(symbols)}]::text[]`);
+    const symCond = sql`symbols && ARRAY[${list(symbols)}]::text[]`;
+    const where = termConds.length
+      ? sql`${symCond} AND (${sql.join(termConds, sql` OR `)})`
+      : symCond;
+    const strict = unwrapRows<Row>(
+      await db.execute(sql`
+        SELECT ${SELECT_COLS}
+        FROM news_embeddings
+        WHERE ${where}
+        ORDER BY published_at DESC
+        LIMIT ${limit}
+      `),
+    );
+    if (strict.length >= limit || !termConds.length) {
+      return rowsToCitations(strict, "lexical");
+    }
+    // Segundo tramo: el resto del ticker por recencia. El dedup de `retrieve`
+    // se encarga de los solapes, así que no hace falta excluirlos aquí.
+    const loose = unwrapRows<Row>(
+      await db.execute(sql`
+        SELECT ${SELECT_COLS}
+        FROM news_embeddings
+        WHERE ${symCond}
+        ORDER BY published_at DESC
+        LIMIT ${limit}
+      `),
+    );
+    return rowsToCitations([...strict, ...loose], "lexical");
   }
-  for (const t of terms) {
-    conds.push(sql`(headline ILIKE ${"%" + t + "%"} OR summary ILIKE ${"%" + t + "%"})`);
-  }
-  if (!conds.length) return [];
+
+  if (!termConds.length) return [];
   const rows = unwrapRows<Row>(
     await db.execute(sql`
       SELECT ${SELECT_COLS}
       FROM news_embeddings
-      WHERE ${sql.join(conds, sql` OR `)}
+      WHERE ${sql.join(termConds, sql` OR `)}
       ORDER BY published_at DESC
       LIMIT ${limit}
     `),
@@ -778,10 +884,31 @@ export async function retrieve(opts: {
   const { question, queryVec } = opts;
   const intent: AskIntent = opts.intent ?? "archive";
   const limit = opts.limit ?? 20;
-  const half = Math.ceil(limit / 2);
+  // Cada canal pide el presupuesto ENTERO y el reparto lo decide el bucle de
+  // dedup de abajo, por orden de prioridad. Antes cada uno pedía `ceil/2`,
+  // que no era un reparto sino un tope: el vectorial se llevaba sus 10 (la
+  // mitad de otras empresas, ver VECTOR_GLOBAL_QUOTA) y el léxico se quedaba
+  // con las 10 restantes que el `break` de `limit` no le llegaba a dar.
   const extracted = await extractQuestionSymbols(question);
   const symbols = extracted.length ? extracted : (opts.carrySymbols ?? []);
+  // Los HECHOS prospectivos (vara de consenso, vendedores sistemáticos,
+  // operaciones abiertas, riesgo) siguen siendo de las decisiones: son
+  // insumo de `buildDecisionFacts`, que sólo se construye ahí.
   const forwardOn = intent === "decision" && symbols.length > 0;
+  // El canal de CITAS por símbolo, en cambio, se enciende siempre que la
+  // pregunta nombre un valor (2026-08-07). Es el arreglo del agujero que
+  // dejaba una pregunta de archivo leyendo sólo `news_embeddings`, o sea
+  // sólo lo que puntuó impacto≥3: medido con NU, 46 noticias en 30 días, 27
+  // con CUERPO extraído y sólo 15 embebidas. Doce cuerpos ya pagados —
+  // incluidas las piezas que explican la licencia de México y la compra de
+  // Banco Porto Real — eran invisibles para /ask por no haber sacado un 3 en
+  // una escala pensada para ordenar un feed, no para responder preguntas.
+  //
+  // Coste: 1 query, cero cuota. Reusa `selectForwardCandidates` en vez de
+  // escribir una consulta nueva porque su orden por peso de CATEGORÍA es
+  // justo lo que hace falta aquí — y porque dos consultas distintas para lo
+  // mismo acaban divergiendo (la lección de `earningsReads` el 06-08).
+  const symbolChannel = symbols.length > 0;
 
   // Se lanza aquí y se pasa SIN await a structuredFacts: las dos cosas
   // vuelan a la vez y los hechos sólo la esperan al final.
@@ -789,8 +916,8 @@ export async function retrieve(opts: {
 
   const [vector, lexical, facts, earnings, fwdCandidates, bars, sellers, rawDeals, risk] =
     await Promise.all([
-    queryVec ? vectorSearch(queryVec, symbols, half) : Promise.resolve([]),
-    lexicalSearch(question, symbols, half, intent),
+    queryVec ? vectorSearch(queryVec, symbols, limit) : Promise.resolve([]),
+    lexicalSearch(question, symbols, limit, intent),
     structuredFacts(
       symbols,
       earningsP.then((rs) => {
@@ -811,7 +938,17 @@ export async function retrieve(opts: {
     // así que en una pregunta de "¿vendo?" la cita mejor rankeada era la
     // crónica de la subida que provocó la pregunta. Es la misma trampa que
     // midió la revisión de cartera el 2026-07-25.
-    forwardOn ? selectForwardCandidates(symbols, 3) : Promise.resolve([]),
+    symbolChannel
+      ? selectForwardCandidates(
+          symbols,
+          // En una DECISIÓN estas citas comparten mesa con el libro de
+          // futuros, las presiones y la posición: 3 por símbolo bastan y el
+          // resto del cupo es mejor gastarlo en semejanza. En archivo o
+          // previa son la ÚNICA vía a los cuerpos ya extraídos, así que se
+          // les da sitio de verdad.
+          intent === "decision" ? 3 : 8,
+        )
+      : Promise.resolve([]),
     forwardOn ? earningsBars(symbols) : Promise.resolve([]),
     forwardOn ? systematicSellers(symbols) : Promise.resolve([]),
     forwardOn ? pendingDeals(symbols) : Promise.resolve([]),

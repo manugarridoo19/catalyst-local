@@ -476,26 +476,22 @@ function focusLine(focus: AskOptions["focus"]): string {
   return "";
 }
 
-export async function askArchive(
+/**
+ * El mensaje de usuario EXACTO que recibe el redactor, y la forma elegida.
+ *
+ * Extraído de `askArchive` (2026-08-07) para que exista UNA sola definición
+ * del prompt y se pueda AUDITAR sin gastar una llamada: `scripts/probe-ask.ts`
+ * lo imprime tal cual. La razón es la de siempre en este proyecto — la queja
+ * "responde genérico" se diagnosticó reconstruyendo el bloque a mano, y una
+ * reconstrucción a mano puede mentir justo donde importa. Si el probe y la
+ * ruta no comparten el código, el probe mide otra cosa.
+ */
+export async function buildAskUserBlock(
   r: Retrieval,
   question: string,
   opts: AskOptions = {},
-): Promise<AskAnswer> {
+): Promise<{ shape: AnswerShape; system: string; userBlock: string }> {
   const { decision, ledger = [], focus = "general", history = [] } = opts;
-  // Una pregunta de decisión con evidencia dura propia (peso, insiders,
-  // una fecha de resultados) merece respuesta aunque el archivo de noticias
-  // venga flojo: la mitad de la respuesta no sale de las noticias.
-  const decisionBacked = Boolean(decision && hasDecisionEvidence(decision));
-  if (!hasCoverage(r) && !decisionBacked) {
-    return {
-      answer: "",
-      sections: [],
-      citations: [],
-      coverage: "none",
-      model: "none",
-    };
-  }
-
   const shape = answerShape(r);
 
   // El track record del PROPIO Catalyst entra como CALIBRACIÓN de cuánto
@@ -536,6 +532,31 @@ export async function askArchive(
     .filter(Boolean)
     .join("\n");
 
+  return { shape, system: SYSTEM_BY_SHAPE[shape], userBlock };
+}
+
+export async function askArchive(
+  r: Retrieval,
+  question: string,
+  opts: AskOptions = {},
+): Promise<AskAnswer> {
+  const { decision, ledger = [] } = opts;
+  // Una pregunta de decisión con evidencia dura propia (peso, insiders,
+  // una fecha de resultados) merece respuesta aunque el archivo de noticias
+  // venga flojo: la mitad de la respuesta no sale de las noticias.
+  const decisionBacked = Boolean(decision && hasDecisionEvidence(decision));
+  if (!hasCoverage(r) && !decisionBacked) {
+    return {
+      answer: "",
+      sections: [],
+      citations: [],
+      coverage: "none",
+      model: "none",
+    };
+  }
+
+  const { shape, system, userBlock } = await buildAskUserBlock(r, question, opts);
+
   let parsed: {
     answer?: string;
     sections?: Array<{ key?: string; title?: string; text?: string }>;
@@ -561,7 +582,7 @@ export async function askArchive(
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await proseCompletion({
       messages: [
-        { role: "system", content: SYSTEM_BY_SHAPE[shape] },
+        { role: "system", content: system },
         { role: "user", content: userBlock },
       ],
       temperature: 0.2,

@@ -85,10 +85,20 @@ function symbolList(symbols: string[]): SQL {
  * Ordena por peso de categoría y sólo después por recencia. El impacto
  * entra como ÚLTIMO criterio de desempate y no como primero — invertir ese
  * orden es exactamente lo que hacía que la revisión leyera lo obvio.
+ *
+ * `perCategory` (2026-08-07) impide que una sola categoría monopolice el
+ * cupo del símbolo. El peso de arriba es una jerarquía ESTRICTA, así que
+ * mientras queden noticias de MA ninguna de PRODUCT entra: medido, RKLB
+ * gastaba sus 4 plazas en 4 artículos de la compra de Iridium y ninguno de
+ * sus ~70 cuerpos de PRODUCT (Neutron, contratos con la Space Force) llegaba
+ * jamás al prompt. Con el tope por categoría la jerarquía sigue mandando el
+ * ORDEN pero deja de decidir el CONJUNTO. Degrada sola: si el símbolo sólo
+ * tiene noticias de una categoría, se devuelven las que haya.
  */
 export async function selectForwardCandidates(
   symbols: string[],
   perSymbol = 4,
+  perCategory = 2,
 ): Promise<ForwardCandidate[]> {
   if (!symbols.length) return [];
   const syms = symbolList(symbols);
@@ -107,29 +117,43 @@ export async function selectForwardCandidates(
       SELECT "newsId", symbol, headline, url, source, "publishedAt", category,
              impact, sentiment, body, "hasExtract"
       FROM (
-        SELECT n.id AS "newsId", nt.ticker AS symbol, n.headline, n.url,
-               n.source, n.category::text AS category,
-               to_char(n.published_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "publishedAt",
-               COALESCE(s.impact, 0) AS impact,
-               COALESCE(s.sentiment, 0) AS sentiment,
-               a.text AS body,
-               (a.news_id IS NOT NULL AND a.status = 'ok') AS "hasExtract",
-               ROW_NUMBER() OVER (
-                 PARTITION BY nt.ticker
-                 ORDER BY (CASE n.category::text ${weightCase} ELSE 0 END) DESC,
-                          n.published_at DESC,
-                          COALESCE(s.impact, 0) DESC
-               ) AS rn
-        FROM news_tickers nt
-        JOIN news n ON n.id = nt.news_id
-        LEFT JOIN news_scores s ON s.news_id = n.id
-        LEFT JOIN article_extracts a ON a.news_id = n.id
-        WHERE nt.ticker IN (${syms})
-          AND n.published_at >= now() - interval '${sql.raw(String(FORWARD_WINDOW_DAYS))} days'
-          AND n.category IS NOT NULL
-          AND n.category NOT IN ('MACRO','OTHER')
-      ) t
+        -- Nivel 2: ya sin la cola de la categoría dominante, se reparte el
+        -- cupo del SÍMBOLO por peso. La jerarquía sigue mandando el orden.
+        SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY symbol
+                    ORDER BY w DESC, "publishedAt" DESC, impact DESC
+                  ) AS rn
+        FROM (
+          -- Nivel 1: dentro de cada categoría, las mejores perCategory.
+          -- Con CUERPO primero: un artículo sin extraer aporta un titular, y
+          -- un titular es justo lo obvio que este canal existe para evitar.
+          SELECT n.id AS "newsId", nt.ticker AS symbol, n.headline, n.url,
+                 n.source, n.category::text AS category,
+                 to_char(n.published_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "publishedAt",
+                 COALESCE(s.impact, 0) AS impact,
+                 COALESCE(s.sentiment, 0) AS sentiment,
+                 a.text AS body,
+                 (a.news_id IS NOT NULL AND a.status = 'ok') AS "hasExtract",
+                 (CASE n.category::text ${weightCase} ELSE 0 END) AS w,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY nt.ticker, n.category::text
+                   ORDER BY (a.news_id IS NOT NULL AND a.status = 'ok') DESC,
+                            n.published_at DESC,
+                            COALESCE(s.impact, 0) DESC
+                 ) AS rn_cat
+          FROM news_tickers nt
+          JOIN news n ON n.id = nt.news_id
+          LEFT JOIN news_scores s ON s.news_id = n.id
+          LEFT JOIN article_extracts a ON a.news_id = n.id
+          WHERE nt.ticker IN (${syms})
+            AND n.published_at >= now() - interval '${sql.raw(String(FORWARD_WINDOW_DAYS))} days'
+            AND n.category IS NOT NULL
+            AND n.category NOT IN ('MACRO','OTHER')
+        ) t
+        WHERE rn_cat <= ${perCategory}
+      ) u
       WHERE rn <= ${perSymbol}
+      ORDER BY symbol, rn
     `),
   );
   return rows.map((c) => ({
