@@ -200,6 +200,22 @@ const ADVISORY = [
   /\btiene\s+sentido\b/,
   /\bes\s+(un\s+)?(buen|mal)\s+momento\b/,
   /\bgood\s+time\s+to\b/,
+  // Añadidas el 2026-08-08. El agujero medido: "¿es momento de vender
+  // Palantir?" clasificaba ARCHIVO y contestó el bibliotecario con la ficha
+  // de resultados, sin decir ni una palabra sobre vender — la queja original
+  // con su QUINTA redacción. "es buen/mal momento" estaba (arriba); la misma
+  // pregunta SIN adjetivo, que es como se dice en la calle, no. La familia
+  // entera es el juicio TEMPORAL: preguntar si es la hora de hacerlo.
+  //
+  // Ninguna clasifica sola — todas exigen la conjunción con un verbo de
+  // acción, así que "¿en qué momento de la llamada habló del capex?" o
+  // "¿cuándo es el momento de mayor volumen?" siguen siendo archivo.
+  /\b(es|sera|llego|ha\s+llegado)\s+(ya\s+)?(el\s+)?momento\s+de\b/,
+  /\bes\s+(ya\s+)?hora\s+de\b/,
+  /\bva\s+siendo\s+hora\b/,
+  /\btoca\s+(ya\s+)?(vender|comprar|salir|recortar|ampliar|aguantar|entrar)\b/,
+  /\bis\s+it\s+time\b/,
+  /\btime\s+to\s+(sell|buy|exit|trim|add|enter|take)\b/,
 ];
 
 /**
@@ -232,6 +248,10 @@ export const DECISION_NOISE = new Set([
   "entrarias", "saldrias", "mantendrias", "compraria", "venderia",
   "largo", "plazo", "think", "thoughts", "take", "bullish", "bearish",
   "term", "would",
+  // Vocabulario del juicio temporal (2026-08-08): en "¿es momento de vender
+  // Palantir?" las plazas del canal léxico se las comían "momento" y
+  // "vender" — ninguna nombra nada del mundo.
+  "momento", "hora", "llegado", "siendo", "toca", "time",
 ]);
 
 /** Minúsculas y sin tildes: los patrones de arriba se escriben una sola vez

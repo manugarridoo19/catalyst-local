@@ -13,6 +13,7 @@
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { warnIfTruncated } from "@/lib/providers/response";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
+import { normalizeQuestion } from "@/lib/ask/intent";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
 import type { ForwardItem } from "@/lib/ai/forward-ledger";
 import {
@@ -437,6 +438,28 @@ const SECTION_KEYS = [
  *  completo lo que el lector entiende. */
 const DECISION_ORDER = ["stance", "add", "hold", "trim", "decides", "unknown"];
 
+/**
+ * ¿La postura SE MOJA? La revisión de cartera no necesita esta pregunta:
+ * allí el veredicto es un campo JSON tipado (`Stance`) y `normalizeStance`
+ * lo garantiza estructuralmente. Aquí la postura es prosa libre, así que el
+ * prompt pide "abre con el veredicto"… y hasta el 2026-08-08 nada lo
+ * comprobaba — la lección medida cuatro veces: meter una regla en el PROMPT
+ * no es meterla en el GATE.
+ *
+ * La lista es GENEROSA a propósito (raíces, ambos idiomas, la negativa
+ * "no vendas" cuenta como veredicto): el único poder de este gate es UN
+ * reintento, así que un falso negativo cuesta una llamada extra y un falso
+ * positivo no existe — una postura comprometida sin estas palabras es
+ * dificilísima de escribir. Tras el segundo intento se acepta lo que venga:
+ * una postura argumentada con otro vocabulario es mejor que ninguna.
+ */
+const VERDICT_RE =
+  /\b(ampli\w*|entr(ar|a|es|aria)\b|aguant\w*|manten\w*|mantien\w*|recort\w*|sal(ir|ida|dria|gas)\b|vend\w*|compr\w*|add(ing)?\b|enter(ing)?\b|hold(ing)?\b|keep(ing)?\b|maintain\w*|trim\w*|reduc\w*|sell(ing)?\b|exit(ing)?\b|buy(ing)?\b)/;
+
+export function stanceCommits(text: string): boolean {
+  return VERDICT_RE.test(normalizeQuestion(text));
+}
+
 /** Las de la previa. Mismo motivo que arriba: un modelo de la cola de la
  *  cadena devuelve las claves como le sale, y una previa que abre por "LO QUE
  *  NO SÉ" y esconde la vara al final se lee como una evasiva. */
@@ -831,9 +854,18 @@ export async function askArchive(
         console.warn("[ask] respuesta sin secciones utilizables — reintento");
         continue;
       }
-      if (shape === "decision" && !sections.some((s) => s.key === "stance")) {
-        console.warn("[ask] decisión sin sección de postura — reintento");
-        continue;
+      if (shape === "decision") {
+        const stance = sections.find((s) => s.key === "stance");
+        if (!stance) {
+          console.warn("[ask] decisión sin sección de postura — reintento");
+          continue;
+        }
+        // Una postura que existe pero no se moja es la queja original con
+        // otra cara: describe el valor y no contesta la pregunta.
+        if (!stanceCommits(stance.text)) {
+          console.warn("[ask] postura sin veredicto — reintento");
+          continue;
+        }
       }
     }
     break;

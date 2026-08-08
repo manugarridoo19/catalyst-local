@@ -14,7 +14,7 @@ import {
   hasDecisionEvidence,
   positionContexts,
 } from "@/lib/ask/decision";
-import { answerShape, cleanBrackets, orderDecisionSections } from "@/lib/ai/ask";
+import { answerShape, cleanBrackets, orderDecisionSections, stanceCommits } from "@/lib/ai/ask";
 import { keywords, ledgerCandidates, looksLikeDeal } from "@/lib/ask/retrieve";
 import type { Citation, Retrieval, StructuredFacts } from "@/lib/ask/retrieve";
 import type { Portfolio } from "@/lib/portfolio";
@@ -139,6 +139,28 @@ describe("classifyIntent", () => {
     // "¿Por qué compraría Buffett esta acción?" pregunta por un tercero.
     expect(classifyIntent("¿Por qué compraría Berkshire esta acción?")).toBe("archive");
     expect(classifyIntent("¿Qué opina el mercado de NVDA?")).toBe("archive");
+  });
+
+  it("«¿es momento de vender Palantir?» es una DECISIÓN — la quinta regresión real", () => {
+    // Medido el 2026-08-08: contestó el bibliotecario con la ficha de
+    // resultados de PLTR sin decir una palabra sobre vender. "es buen/mal
+    // momento" estaba en ADVISORY; la misma pregunta SIN adjetivo, no.
+    expect(classifyIntent("¿Es momento de vender Palantir?")).toBe("decision");
+    expect(classifyIntent("es momento de vender palantir")).toBe("decision");
+    expect(classifyIntent("¿Ha llegado el momento de salir de PLTR?")).toBe("decision");
+    expect(classifyIntent("¿Es ya el momento de comprar más SOFI?")).toBe("decision");
+    expect(classifyIntent("¿Es hora de vender NU?")).toBe("decision");
+    expect(classifyIntent("¿Va siendo hora de tomar beneficios en META?")).toBe("decision");
+    expect(classifyIntent("¿Toca recortar ZETA?")).toBe("decision");
+    expect(classifyIntent("is it time to sell PLTR?")).toBe("decision");
+    expect(classifyIntent("time to take profits on META?")).toBe("decision");
+  });
+
+  it("el juicio temporal NO clasifica solo: sin verbo de acción sigue siendo archivo", () => {
+    // La conjunción es la que protege estas dos, que llevan "momento de"
+    // dentro y son consultas de archivo perfectamente legítimas.
+    expect(classifyIntent("¿En qué momento de la llamada habló del capex?")).toBe("archive");
+    expect(classifyIntent("¿Cuándo es el momento de mayor volumen del día?")).toBe("archive");
   });
 });
 
@@ -825,5 +847,25 @@ describe("daysUntil", () => {
 
   it("una fecha basura no revienta la respuesta", () => {
     expect(daysUntil("no es una fecha")).toBeNull();
+  });
+});
+
+describe("stanceCommits — el gate del veredicto", () => {
+  it("acepta las posturas reales que abren con veredicto, en los dos idiomas", () => {
+    expect(stanceCommits("RECORTAR. El peso del 27,6% con beta 2,15 no lo justifica la tesis [3].")).toBe(true);
+    expect(stanceCommits("Aguantar: el comunicado sostiene el marco y no hay presión de salida.")).toBe(true);
+    expect(stanceCommits("AMPLÍA solo si el consenso revisado aguanta tras el 2 de noviembre.")).toBe(true);
+    expect(stanceCommits("No vendas todavía: la presión de recorte descansa solo en la volatilidad.")).toBe(true);
+    expect(stanceCommits("HOLD. The bull case is carried by the operating numbers [1].")).toBe(true);
+    expect(stanceCommits("Trim the position: the weight alone argues for it.")).toBe(true);
+  });
+
+  it("rechaza la postura que describe sin mojarse — la queja original con otra cara", () => {
+    expect(
+      stanceCommits(
+        "Palantir reportó ingresos récord y el mercado reaccionó con alzas; los analistas discrepan sobre la valoración [2].",
+      ),
+    ).toBe(false);
+    expect(stanceCommits("La situación es mixta y depende del horizonte de cada inversor.")).toBe(false);
   });
 });
