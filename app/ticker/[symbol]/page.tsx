@@ -6,6 +6,8 @@ import { TradingViewChart } from "@/components/ticker/tradingview-chart";
 import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerFundamentals } from "@/components/ticker/ticker-fundamentals";
+import { TickerMetricsPanel } from "@/components/ticker/ticker-metrics-panel";
+import { getMetrics } from "@/lib/metrics/queries";
 import { getShortInterestSeries } from "@/lib/short-interest/queries";
 import {
   getLatestEarningsReport,
@@ -55,6 +57,7 @@ export default async function TickerPage({
     shortInterestSeries,
     earningsReport,
     surpriseHistory,
+    metrics,
   ] = await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
@@ -80,6 +83,10 @@ export default async function TickerPage({
     // Serie de sorpresas trimestre a trimestre (consenso snapshoteado al
     // leer cada 8-K). Crece sola con el barrido de earnings.
     getSurpriseHistory(symbol).catch(() => []),
+    // Fundamentales de negocio: SELECT sobre lo que dejó `refresh-metrics`.
+    // Cero llamadas a Finnhub desde aquí — 429ea a los egress de Cloudflare,
+    // y además la ingesta tiene guard de 20h por símbolo.
+    getMetrics(symbol).catch(() => null),
   ]);
 
   const news: FeedItem[] = newsRows.map((r) => ({
@@ -226,6 +233,11 @@ export default async function TickerPage({
         shortInterest={shortInterestSeries.at(-1) ?? null}
         shortInterestTrend={shortInterestSeries}
       />
+
+      {/* Fundamentales de negocio (Finnhub, 20 cifras + percentiles contra
+          su propia historia). Cerrado por defecto: la barra de arriba ya da
+          el vistazo rápido y esto es para cuando quieres mirar de verdad. */}
+      <TickerMetricsPanel m={metrics} />
 
       {/* Chart left, news right.
           Móvil: una columna, chart altura fija razonable y news debajo
