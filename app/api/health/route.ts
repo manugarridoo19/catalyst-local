@@ -174,6 +174,10 @@ export async function GET(req: Request) {
         gemini: {
           total: geminiPool.total,
           available: geminiPool.available,
+          // Muertas por autenticación (401/403). Se saca aparte de
+          // `available` porque las dos averías piden lo contrario: una se
+          // cura esperando, la otra sólo emitiendo una key nueva.
+          dead: geminiPool.deadCount,
           primary: geminiPool.primary,
           reserve: geminiPool.reserve,
           pool: geminiPool.pool,

@@ -81,6 +81,18 @@ type KeyState = {
    *  NADA de la de 3.1 en esta key — enfriar la key entera tiraba esa
    *  capacidad hasta medianoche Pacific (pendiente del audit 2026-07-21). */
   modelCooldowns: Map<string, number>;
+  /** Motivo por el que la key está MUERTA (revocada, inválida, sin acceso
+   *  al proyecto), o `null` si está sana.
+   *
+   *  No es un cooldown: un 401/403 de autenticación no se cura esperando.
+   *  Hasta ahora caía en el skip-and-continue genérico, así que la key
+   *  muerta se reintentaba EN CADA petición —un viaje de ida y vuelta
+   *  tirado por request— y no quedaba constancia en ninguna parte: en
+   *  `/api/health` una key revocada y una key sana ociosa se ven idénticas.
+   *
+   *  Vive en memoria a propósito: arreglar la key y reiniciar el proceso la
+   *  resucita sola, sin estado malo persistido que haya que limpiar. */
+  deadReason: string | null;
   label: string;
   /** Reserva: cuenta principal del usuario, blindada. Solo se usa cuando
    *  NINGUNA key primaria está disponible. Uso mínimo = perfil casi humano
@@ -123,6 +135,7 @@ function loadKeyPool(): KeyState[] {
       key,
       cooldownUntil: 0,
       modelCooldowns: new Map(),
+      deadReason: null,
       label: `g${++i}`,
       reserve: false,
     });
@@ -134,6 +147,7 @@ function loadKeyPool(): KeyState[] {
       key,
       cooldownUntil: 0,
       modelCooldowns: new Map(),
+      deadReason: null,
       label: `gR${++i}`,
       reserve: true,
     });
@@ -283,9 +297,27 @@ function applyRateLimit(
  *  (key, modelo) expirados). */
 function keyUsableFor(state: KeyState, model: string, now: number): boolean {
   return (
+    state.deadReason === null &&
     state.cooldownUntil <= now &&
     (state.modelCooldowns.get(model) ?? 0) <= now
   );
+}
+
+/**
+ * ¿Este fallo dice que la key está MUERTA, y no ocupada?
+ *
+ * 401 y 403 son de identidad, no de ritmo: esperar no los arregla. El 400
+ * entra sólo cuando Google nombra la key (`API key not valid`), porque un
+ * 400 también lo produce un payload mal formado —y matar la key por un
+ * dialecto equivocado de `thinkingConfig` dejaría el pool vacío por un bug
+ * nuestro.
+ */
+function authFailure(status: number, body: string): string | null {
+  if (status === 401 || status === 403) return body.slice(0, 120) || `HTTP ${status}`;
+  if (status === 400 && /api key not valid|api_key_invalid/i.test(body)) {
+    return body.slice(0, 120);
+  }
+  return null;
 }
 
 // El control de "no pienses" cambió de dialecto en Gemini 3.x: `thinkingBudget`
@@ -362,6 +394,16 @@ async function tryOnceWithKey(
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     if (res.status === 429) applyRateLimit(state, model, text);
+    const muerta = authFailure(res.status, text);
+    if (muerta && state.deadReason === null) {
+      state.deadReason = muerta;
+      // Ruidoso Y una sola vez: es una avería que exige una persona (emitir
+      // una key nueva), no un bache que se cure solo. Repetirlo en cada
+      // request lo convertiría en ruido que se aprende a ignorar.
+      console.error(
+        `[gemini] ${state.label} MUERTA (${res.status}) — el pool sigue con las demás. ${muerta}`,
+      );
+    }
     if ([404, 408, 429, 500, 502, 503].includes(res.status)) {
       throw new GeminiRetriable(
         `${res.status} ${res.statusText}: ${text.slice(0, 120)}`,
@@ -594,7 +636,14 @@ export function getGeminiPoolStatus(): {
     available: boolean;
     cooldownUntil: string | null;
     cooledModels: Record<string, string>;
+    /** Motivo si la key está MUERTA (401/403). Distinto de un cooldown:
+     *  esperar no lo arregla, hace falta emitir una key nueva. */
+    dead: string | null;
   }>;
+  /** Cuántas keys se han caído por autenticación. Si iguala a `total`, el
+   *  proveedor está fuera aunque `available` sea 0 por otra razón — y esas
+   *  dos averías piden acciones opuestas (esperar vs. ir a por keys). */
+  deadCount: number;
 } {
   const now = Date.now();
   // "Disponible" = puede intentar AL MENOS un modelo de la cadena. Una key
@@ -606,6 +655,7 @@ export function getGeminiPoolStatus(): {
     available: KEY_POOL.filter(usable).length,
     primary: KEY_POOL.filter((k) => !k.reserve).length,
     reserve: KEY_POOL.filter((k) => k.reserve).length,
+    deadCount: KEY_POOL.filter((k) => k.deadReason !== null).length,
     pool: KEY_POOL.map((k) => ({
       label: k.label,
       reserve: k.reserve,
@@ -617,6 +667,7 @@ export function getGeminiPoolStatus(): {
           .filter(([, t]) => t > now)
           .map(([m, t]) => [m, new Date(t).toISOString()]),
       ),
+      dead: k.deadReason,
     })),
   };
 }
