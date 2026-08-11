@@ -1261,6 +1261,11 @@ export const earningsReports = pgTable(
      * serializa entera, nunca se consulta por dentro en SQL.
      */
     attribution: text("attribution"),
+    // JSON DeclaredKpi[]: la vara con la que la empresa se mide a sí misma
+    // (ARR y no ingresos, TPV, morosidad, backlog, MW conectados). Nullable
+    // porque los comunicados ya leídos no la traen — regenerar con
+    // `regen-earnings-report.ts` si se quiere rellenar hacia atrás.
+    declaredKpis: text("declared_kpis"),
     model: text("model").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

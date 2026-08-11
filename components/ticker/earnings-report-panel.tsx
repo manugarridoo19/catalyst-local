@@ -88,6 +88,59 @@ export function EarningsReportPanel({
           ))}
         </ul>
 
+        {/* La vara que la EMPRESA declara. Va justo debajo de los bullets y
+            encima del cuadro de consenso a propósito: para media cartera el
+            ingreso no es la cifra por la que su dirección se juzga, y ponerlo
+            después del "vs consensus" sugeriría lo contrario. */}
+        {report.declaredKpis.length > 0 && (
+          <div className="rounded-md border border-border/60 bg-background/40 p-3">
+            <div className="eyebrow mb-1.5 text-[8.5px] text-muted-foreground/70">
+              su propia vara
+            </div>
+            <ul className="space-y-1.5">
+              {report.declaredKpis.map((k, i, arr) => (
+                <li key={i} className="text-[12px] leading-relaxed">
+                  <span className="flex items-baseline justify-between gap-3">
+                    <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground/70">
+                      {k.name}
+                    </span>
+                    <span className="flex items-baseline gap-2">
+                      {k.change && (
+                        <span className="font-mono text-[9px] text-muted-foreground/60">
+                          {k.change}
+                        </span>
+                      )}
+                      <span className="font-mono text-[12px] font-semibold tabular-nums text-foreground">
+                        {k.value}
+                      </span>
+                    </span>
+                  </span>
+                  {/* La cita es lo que separa «la métrica que gestionan» de
+                      «un número del comunicado». Sin ella se pinta la cifra
+                      y nada más — no se insinúa una primacía que la empresa
+                      no reclamó.
+
+                      Una frase que cubre VARIAS métricas se pinta una sola
+                      vez, y detrás de la ÚLTIMA que la comparte para que se
+                      lea cubriéndolas a todas (caso real de SOFI: "grew
+                      members 35% to 15.8 million and products 42% to 24.4
+                      million" respalda dos filas). Ponerla tras la primera
+                      —o suprimirla en la segunda— dejaría a esa fila con
+                      pinta de no tener cita, y aquí `quote: null` SIGNIFICA
+                      algo: que la empresa no reclamó esa métrica como
+                      principal. La deduplicación cosmética habría mentido
+                      sobre el único campo que sostiene la distinción. */}
+                  {k.quote && arr[i + 1]?.quote !== k.quote && (
+                    <p className="mt-0.5 border-l border-primary/40 pl-2 font-editorial text-[11.5px] italic leading-snug text-muted-foreground">
+                      “{k.quote}”
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {history.some((h) => h.revenueActual != null || h.epsActual != null) && (
           <div className="rounded-md border border-border/60 bg-background/40 p-3">
             <div className="eyebrow mb-1.5 text-[8.5px] text-muted-foreground/70">

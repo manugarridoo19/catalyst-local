@@ -3,6 +3,7 @@
 import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { surprisePct } from "@/lib/earnings/surprise";
+import { parseDeclaredKpis, type DeclaredKpi } from "@/lib/ai/earnings-report";
 
 /**
  * Consenso más cercano (±5 días) en `earnings_events` a la fecha de un
@@ -104,6 +105,10 @@ export type EarningsReport = {
   headline: string | null;
   summary: string[];
   readBetweenLines: string | null;
+  /** La vara que la propia empresa declara (ARR y no ingresos, TPV,
+   *  morosidad, backlog, MW). Vacío en los comunicados leídos antes del
+   *  2026-08-11 y en empresas que de verdad se miden por ingreso y BPA. */
+  declaredKpis: DeclaredKpi[];
   model: string;
 };
 
@@ -118,11 +123,12 @@ export async function getLatestEarningsReport(
     headline: string | null;
     summary: string;
     read_between_lines: string | null;
+    declared_kpis: string | null;
     model: string;
   }>(
     await db.execute(sql`
       SELECT symbol, filing_date, exhibit_url, headline, summary,
-             read_between_lines, model
+             read_between_lines, declared_kpis, model
       FROM earnings_reports
       WHERE symbol = ${symbol.toUpperCase()}
       ORDER BY filing_date DESC, id DESC
@@ -145,6 +151,21 @@ export async function getLatestEarningsReport(
     headline: r.headline,
     summary,
     readBetweenLines: r.read_between_lines,
+    // Se revalida al leer y no se confía en lo que hay en la columna: el
+    // JSON se escribió con la versión del validador de aquel día, y los
+    // topes (4 entradas, exclusión de financieros estándar) tienen que
+    // valer también para lo ya guardado. Un parse fallido devuelve vacío en
+    // vez de tumbar el comunicado entero — es carga accesoria.
+    declaredKpis: parseDeclaredKpis(safeJson(r.declared_kpis)),
     model: r.model,
   };
+}
+
+function safeJson(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }

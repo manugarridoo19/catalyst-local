@@ -38,6 +38,10 @@ Return STRICT JSON:
     {"signal": "margen_comprimido", "layer": "inversion",
      "magnitude": "operating margin 38% vs 44% a year ago (-6pp)",
      "quote": "the decline was driven primarily by increased infrastructure investment"}
+  ],
+  "declaredKpis": [
+    {"name": "ARR", "value": "$1.28 billion", "change": "up 34% year-over-year",
+     "quote": "we continue to view subscription ARR, not revenue, as the best indicator of our business momentum"}
   ]
 }
 
@@ -132,6 +136,35 @@ Report only movements the document actually states, worse OR better. Two to
 five entries is normal; an empty array is correct ONLY for a genuinely quiet
 quarter — a release with record figures and raised guidance is not one.
 
+"declaredKpis": the operating metric THIS COMPANY steers by — the number it
+puts in its own headline and leads its release with, which for many
+businesses is NOT revenue. Rubrik says ARR is the real topline signal; a
+payments company leads with TPV and take rate; a lender lives or dies by
+NPLs and delinquency; an AI cloud reports contracted backlog and connected
+megawatts; a broker reports net deposits; a subscription business reports
+net revenue retention, RPO, or customers above a spend tier. Reading such a
+company by revenue alone misses what its own management is managing.
+
+  "name" — the metric as the company names it ("ARR", "TPV", "take rate",
+  "dollar-based net retention rate", "connected power"). Do not translate
+  it into a generic label.
+  "value" — the figure exactly as printed, WITH its unit: "$10.3 billion",
+  "108%", "590 megawatts", "1.07%". Never strip the unit and never convert.
+  "change" — the movement as the release states it ("up 59.5% year-over-year",
+  "down from 1.07% in Q2"), or null if the release does not state one. Do
+  NOT compute it yourself.
+  "quote" — the sentence where management declares THIS is the metric to
+  judge them by, VERBATIM. Use null when the company reports the metric but
+  never claims it is the primary signal. A null here is a real answer and it
+  is the common case; inventing a quote to fill it destroys the only thing
+  that separates "the metric they steer by" from "a number in the release".
+
+Exclude revenue, EPS, gross/operating/net margin, free cash flow and EBITDA:
+those are standard financials with their own fields, and listing them here
+turns this into a duplicate summary. Two to four entries is normal. An empty
+array is the correct answer for a company whose business really is measured
+by revenue and earnings alone.
+
 DO NOT judge severity, and do not say whether any of this is good or bad for
 an investor. Whether a margin squeeze is expected or alarming depends on what
 kind of company the reader believes they own, and that is decided elsewhere.
@@ -157,7 +190,97 @@ export type EarningsReportContent = {
    *  es bueno o malo: eso depende del marco de quien lo lee y se decide en
    *  `lib/coach/frames.ts`. Ver el prompt. */
   attribution: Attribution[];
+  /** La vara con la que la empresa se mide a sí misma. Ver `DeclaredKpi`. */
+  declaredKpis: DeclaredKpi[];
 };
+
+/**
+ * El KPI por el que ESTA empresa dice que hay que juzgarla.
+ *
+ * Para muchos negocios no es el ingreso, y leerlos por el ingreso es leer la
+ * cosa equivocada: Rubrik dice que la señal de topline es el ARR y no los
+ * ingresos; una pasarela de pagos se juzga por TPV y take rate; un
+ * prestamista vive o muere por su morosidad; una nube de GPU por backlog
+ * contratado y megavatios conectados; un bróker por depósitos netos. Eso
+ * está en el comunicado —que este extractor ya leía entero— y no había
+ * ningún campo donde ponerlo, así que se perdía en cada trimestre.
+ *
+ * Los seis campos financieros estándar quedan FUERA a propósito: ya tienen
+ * los suyos, y admitirlos aquí convierte esto en un resumen duplicado.
+ */
+export type DeclaredKpi = {
+  /** El nombre que le da la empresa, sin traducir a una etiqueta genérica. */
+  name: string;
+  /** La cifra tal cual se imprime, CON su unidad: "$10.3 billion", "108%",
+   *  "590 megawatts". Sin unidad un 0,99 y un 99% son el mismo número. */
+  value: string;
+  /** La variación que declara el comunicado, o `null`. Nunca calculada: la
+   *  aritmética del LLM es el modo de fallo que nadie audita. */
+  change: string | null;
+  /** La frase donde la dirección declara que ÉSTA es la vara.
+   *
+   *  `null` es la respuesta común y legítima: la empresa publica la métrica
+   *  sin reclamar que sea la principal. La distinción es TODO el valor del
+   *  campo — sin ella esto es "números sueltos del comunicado" y no "lo que
+   *  su propia dirección está gestionando". Misma doctrina que
+   *  `Attribution.quote`: una afirmación fuerte sin la frase que la respalda
+   *  se degrada, no se acepta. */
+  quote: string | null;
+};
+
+/**
+ * Valida lo que devuelve el extractor. Descarta en silencio lo que no encaje
+ * en vez de intentar arreglarlo, igual que `parseAttributions`.
+ *
+ * El filtro que hace el trabajo es `FINANCIALS_ESTANDAR`: el prompt ya pide
+ * excluirlos, pero pedirlo no es comprobarlo — y este proyecto ya tiene
+ * escrito que un arreglo que vive sólo en el prompt no llega al gate. Sin
+ * este corte, el modelo rellena el campo con "revenue" y "operating margin"
+ * (que son los que más veces aparecen en cualquier comunicado) y el hueco
+ * que se abrió para el ARR de Rubrik se lo come un duplicado del resumen.
+ */
+const FINANCIALS_ESTANDAR =
+  /^(total\s+|net\s+|gaap\s+|non-?gaap\s+|adjusted\s+)*(revenue|revenues|sales|eps|earnings per share|net income|net loss|gross margin|gross profit margin|operating margin|operating income|net margin|net profit margin|free cash flow|fcf|ebitda|adjusted ebitda|operating cash flow)$/i;
+
+export function parseDeclaredKpis(raw: unknown): DeclaredKpi[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DeclaredKpi[] = [];
+  const vistos = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const name =
+      typeof o.name === "string" && o.name.trim()
+        ? o.name.trim().slice(0, 60)
+        : null;
+    const value =
+      typeof o.value === "string" && o.value.trim()
+        ? o.value.trim().slice(0, 60)
+        : null;
+    // Sin nombre no hay métrica, y sin cifra no hay nada que contar: un KPI
+    // nombrado y vacío ocupa sitio y no dice nada.
+    if (!name || !value) continue;
+    if (FINANCIALS_ESTANDAR.test(name)) continue;
+    const clave = name.toLowerCase();
+    if (vistos.has(clave)) continue; // el modelo troceando la misma métrica
+    vistos.add(clave);
+    out.push({
+      name,
+      value,
+      change:
+        typeof o.change === "string" && o.change.trim()
+          ? o.change.trim().slice(0, 120)
+          : null,
+      quote:
+        typeof o.quote === "string" && o.quote.trim()
+          ? o.quote.trim().slice(0, 400)
+          : null,
+    });
+  }
+  // Mismo tope de cordura que la atribución: una empresa no se gestiona por
+  // ocho varas distintas, eso es el modelo vaciando el comunicado.
+  return out.slice(0, 4);
+}
 
 const BASES: EarningsBasis[] = ["GAAP", "adjusted", "other"];
 
@@ -225,6 +348,9 @@ function sanitize(parsed: unknown): EarningsReportContent | null {
     // que la atribución NO puede invalidar el comunicado entero como sí
     // hace un `summary` vacío.
     attribution: parseAttributions(o.attribution),
+    // Vacío también es legítimo aquí, y por un motivo distinto: hay
+    // empresas que de verdad se miden por ingreso y beneficio.
+    declaredKpis: parseDeclaredKpis(o.declaredKpis),
   };
 }
 
@@ -277,7 +403,11 @@ export async function generateEarningsReport(
     // 2026-07-31 al ampliar el vocabulario con señales positivas: hasta 5
     // entradas con cita, y el truncado se manifestó como "unparseable" en
     // la primera regeneración de MSFT.
-    maxTokens: 2600,
+    // …y a 3400 el 2026-08-11 al añadir `declaredKpis` (hasta 4 objetos, y
+    // el `quote` de cada uno es una frase entera del comunicado). El techo
+    // es un tope, no un gasto; quedarse corto NO degrada, tira el
+    // comunicado entero como "unparseable".
+    maxTokens: 3400,
     jsonMode: true,
     tag: "earnings",
   });
@@ -325,6 +455,7 @@ export async function generateEarningsReport(
     revenueEstimate: consensus.revenue,
     epsEstimate: consensus.eps,
     attribution: JSON.stringify(content.attribution),
+    declaredKpis: JSON.stringify(content.declaredKpis),
     model: result.model,
   };
   const insert = db.insert(earningsReports).values(row);
