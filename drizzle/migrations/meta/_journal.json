@@ -281,6 +281,13 @@
       "when": 1786480346358,
       "tag": "0039_solid_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1786486779491,
+      "tag": "0040_magical_wong",
+      "breakpoints": true
     }
   ]
 }

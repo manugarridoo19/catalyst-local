@@ -735,15 +735,36 @@ function buildCalendar(facts: PositionFacts[], forward: ForwardLayer): CalendarI
   // Vendedores sistemáticos: oferta futura conocida. Una venta suelta es
   // ruido; dos o más del mismo directivo en 90d con acciones aún por
   // colocar dice que viene más papel, y eso es anticipación, no crónica.
+  //
+  // La coletilla dependía de una INFERENCIA: decía "venta programada en
+  // curso" siempre, porque el patrón repetido era lo único que teníamos.
+  // Desde que se lee `<aff10b5One>` del Form 4 (2026-08-11) se puede
+  // afirmar, negar o CALLAR, que son tres respuestas distintas:
+  //
+  //   - todas en plan  → sólo oferta. Un plan se firmó meses antes y no
+  //                      dice nada de lo que el directivo piense hoy; leerlo
+  //                      como falta de fe es el error que el prompt no
+  //                      puede corregir si el hecho llega ya deformado.
+  //   - alguna fuera   → oferta Y decisión reciente. Ahí sí hay lectura.
+  //   - sin dato       → se describe el patrón y punto. Antes esto se
+  //                      contaba como "programada", que era inventarlo.
   for (const s of forward.sellers) {
     const quedan =
       s.sharesAfter != null
         ? ` y le quedan ${Math.round(s.sharesAfter).toLocaleString("es-ES")} acciones`
         : "";
+    const plan =
+      s.discretionarySales > 0
+        ? ` — ${s.discretionarySales} de ${s.sales} declaradas FUERA de plan 10b5-1 en el propio Form 4`
+        : s.plannedSales === s.sales
+          ? " — todas declaradas dentro de un plan 10b5-1: es oferta futura, no una opinión sobre el negocio"
+          : s.plannedSales > 0
+            ? ` — ${s.plannedSales} de ${s.sales} dentro de plan 10b5-1 declarado`
+            : "";
     items.push({
       date: null,
       symbol: s.symbol,
-      what: `${s.owner}${s.title ? ` (${s.title})` : ""} lleva ${s.sales} ventas desde ${s.firstSale}${quedan} — venta programada en curso`,
+      what: `${s.owner}${s.title ? ` (${s.title})` : ""} lleva ${s.sales} ventas desde ${s.firstSale}${quedan}${plan}`,
     });
   }
   // Lo fechado primero y en orden; lo indefinido detrás, en el orden de la

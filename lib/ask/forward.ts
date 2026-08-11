@@ -317,6 +317,10 @@ export type SystematicSeller = {
   sharesAfter: number | null;
   /** Acciones vendidas de media por operación — el ritmo. */
   avgShares: number;
+  /** De las `sales`, cuántas declara el filing dentro de un plan 10b5-1. */
+  plannedSales: number;
+  /** Cuántas declara EXPLÍCITAMENTE fuera de plan (casilla a 0). */
+  discretionarySales: number;
 };
 
 /**
@@ -328,9 +332,25 @@ export type SystematicSeller = {
  * venta programada en curso, y `shares_after` dice cuánto queda por
  * colocar. Eso no es leer el pasado: es oferta futura conocida.
  *
- * Se agrupa por (símbolo, persona) y se exige >=2 operaciones. El corte no
- * distingue formalmente un 10b5-1 —Catalyst no guarda las notas al pie del
- * Form 4— pero el patrón repetido es la firma observable del mismo hecho.
+ * Se agrupa por (símbolo, persona) y se exige >=2 operaciones.
+ *
+ * DESDE 2026-08-11 EL PLAN 10b5-1 SE LEE DEL FILING, no se infiere. La SEC
+ * hizo obligatoria la casilla en dic-2022 (vigente abr-2023) y viene como
+ * `<aff10b5One>` en el XML; antes de eso el patrón repetido era la única
+ * firma observable, que es lo que esta nota decía.
+ *
+ * **No cambia si la señal cuenta, cambia QUÉ afirma.** El hecho prospectivo
+ * es la OFERTA FUTURA, y esas acciones salen al mercado con plan o sin él —
+ * por eso un plan no borra la señal. Lo que el plan borra es la lectura de
+ * CONVICCIÓN: una venta programada se firmó meses antes y no dice nada de lo
+ * que el directivo piense este trimestre. Una venta que el filer declara NO
+ * programada sí: se decidió con la información de esa semana.
+ *
+ * Los tres recuentos van SEPARADOS y no fundidos en un booleano. Un grupo
+ * puede mezclar operaciones programadas y discrecionales, y "2 de 5 sin
+ * plan" es justo el caso que un booleano tendría que redondear hacia alguno
+ * de los dos lados inventándose el resto. `unknown` (sin elemento en el
+ * filing) se queda aparte por lo mismo: no es "programada" ni "no lo era".
  */
 export async function systematicSellers(
   symbols: string[],
@@ -345,7 +365,9 @@ export async function systematicSellers(
              MIN(tx_date) AS "firstSale",
              MAX(tx_date) AS "lastSale",
              (ARRAY_AGG(shares_after ORDER BY tx_date DESC))[1]::float8 AS "sharesAfter",
-             AVG(shares)::float8 AS "avgShares"
+             AVG(shares)::float8 AS "avgShares",
+             COUNT(*) FILTER (WHERE planned_sale = 1)::int AS "plannedSales",
+             COUNT(*) FILTER (WHERE planned_sale = 0)::int AS "discretionarySales"
       FROM insider_trades
       WHERE symbol IN (${symbolList(symbols)})
         AND tx_code = 'S'

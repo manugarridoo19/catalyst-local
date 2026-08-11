@@ -1,0 +1,1 @@
+ALTER TABLE "insider_trades" ADD COLUMN "planned_sale" smallint;

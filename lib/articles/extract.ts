@@ -351,6 +351,27 @@ export type Form4Parsed = {
   issuerName: string | null;
   symbol: string | null;
   footnote: string | null;
+  /** ¿La operación iba dentro de un plan 10b5-1 programado de antemano?
+   *
+   *  TRES ESTADOS, y el tercero es el que hace útil al campo. La SEC añadió
+   *  esta casilla como OBLIGATORIA en las enmiendas de dic-2022 (vigentes
+   *  desde abr-2023), así que `<aff10b5One>` viene explícito en el XML —
+   *  hasta entonces sólo se podía inferir del patrón repetido, y eso es lo
+   *  que documentaba el CLAUDE.md de este repo.
+   *
+   *  - `true`  plan programado: se decidió meses antes y NO dice nada de lo
+   *            que el directivo piense hoy del negocio.
+   *  - `false` el filer DECLARÓ que no había plan: venta discrecional,
+   *            decidida con la información de esa semana. Ahí sí hay señal.
+   *  - `null`  el filing no trae el elemento (anterior a 2023, o un formato
+   *            que no lo emite). NO es `false`: leer "ausente" como
+   *            "discrecional" convierte cada Form 4 viejo en una alarma.
+   *
+   *  Misma doctrina que `realized: number | null` en el diario y que
+   *  `avgCost: null` al reforzar — un dato ausente y un dato declarado en
+   *  cero piden reacciones distintas, y colapsarlos fabrica una afirmación.
+   */
+  plannedSale: boolean | null;
   transactions: Form4Transaction[];
 };
 
@@ -392,8 +413,25 @@ export function parseForm4Structured(xml: string): Form4Parsed | null {
     issuerName: xmlValue(xml, "issuerName"),
     symbol: xmlValue(xml, "issuerTradingSymbol"),
     footnote: xmlValue(xml, "footnote"),
+    // `flag()` NO sirve aquí: colapsa "ausente" y "0" en el mismo `false`, y
+    // esos dos casos son justo los que hay que distinguir. `aff10b5One` es
+    // un elemento de DOCUMENTO (hermano de <reportingOwner>), no de
+    // transacción: vale para el filing entero.
+    plannedSale: triState(xml, "aff10b5One"),
     transactions,
   };
+}
+
+/** Un booleano de XML que puede FALTAR. `null` = el documento no lo trae. */
+function triState(xml: string, tag: string): boolean | null {
+  const raw = xmlValue(xml, tag);
+  if (raw === null) return null;
+  const v = raw.trim().toLowerCase();
+  if (v === "1" || v === "true") return true;
+  if (v === "0" || v === "false") return false;
+  // Presente pero ilegible: tampoco es `false`. Un valor que no entendemos
+  // no autoriza a afirmar que no había plan.
+  return null;
 }
 
 // Sintetiza texto legible desde el ownership XML de un Form 4.
@@ -418,9 +456,22 @@ export function parseForm4Xml(xml: string): string | null {
   const of = p.issuerName
     ? ` of ${p.issuerName}${p.symbol ? ` (${p.symbol})` : ""}`
     : "";
+  // El plan 10b5-1 se DICE, y sólo cuando el filing lo declara. Es la
+  // diferencia entre "el CEO vende" y "el CEO ejecuta lo que firmó en
+  // marzo", que es la lectura entera de la noticia; sin esta línea el
+  // cuerpo que /ask cita no permite distinguirlas. Silencio si es `null`:
+  // callar es correcto, inventar "no programada" no.
+  const plan =
+    p.plannedSale === true
+      ? "Filed as made pursuant to a Rule 10b5-1 trading plan adopted in advance."
+      : p.plannedSale === false
+        ? "The filer checked that this was NOT made under a Rule 10b5-1 plan (discretionary)."
+        : null;
+
   return [
     `SEC Form 4 — insider transaction. ${who}${of}:`,
     ...lines,
+    plan,
     p.footnote ? `Footnote: ${stripTags(p.footnote).slice(0, 400)}` : null,
   ]
     .filter(Boolean)

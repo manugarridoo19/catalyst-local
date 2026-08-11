@@ -126,6 +126,10 @@ async function ingestForm4(f: PendingFiling): Promise<number> {
     value: t.value,
     txDate: t.date,
     sharesAfter: t.sharesAfter,
+    // Campo de DOCUMENTO, no de transacción: se desnormaliza en cada fila
+    // igual que ownerName. `null` se conserva como `null` — el `?:` de un
+    // booleano lo habría convertido en 0 sin que nadie lo notara.
+    plannedSale: parsed.plannedSale === null ? null : parsed.plannedSale ? 1 : 0,
     filedAt,
   }));
   // returning() = filas REALMENTE insertadas (onConflictDoNothing puede

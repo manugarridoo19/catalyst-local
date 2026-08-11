@@ -891,6 +891,13 @@ export const insiderTrades = pgTable(
     value: doublePrecision("value"), // shares × price, precalculado
     txDate: text("tx_date"), // yyyy-mm-dd del XML
     sharesAfter: doublePrecision("shares_after"),
+    // <aff10b5One> del Form 4: 1 = plan 10b5-1 programado, 0 = el filer
+    // declaró que NO lo había, NULL = el filing no trae el elemento.
+    // NULLABLE A PROPÓSITO y sin default: con `notNull().default(0)` —el
+    // patrón de los otros tres flags de esta tabla— cada filing anterior a
+    // abr-2023 y cada backfill sin dato entrarían como "venta discrecional
+    // declarada", que es exactamente la afirmación que no se puede hacer.
+    plannedSale: smallint("planned_sale"),
     filedAt: timestamp("filed_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
