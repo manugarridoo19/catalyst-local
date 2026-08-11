@@ -85,6 +85,23 @@ async function main() {
     noteFailure("earnings-calendar", err);
   }
 
+  // Fundamentales de negocio de la watchlist (Finnhub /stock/metric, 1
+  // llamada/símbolo/20h). Cero LLM. No corre en el Worker: Finnhub 429ea a
+  // los egress de Cloudflare.
+  try {
+    const { runRefreshMetricsCron } = await import(
+      "../lib/cron/refresh-metrics"
+    );
+    const m = await runRefreshMetricsCron();
+    if (m.refreshed > 0 || m.failed > 0) {
+      console.log(
+        `[cron-runner] metrics refreshed ${m.refreshed}/${m.symbols} symbols (${m.empty} sin cobertura, ${m.failed} fallidos)`,
+      );
+    }
+  } catch (err) {
+    noteFailure("ticker-metrics", err);
+  }
+
   // AI Picks: mismo patrón que el brief (age check 4h, fallo no tumba).
   try {
     const { maybeGeneratePicks } = await import("../lib/ai/picks");

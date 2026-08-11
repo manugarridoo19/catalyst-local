@@ -64,6 +64,26 @@ async function main() {
         err instanceof Error ? err.message : err,
       );
     }
+
+    // Fundamentales de negocio (1 llamada Finnhub/símbolo/20h). Mismo guard
+    // SKIP_SWEEPS y misma marca por símbolo en job_state, así que el
+    // refresher local y el cron de GH no se pisan.
+    try {
+      const { runRefreshMetricsCron } = await import(
+        "../lib/cron/refresh-metrics"
+      );
+      const m = await runRefreshMetricsCron();
+      if (m.refreshed > 0 || m.failed > 0) {
+        console.log(
+          `[refresh-once] metrics refreshed ${m.refreshed}/${m.symbols} symbols (${m.empty} sin cobertura, ${m.failed} fallidos)`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[refresh-once] metrics refresh failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   // AI Picks: misma cadencia efectiva que el brief (~4-6/día).

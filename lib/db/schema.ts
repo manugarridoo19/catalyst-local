@@ -775,6 +775,71 @@ export const tickerFundamentals = pgTable("ticker_fundamentals", {
     .defaultNow(),
 });
 
+// Fundamentales de NEGOCIO cacheados (2026-08-11), de Finnhub
+// `/stock/metric?metric=all` — UNA llamada del free tier por símbolo que trae
+// 133 ratios más las series anual y trimestral de ~40 de ellos. Es la capa
+// que `ticker_fundamentals` (FMP: P/E trailing, beta, rango 52s) no cubre:
+// forward P/E, PEG, EV/EBITDA, ROIC, márgenes, crecimiento y deuda.
+//
+// Tabla APARTE y no columnas nuevas en `ticker_fundamentals` por dos razones
+// que no se cruzan: fuentes distintas con cadencias distintas (FMP se cachea
+// 7 días por su cupo de 250/día; esto es 1 llamada sobre un límite de 60/min,
+// así que se refresca a diario), y sobre todo porque el CENTINELA negativo de
+// `ticker_fundamentals` se reconoce por "fila con todos los campos vacíos" —
+// meter 25 columnas más ahí rompería `isSentinel` en silencio.
+//
+// Números como doublePrecision y no text: a diferencia de un precio, un ratio
+// no arrastra problema de precisión decimal, y `/portfolio` va a ordenar por
+// estas columnas en SQL.
+export const tickerMetrics = pgTable("ticker_metrics", {
+  symbol: text("symbol")
+    .primaryKey()
+    .references(() => tickers.symbol, { onDelete: "cascade" }),
+  // Valoración
+  forwardPe: doublePrecision("forward_pe"),
+  peTtm: doublePrecision("pe_ttm"),
+  pegTtm: doublePrecision("peg_ttm"),
+  forwardPeg: doublePrecision("forward_peg"),
+  evEbitdaTtm: doublePrecision("ev_ebitda_ttm"),
+  psTtm: doublePrecision("ps_ttm"),
+  pb: doublePrecision("pb"),
+  pTbv: doublePrecision("p_tbv"),
+  evFcf: doublePrecision("ev_fcf"),
+  // Calidad
+  roeTtm: doublePrecision("roe_ttm"),
+  roicTtm: doublePrecision("roic_ttm"),
+  grossMarginTtm: doublePrecision("gross_margin_ttm"),
+  operatingMarginTtm: doublePrecision("operating_margin_ttm"),
+  netMarginTtm: doublePrecision("net_margin_ttm"),
+  fcfMargin: doublePrecision("fcf_margin"),
+  // Crecimiento
+  revenueGrowthTtmYoy: doublePrecision("revenue_growth_ttm_yoy"),
+  revenueGrowth3y: doublePrecision("revenue_growth_3y"),
+  epsGrowthTtmYoy: doublePrecision("eps_growth_ttm_yoy"),
+  epsGrowth3y: doublePrecision("eps_growth_3y"),
+  // Estructura
+  totalDebtToEquity: doublePrecision("total_debt_to_equity"),
+  currentRatio: doublePrecision("current_ratio"),
+  dividendYieldTtm: doublePrecision("dividend_yield_ttm"),
+  payoutRatioTtm: doublePrecision("payout_ratio_ttm"),
+  /** `ValuationHistory` serializado — percentil, mediana y n de cada múltiplo
+   *  contra sus últimos 5 años. text y no jsonb, como `signal_events.meta`:
+   *  se serializa entero y nunca se consulta por dentro en SQL. La serie
+   *  CRUDA de Finnhub (~240 kB/símbolo) no se guarda: Neon free son 512 MB
+   *  para toda la base y el guard de embeddings ya vive en 380. */
+  history: text("history"),
+  /** `DiscardNote[]` serializado — qué cifras tiró el gate de coherencia y
+   *  por qué. Se guarda porque un dato ausente y un dato descartado piden
+   *  reacciones distintas, y sin esto son indistinguibles. */
+  discarded: text("discarded"),
+  /** Trimestre más reciente de la serie ("2026-06-30"): la fecha del dato
+   *  contable, que no es `fetched_at` (cuándo lo bajamos). */
+  asOf: text("as_of"),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 // Contenido extraído del artículo + resumen IA on-demand (2026-07-17).
 // La mayoría de fuentes no traen body o traen boilerplate ("Titular +
 // SiteName"), así que al expandir una card extraemos el artículo real

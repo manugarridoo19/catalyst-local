@@ -361,6 +361,59 @@ export async function getEarningsCalendarRange(
   }
 }
 
+/** Punto de una serie histórica de `/stock/metric`. Finnhub los devuelve
+ *  del MÁS RECIENTE al más antiguo (medido 2026-08-11: MSFT trimestral va de
+ *  2026-06-30 a 1990-03-31) — quien consuma esto no debe asumir orden
+ *  ascendente. */
+export type MetricPoint = { period: string; v: number };
+
+/** Respuesta cruda de `/stock/metric?metric=all`. Se tipa laxo a propósito:
+ *  son 133 claves cuyo conjunto cambia por empresa (un banco no trae
+ *  `grossMarginTTM`), así que un tipo cerrado mentiría. La forma se impone
+ *  en `lib/metrics/derive.ts`, que es quien decide qué se lee y qué se tira. */
+export type FinnhubBasicFinancials = {
+  metric: Record<string, unknown>;
+  series: {
+    annual?: Record<string, MetricPoint[]>;
+    quarterly?: Record<string, MetricPoint[]>;
+  };
+};
+
+/** Fundamentales completos de un símbolo — UNA llamada del free tier que trae
+ *  133 ratios (forward P/E, PEG, EV/EBITDA, ROIC, márgenes, crecimiento) MÁS
+ *  las series anual y trimestral de ~40 de ellos. Verificado en free tier el
+ *  2026-08-11; sus vecinos `price-target`, `eps-estimate` y `revenue-estimate`
+ *  responden 403 en el mismo plan, así que el consenso PROSPECTIVO que
+ *  tenemos es el que ya viene embebido aquí (`forwardPE`, `forwardPEG`).
+ *
+ *  Ojo con el tamaño: ~240 kB por símbolo (la serie trimestral de MSFT son
+ *  146 puntos × 41 métricas). Por eso el timeout sube a 15s y por eso NUNCA
+ *  se guarda cruda — ver `lib/metrics/derive.ts`.
+ *
+ *  `null` = el fetch falló (429/red), igual que el calendario: el caller de
+ *  la cache no debe borrar una fila buena por un corte transitorio. */
+export async function getBasicFinancials(
+  symbol: string,
+): Promise<FinnhubBasicFinancials | null> {
+  try {
+    const data = await fh<Partial<FinnhubBasicFinancials>>(
+      "/stock/metric",
+      { symbol: symbol.toUpperCase(), metric: "all" },
+      15_000,
+    );
+    // Símbolo sin cobertura: Finnhub responde 200 con `{"metric":{},"series":{}}`
+    // o directamente sin las claves. Es una respuesta REAL ("no hay dato"),
+    // no un fallo, así que devuelve un objeto vacío y no `null` — el caller
+    // marca el intento y no lo re-pregunta en cada tick.
+    return {
+      metric: (data.metric ?? {}) as Record<string, unknown>,
+      series: data.series ?? {},
+    };
+  } catch {
+    return null;
+  }
+}
+
 export type CompactQuote = {
   price: number;
   change: number;

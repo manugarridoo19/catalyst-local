@@ -1,0 +1,32 @@
+CREATE TABLE "ticker_metrics" (
+	"symbol" text PRIMARY KEY NOT NULL,
+	"forward_pe" double precision,
+	"pe_ttm" double precision,
+	"peg_ttm" double precision,
+	"forward_peg" double precision,
+	"ev_ebitda_ttm" double precision,
+	"ps_ttm" double precision,
+	"pb" double precision,
+	"p_tbv" double precision,
+	"ev_fcf" double precision,
+	"roe_ttm" double precision,
+	"roic_ttm" double precision,
+	"gross_margin_ttm" double precision,
+	"operating_margin_ttm" double precision,
+	"net_margin_ttm" double precision,
+	"fcf_margin" double precision,
+	"revenue_growth_ttm_yoy" double precision,
+	"revenue_growth_3y" double precision,
+	"eps_growth_ttm_yoy" double precision,
+	"eps_growth_3y" double precision,
+	"total_debt_to_equity" double precision,
+	"current_ratio" double precision,
+	"dividend_yield_ttm" double precision,
+	"payout_ratio_ttm" double precision,
+	"history" text,
+	"discarded" text,
+	"as_of" text,
+	"fetched_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "ticker_metrics" ADD CONSTRAINT "ticker_metrics_symbol_tickers_symbol_fk" FOREIGN KEY ("symbol") REFERENCES "public"."tickers"("symbol") ON DELETE cascade ON UPDATE no action;
