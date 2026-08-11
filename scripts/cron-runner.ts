@@ -102,6 +102,24 @@ async function main() {
     noteFailure("ticker-metrics", err);
   }
 
+  // Dilución de la watchlist (XBRL de la SEC, guard de 7 días por símbolo).
+  // Sin clave y sin cuota; hasta 3 peticiones por símbolo. Cadencia larga a
+  // propósito: el conteo de acciones sólo cambia cuando la empresa presenta,
+  // así que refrescarlo a diario sería reescribir el mismo número.
+  try {
+    const { runRefreshDilutionCron } = await import(
+      "../lib/cron/refresh-dilution"
+    );
+    const d = await runRefreshDilutionCron();
+    if (d.refreshed > 0) {
+      console.log(
+        `[cron-runner] dilution refreshed ${d.refreshed}/${d.symbols} symbols (${d.empty} sin cobertura)`,
+      );
+    }
+  } catch (err) {
+    noteFailure("ticker-dilution", err);
+  }
+
   // AI Picks: mismo patrón que el brief (age check 4h, fallo no tumba).
   try {
     const { maybeGeneratePicks } = await import("../lib/ai/picks");
