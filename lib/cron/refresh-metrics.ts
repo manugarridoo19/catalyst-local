@@ -1,8 +1,26 @@
-import { sql } from "drizzle-orm";
+import { sql, getTableColumns } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
+import { tickerMetrics } from "@/lib/db/schema";
 import { getBasicFinancials } from "@/lib/providers/finnhub";
 import { deriveMetrics } from "@/lib/metrics/derive";
 import { jobRanWithin, markJobRun } from "@/lib/cron/job-state";
+
+/**
+ * `SET col = EXCLUDED.col` para TODAS las columnas menos la clave.
+ *
+ * Se deriva del esquema en vez de escribirse: una columna nueva que no
+ * aparezca aquí no da error, simplemente deja de refrescarse — la fila
+ * conserva para siempre el valor del día que se creó, que es peor que un
+ * NULL porque parece un dato.
+ */
+function excludedSet(): Record<string, ReturnType<typeof sql>> {
+  const set: Record<string, ReturnType<typeof sql>> = {};
+  for (const [prop, col] of Object.entries(getTableColumns(tickerMetrics))) {
+    if (col.name === "symbol") continue;
+    set[prop] = sql.raw(`excluded.${col.name}`);
+  }
+  return set;
+}
 
 // Refresca `ticker_metrics` para los símbolos de la watchlist. Una llamada a
 // Finnhub por símbolo, cero LLM.
@@ -72,47 +90,37 @@ export async function runRefreshMetricsCron(): Promise<MetricsRefreshResult> {
         continue;
       }
 
-      await db.execute(sql`
-        INSERT INTO ticker_metrics (
-          symbol, forward_pe, pe_ttm, peg_ttm, forward_peg, ev_ebitda_ttm,
-          ps_ttm, pb, p_tbv, ev_fcf, roe_ttm, roic_ttm, gross_margin_ttm,
-          operating_margin_ttm, net_margin_ttm, fcf_margin,
-          revenue_growth_ttm_yoy, revenue_growth_3y, eps_growth_ttm_yoy,
-          eps_growth_3y, total_debt_to_equity, current_ratio,
-          dividend_yield_ttm, payout_ratio_ttm, history, discarded, as_of,
-          fetched_at
-        ) VALUES (
-          ${symbol}, ${m.forwardPe}, ${m.peTtm}, ${m.pegTtm}, ${m.forwardPeg},
-          ${m.evEbitdaTtm}, ${m.psTtm}, ${m.pb}, ${m.pTbv}, ${m.evFcf},
-          ${m.roeTtm}, ${m.roicTtm}, ${m.grossMarginTtm},
-          ${m.operatingMarginTtm}, ${m.netMarginTtm}, ${m.fcfMargin},
-          ${m.revenueGrowthTtmYoy}, ${m.revenueGrowth3y}, ${m.epsGrowthTtmYoy},
-          ${m.epsGrowth3y}, ${m.totalDebtToEquity}, ${m.currentRatio},
-          ${m.dividendYieldTtm}, ${m.payoutRatioTtm},
-          ${JSON.stringify(m.history)}, ${JSON.stringify(m.discarded)},
-          ${m.asOf}, now()
-        )
-        ON CONFLICT (symbol) DO UPDATE SET
-          forward_pe = EXCLUDED.forward_pe, pe_ttm = EXCLUDED.pe_ttm,
-          peg_ttm = EXCLUDED.peg_ttm, forward_peg = EXCLUDED.forward_peg,
-          ev_ebitda_ttm = EXCLUDED.ev_ebitda_ttm, ps_ttm = EXCLUDED.ps_ttm,
-          pb = EXCLUDED.pb, p_tbv = EXCLUDED.p_tbv, ev_fcf = EXCLUDED.ev_fcf,
-          roe_ttm = EXCLUDED.roe_ttm, roic_ttm = EXCLUDED.roic_ttm,
-          gross_margin_ttm = EXCLUDED.gross_margin_ttm,
-          operating_margin_ttm = EXCLUDED.operating_margin_ttm,
-          net_margin_ttm = EXCLUDED.net_margin_ttm,
-          fcf_margin = EXCLUDED.fcf_margin,
-          revenue_growth_ttm_yoy = EXCLUDED.revenue_growth_ttm_yoy,
-          revenue_growth_3y = EXCLUDED.revenue_growth_3y,
-          eps_growth_ttm_yoy = EXCLUDED.eps_growth_ttm_yoy,
-          eps_growth_3y = EXCLUDED.eps_growth_3y,
-          total_debt_to_equity = EXCLUDED.total_debt_to_equity,
-          current_ratio = EXCLUDED.current_ratio,
-          dividend_yield_ttm = EXCLUDED.dividend_yield_ttm,
-          payout_ratio_ttm = EXCLUDED.payout_ratio_ttm,
-          history = EXCLUDED.history, discarded = EXCLUDED.discarded,
-          as_of = EXCLUDED.as_of, fetched_at = now()
-      `);
+      // ─── POR QUÉ ESTO NO ES UN `INSERT` A MANO ──────────────────────
+      //
+      // Lo era, con las 28 columnas escritas tres veces (lista, VALUES y el
+      // SET del ON CONFLICT). El 2026-08-11 se añadieron `revenue_growth_5y`
+      // y `fcf_cagr_5y` al esquema y al derivador, y NO LLEGARON A LA BD:
+      // typecheck en verde, migración aplicada, el refresco informando
+      // "7/7 refrescados · 0 fallidos" y las dos columnas a NULL. Ningún
+      // error en ninguna capa — el escritor simplemente no las nombraba.
+      //
+      // Una lista de columnas a mano es un tercer sitio donde el esquema
+      // tiene que repetirse, y el fallo por olvido es SILENCIOSO y aprueba
+      // los guards. Con el constructor de Drizzle las columnas salen del
+      // propio objeto de esquema, así que añadir una es un solo cambio.
+      await db
+        .insert(tickerMetrics)
+        .values({
+          symbol,
+          ...m,
+          // Las dos únicas que no van tal cual: la columna es `text` y el
+          // campo es un objeto.
+          history: JSON.stringify(m.history),
+          discarded: JSON.stringify(m.discarded),
+          fetchedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: tickerMetrics.symbol,
+          // El SET se construye a partir de las columnas del esquema, no a
+          // mano: es la mitad del ON CONFLICT donde el olvido no da error
+          // sino un dato que deja de actualizarse.
+          set: excludedSet(),
+        });
       refreshed++;
     }
   }

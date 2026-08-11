@@ -93,8 +93,11 @@ export type TickerMetrics = {
   // --- Crecimiento ---
   revenueGrowthTtmYoy: number | null;
   revenueGrowth3y: number | null;
+  revenueGrowth5y: number | null;
   epsGrowthTtmYoy: number | null;
   epsGrowth3y: number | null;
+  /** CAGR a 5 años del flujo de caja operativo libre (`focfCagr5Y`). */
+  fcfCagr5y: number | null;
   // --- Estructura ---
   totalDebtToEquity: number | null;
   currentRatio: number | null;
@@ -255,8 +258,17 @@ export function deriveMetrics(raw: FinnhubBasicFinancials): TickerMetrics {
 
     revenueGrowthTtmYoy: num(m.revenueGrowthTTMYoy),
     revenueGrowth3y: num(m.revenueGrowth3Y),
+    // El tercer punto del arco. Con TTM y 3 años no se distingue una
+    // desaceleración estructural de un año flojo; con 5 sí. Cobertura
+    // medida en la watchlist: 6 de 7 (falta SOFI).
+    revenueGrowth5y: num(m.revenueGrowth5Y),
     epsGrowthTtmYoy: num(m.epsGrowthTTMYoy),
     epsGrowth3y: num(m.epsGrowth3Y),
+    // Crecimiento compuesto a 5 años del flujo de caja operativo libre. El
+    // bloque de crecimiento sólo miraba ingresos y BPA, y una empresa puede
+    // crecer las dos cosas sin que la caja acompañe. Cobertura 4 de 7 — las
+    // que faltan aún no generan caja, que es una respuesta y no un hueco.
+    fcfCagr5y: num(m.focfCagr5Y),
 
     totalDebtToEquity: num(m["totalDebt/totalEquityQuarterly"]),
     currentRatio: num(m.currentRatioQuarterly),

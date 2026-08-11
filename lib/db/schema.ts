@@ -815,8 +815,13 @@ export const tickerMetrics = pgTable("ticker_metrics", {
   // Crecimiento
   revenueGrowthTtmYoy: doublePrecision("revenue_growth_ttm_yoy"),
   revenueGrowth3y: doublePrecision("revenue_growth_3y"),
+  revenueGrowth5y: doublePrecision("revenue_growth_5y"),
   epsGrowthTtmYoy: doublePrecision("eps_growth_ttm_yoy"),
   epsGrowth3y: doublePrecision("eps_growth_3y"),
+  // CAGR a 5 años del flujo de caja operativo libre: el bloque de
+  // crecimiento sólo miraba ingresos y BPA, y se puede crecer las dos cosas
+  // sin que la caja acompañe.
+  fcfCagr5y: doublePrecision("fcf_cagr_5y"),
   // Estructura
   totalDebtToEquity: doublePrecision("total_debt_to_equity"),
   currentRatio: doublePrecision("current_ratio"),

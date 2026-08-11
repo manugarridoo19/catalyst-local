@@ -30,8 +30,10 @@ type Row = {
   fcf_margin: number | null;
   revenue_growth_ttm_yoy: number | null;
   revenue_growth_3y: number | null;
+  revenue_growth_5y: number | null;
   eps_growth_ttm_yoy: number | null;
   eps_growth_3y: number | null;
+  fcf_cagr_5y: number | null;
   total_debt_to_equity: number | null;
   current_ratio: number | null;
   dividend_yield_ttm: number | null;
@@ -81,8 +83,10 @@ function rowToMetrics(r: Row): StoredMetrics {
     fcfMargin: r.fcf_margin,
     revenueGrowthTtmYoy: r.revenue_growth_ttm_yoy,
     revenueGrowth3y: r.revenue_growth_3y,
+    revenueGrowth5y: r.revenue_growth_5y,
     epsGrowthTtmYoy: r.eps_growth_ttm_yoy,
     epsGrowth3y: r.eps_growth_3y,
+    fcfCagr5y: r.fcf_cagr_5y,
     totalDebtToEquity: r.total_debt_to_equity,
     currentRatio: r.current_ratio,
     dividendYieldTtm: r.dividend_yield_ttm,

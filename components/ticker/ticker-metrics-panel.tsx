@@ -228,8 +228,18 @@ export function TickerMetricsPanel({ m }: { m: StoredMetrics | null }) {
             value={pct(m.revenueGrowth3y)}
             hint="El compuesto a 3 años dice si el interanual de hoy es la tendencia o un rebote."
           />
+          <Row
+            label="Ingresos 5 años"
+            value={pct(m.revenueGrowth5y)}
+            hint="El arco completo. Con TTM y 3 años no se distingue una desaceleración estructural de un año flojo."
+          />
           <Row label="BPA interanual" value={pct(m.epsGrowthTtmYoy)} />
           <Row label="BPA 3 años" value={pct(m.epsGrowth3y)} />
+          <Row
+            label="Caja libre 5 años"
+            value={pct(m.fcfCagr5y)}
+            hint="CAGR del flujo de caja operativo libre. Se puede crecer en ingresos y en beneficio sin que la caja acompañe; aquí se ve."
+          />
         </Group>
 
         <Group title="Cómo aguanta">
