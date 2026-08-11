@@ -20,7 +20,10 @@ import type { EarningsFiling } from "@/lib/earnings/filings";
 import { consensusNear } from "@/lib/earnings/queries";
 import { parseAttributions, type Attribution } from "@/lib/coach/frames";
 
-const SYSTEM_PROMPT = `You are a buy-side analyst reading a company's own earnings press release (SEC 8-K, exhibit 99.1).
+// Exportado SÓLO para que `tests/prompt-schema-contract.test.ts` pueda
+// comprobar que el vocabulario de señales que se le pide al modelo es el
+// mismo que `SIGNALS` de frames.ts. No importarlo para otra cosa.
+export const EARNINGS_SYSTEM_PROMPT = `You are a buy-side analyst reading a company's own earnings press release (SEC 8-K, exhibit 99.1).
 
 Return STRICT JSON:
 {
@@ -71,7 +74,19 @@ release usually says which ("driven by", "primarily reflects", "due to").
   "signal" — exactly one of: margen_comprimido, capex_disparado,
   nucleo_desacelera, guidance_recortada, hito_incumplido, cuota_perdida,
   insider_vendiendo, deuda_creciendo, nucleo_acelera, margen_expandido,
-  guidance_elevada. Skip anything that fits none of these.
+  guidance_elevada, guidance_reiterada. Skip anything that fits none of these.
+
+  Guidance has THREE states, not two. "guidance_reiterada" is the one that
+  hides: the company REAFFIRMS its outlook instead of raising or cutting it,
+  and the release will not flag this — it reads as continuity. Report it
+  whenever the outlook is restated unchanged, and it matters MOST when the
+  quarter itself beat: a company that exceeded its own guidance and still
+  holds the full-year number is telling you something about its visibility.
+  Put the two figures in "magnitude" (the prior guide and the reaffirmed
+  one) so the reader can see they are the same. If the company raised, that
+  is guidance_elevada; if it lowered, guidance_recortada. Do NOT report
+  guidance_reiterada when the release simply omits guidance — an absent
+  outlook is not a reaffirmed one, and it belongs in readBetweenLines.
 
   The last three are POSITIVE signals and they matter as much as the
   negative ones: a reader tracking whether their thesis is EXECUTING needs
@@ -248,7 +263,7 @@ export async function generateEarningsReport(
 
   const result = await proseCompletion({
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: EARNINGS_SYSTEM_PROMPT },
       {
         role: "user",
         content: `Company: ${filing.symbol}. Filed ${filing.filingDate}.\n\n${text}`,

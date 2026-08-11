@@ -42,6 +42,102 @@ describe("los ejes invierten la lectura de la MISMA señal", () => {
     expect(severityOf(PRESETS.ciclica, "guidance_recortada")).toBe("esperado");
     expect(severityOf(PRESETS.turnaround, "guidance_recortada")).toBe("mortal");
   });
+
+  it("guidance REAFIRMADA: esperado con ciclo exógeno, vigilar sin él", () => {
+    // El par en desacuerdo del tercer estado de la guía. Mantener la vara
+    // con la macro en contra es lo cuerdo; mantenerla sin excusa de ciclo
+    // es la dirección no comprometiéndose con más.
+    expect(severityOf(PRESETS.ciclica, "guidance_reiterada")).toBe("esperado");
+    expect(severityOf(PRESETS.compounder, "guidance_reiterada")).toBe("vigilar");
+  });
+});
+
+describe("guidance: los TRES estados existen y ninguno colapsa en otro", () => {
+  // El agujero que esto cierra: el vocabulario sólo tenía los dos extremos,
+  // así que "reafirmada" no era una señal débil — era inexpresable, y un
+  // comunicado que la contuviera salía como trimestre tranquilo. Tercera vez
+  // que este proyecto se come el mismo fallo de esquema.
+
+  it("reafirmar NUNCA es mortal, en ninguna combinación de ejes", () => {
+    // La restricción dura. `mortal` es «golpea la tesis en su raíz» y una
+    // guía reafirmada no incumple nada: la empresa sigue diciendo lo mismo
+    // que dijo. Si alguna rama llegara a mortal, el detector habría vuelto
+    // a ser un umbral sobre "no subió la guía".
+    for (const madurez of ["cosechando", "construyendo", "recuperandose"] as const) {
+      for (const capital of ["alto", "bajo"] as const) {
+        for (const ciclo of ["exogeno", "secular"] as const) {
+          const axes: Axes = { madurez, capital, ciclo };
+          expect(
+            severityOf(axes, "guidance_reiterada"),
+            `${madurez}/${capital}/${ciclo} no puede ser mortal`,
+          ).not.toBe("mortal");
+        }
+      }
+    }
+  });
+
+  it("reafirmar tampoco es `confirma`: repetirse no es cumplir", () => {
+    // La decisión que más se pensó. El espejo formal de recortada→mortal
+    // invitaba a poner `confirma` en una recuperación, pero `confirma`
+    // afirma que la tesis SE ESTÁ CUMPLIENDO, y una promesa repetida no lo
+    // prueba — es la firma de la trampa de valor. Lo que confirmaría son
+    // los números moviéndose, y ésos tienen sus propias señales.
+    expect(severityOf(PRESETS.turnaround, "guidance_reiterada")).not.toBe("confirma");
+    expect(severityOf(PRESETS.turnaround, "guidance_reiterada")).toBe("vigilar");
+    // Y la que sí confirma sigue confirmando, para que se vea el contraste.
+    expect(severityOf(PRESETS.turnaround, "guidance_elevada")).toBe("confirma");
+  });
+
+  it("elevar ≥ reafirmar ≥ recortar, en TODOS los marcos", () => {
+    // La invariante de verdad, y no "los tres dan valores distintos" — que
+    // fue la primera versión de este test y era falsa. La severidad son 4
+    // valores para 12 señales × 12 combinaciones de ejes: las colisiones
+    // son inevitables y NO son pérdida de información, porque el rótulo
+    // sigue distinguiendo ("guidance recortada" vs "reafirmada, no
+    // elevada"). Lo que no puede pasar nunca es que reafirmar se lea mejor
+    // que elevar o peor que recortar.
+    //
+    // Forzar tres valores distintos habría obligado a poner `esperado` en
+    // un compounder que reafirma — «es lo esperado, no una grieta» — que es
+    // exactamente lo contrario de lo que ese caso significa.
+    const rank = { mortal: 0, vigilar: 1, esperado: 2, confirma: 3 } as const;
+    for (const madurez of ["cosechando", "construyendo", "recuperandose"] as const) {
+      for (const capital of ["alto", "bajo"] as const) {
+        for (const ciclo of ["exogeno", "secular"] as const) {
+          const axes: Axes = { madurez, capital, ciclo };
+          const sube = rank[severityOf(axes, "guidance_elevada")!];
+          const igual = rank[severityOf(axes, "guidance_reiterada")!];
+          const baja = rank[severityOf(axes, "guidance_recortada")!];
+          const donde = `${madurez}/${capital}/${ciclo}`;
+          expect(sube, `${donde}: elevar debe leerse ≥ que reafirmar`).toBeGreaterThanOrEqual(igual);
+          expect(igual, `${donde}: reafirmar debe leerse ≥ que recortar`).toBeGreaterThanOrEqual(baja);
+        }
+      }
+    }
+  });
+
+  it("y hay al menos un marco donde los tres SÍ se separan", () => {
+    // Si no existiera ninguno, el estado nuevo no estaría aportando nada y
+    // el extractor gastaría cuota en una distinción que el panel no usa.
+    // La recuperación es ese marco: confirma / vigilar / mortal.
+    const t = PRESETS.turnaround;
+    const tres = new Set([
+      severityOf(t, "guidance_elevada"),
+      severityOf(t, "guidance_reiterada"),
+      severityOf(t, "guidance_recortada"),
+    ]);
+    expect(tres.size).toBe(3);
+  });
+
+  it("reiterada NO entra en POSITIVE_SIGNALS: no es una buena noticia", () => {
+    // Importa para la NOTA, no para la severidad: un `esperado` positivo
+    // dice «viento de cola del ciclo, no lo apuntes a la tesis», y un
+    // `esperado` normal dice «es lo esperado, no una grieta». Para una guía
+    // reafirmada con ciclo exógeno la segunda es la correcta.
+    const { note } = readingOf(PRESETS.ciclica, "guidance_reiterada", null, null);
+    expect(note).toContain("no una grieta");
+    expect(note).not.toContain("viento de cola");
+  });
 });
 
 describe("META — el caso que obligó a pasar de etiquetas a ejes", () => {

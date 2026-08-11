@@ -119,6 +119,20 @@ export const SIGNALS = [
   "nucleo_acelera",
   "margen_expandido",
   "guidance_elevada",
+  // El TERCER estado de la guía (2026-08-11). El vocabulario sólo tenía los
+  // dos extremos —recortada y elevada—, así que "reafirmada" no era una
+  // señal débil: era INEXPRESABLE, y el extractor no podía emitirla por
+  // mucho que la leyera en el comunicado. Tercera vez que este proyecto se
+  // encuentra el mismo agujero (faltaban las señales positivas; faltaba el
+  // lado `add` en la mesa de decisión), y las tres veces con la misma
+  // forma: el esquema es el techo de lo que el modelo puede decir.
+  //
+  // Y no es el estado neutro que parece. Una empresa que bate sus propios
+  // números y aun así NO sube el año completo está diciendo algo: o no
+  // tiene visibilidad, o se la guarda. Es lo que el mercado castiga sin que
+  // ningún titular lo llame mala noticia (caso Adobe: "fiscal year 26 guide
+  // reaffirmed not raised, market wanted a beat extension").
+  "guidance_reiterada",
 ] as const;
 export type Signal = (typeof SIGNALS)[number];
 
@@ -143,6 +157,7 @@ export const SIGNAL_LABEL: Record<Signal, string> = {
   nucleo_acelera: "el negocio principal acelera",
   margen_expandido: "margen expandido",
   guidance_elevada: "guidance elevada",
+  guidance_reiterada: "guidance reafirmada, no elevada",
 };
 
 // ─── Atajos ──────────────────────────────────────────────────────────────
@@ -324,6 +339,34 @@ export function severityOf(axes: Axes | null, signal: Signal): Severity | null {
       // sigue siendo la empresa comprometiéndose. Con recuperación es lo
       // más fuerte que puede pasar (la tesis ES el plan, y va adelantado).
       return "confirma";
+
+    case "guidance_reiterada":
+      // NUNCA `mortal`: la empresa no ha incumplido nada, sólo ha dejado de
+      // prometer más. Poner mortal aquí devolvería el detector por umbral.
+      //
+      // Con ciclo EXÓGENO, mantener la vara es lo cuerdo y muchas veces lo
+      // más honesto que puede hacer una dirección: subirla con la macro en
+      // contra sería temerario, y recortarla en el valle ya es `esperado`
+      // en la rama hermana. Simétrico con ella.
+      if (ciclo === "exogeno") return "esperado";
+      // Secular: aquí sí dice algo. Batir tus propios números y aun así no
+      // comprometerte con el año completo es una afirmación sobre tu
+      // visibilidad, y es lo que el mercado castiga sin que ningún titular
+      // lo llame mala noticia (Adobe: "guide reaffirmed not raised, market
+      // wanted a beat extension").
+      //
+      // `recuperandose` NO se separa a `confirma`, y es la decisión que más
+      // se pensó. El espejo formal invitaba: si recortar es `mortal` donde
+      // la tesis ES el plan, no deslizarse parece afirmativo. Pero
+      // `confirma` significa en este módulo «la tesis cumpliéndose donde
+      // importa», y una guía repetida no prueba eso — prueba que la
+      // dirección repite. Una recuperación que reafirma trimestre tras
+      // trimestre mientras los números no se mueven es la firma exacta de
+      // la trampa de valor, y quien la ha pagado la describe así: no se
+      // puede ir de A a Z de golpe y entonces anunciar que nada funcionó.
+      // Lo que confirmaría una recuperación son los números moviéndose, y
+      // para eso ya están `nucleo_acelera` y `margen_expandido`.
+      return "vigilar";
   }
 }
 
@@ -450,6 +493,10 @@ function porQue(a: Axes, signal: Signal): string {
     case "guidance_recortada":
     case "nucleo_acelera":
     case "margen_expandido":
+    // Reafirmar sí puede leerse por el ciclo, al revés que ELEVAR:
+    // mantener la vara con la macro en contra es una decisión sobre el
+    // entorno, no sólo sobre la empresa.
+    case "guidance_reiterada":
       return a.ciclo === "exogeno"
         ? "con un ciclo que la empresa no controla"
         : `en una empresa que ${AXIS_LABEL.madurez[a.madurez]}`;

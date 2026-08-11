@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { BATCH_SYSTEM_PROMPT } from "@/lib/scoring/prompt";
 import { SUMMARY_MIN_IMPACT } from "@/lib/scoring";
 import { hasDecisionEvidence, type DecisionFacts } from "@/lib/ask/decision";
+import { EARNINGS_SYSTEM_PROMPT } from "@/lib/ai/earnings-report";
+import { SIGNALS, SIGNAL_LABEL, type Signal } from "@/lib/coach/frames";
 
 // DIVERGENCIAS PROMPT ↔ CÓDIGO.
 //
@@ -34,6 +36,49 @@ describe("scoring: el umbral del summary vive en dos sitios y tienen que decir l
 
   it("el umbral es 3, que es lo que documenta la nota de v4.2", () => {
     expect(SUMMARY_MIN_IMPACT).toBe(3);
+  });
+});
+
+describe("coach: el vocabulario de señales vive en dos sitios y tienen que decir lo mismo", () => {
+  // ESTE PROYECTO SE HA COMIDO EL MISMO AGUJERO TRES VECES:
+  //   1. faltaban las señales POSITIVAS (el prompt pedía "worse OR better"
+  //      pero el esquema sólo nombraba lo peor) → MSFT con resultados
+  //      récord salía con dos "mortal" y nada más;
+  //   2. faltaba el lado `add` en la mesa de decisión → el partner acababa
+  //      siempre en aguantar;
+  //   3. faltaba `guidance_reiterada` → reafirmar la guía era inexpresable.
+  //
+  // Las tres veces la conclusión escrita fue la misma: EL ESQUEMA ES EL
+  // TECHO DE LO QUE EL MODELO PUEDE DECIR. Y las tres veces se descubrió
+  // leyendo una salida rara, no con un error. Este test es el que convierte
+  // el patrón en algo que salta solo: añadir una señal a `SIGNALS` sin
+  // ofrecérsela al extractor la deja muerta al nacer, y al revés.
+  const listed = SIGNALS.filter((s) => EARNINGS_SYSTEM_PROMPT.includes(s));
+
+  it.each(SIGNALS)("el prompt del extractor ofrece '%s'", (signal) => {
+    expect(EARNINGS_SYSTEM_PROMPT).toContain(signal);
+  });
+
+  it("no hay señales de más en el prompt que el código no sepa parsear", () => {
+    // El espejo: una señal en el prompt que no esté en SIGNALS la descarta
+    // `parseAttributions` en silencio — cuota gastada en algo que se tira.
+    const enPrompt = [...EARNINGS_SYSTEM_PROMPT.matchAll(/\b[a-z]+_[a-z]+\b/g)]
+      .map((m) => m[0])
+      .filter((w) => w.startsWith("guidance_") || w.startsWith("nucleo_") || w.startsWith("margen_"));
+    const desconocidas = [...new Set(enPrompt)].filter(
+      (w) => !(SIGNALS as readonly string[]).includes(w),
+    );
+    expect(desconocidas).toEqual([]);
+  });
+
+  it("toda señal tiene rótulo: el panel no puede pintar una casilla sin nombre", () => {
+    for (const s of SIGNALS) {
+      expect(SIGNAL_LABEL[s as Signal], `falta SIGNAL_LABEL[${s}]`).toBeTruthy();
+    }
+  });
+
+  it("las 12 señales están ofrecidas (guarda contra un prompt que se quede corto)", () => {
+    expect(listed.length).toBe(SIGNALS.length);
   });
 });
 
