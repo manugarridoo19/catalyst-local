@@ -40,6 +40,31 @@ import {
  *  en el juego. Seis presiones del mismo tipo sobre MSFT ahogarían la mesa. */
 const FUND_CHANGES_PER_SYMBOL = 3;
 
+/*
+ * CALIBRACIÓN: estos números NUNCA se han contrastado con nada.
+ *
+ * Son redondos porque se eligieron a ojo, y eso está bien mientras se sepa —
+ * son tolerancia al riesgo, no hechos. Pero conviene tener una referencia
+ * externa delante antes de tocarlos, así que va una MEDIDA (2026-08-11,
+ * extraída de 299 vídeos del inversor que el usuario sigue como referencia):
+ *
+ *   - tolera 19-23% en una sola posición de convicción, y lo dice explícito:
+ *     "I don't mind that this is a 19% position for me, I didn't mind that
+ *     this was a 22-23% position either";
+ *   - su top-3 pesa ~37% y su top-6 ~50%;
+ *   - lleva 16-19 posiciones ("I don't want my portfolio to be 50 companies");
+ *   - y NO recorta por peso: recorta por codicia y por múltiplo, tras una
+ *     subida fuerte.
+ *
+ * O sea que `weightTrimPct: 25` y el `CONCENTRATION` de 30/70 son MÁS
+ * ESTRICTOS que la práctica de esa referencia: la mesa empujaría a recortar
+ * en niveles que él considera convicción normal.
+ *
+ * NO SE HAN CAMBIADO A PROPÓSITO. Ajustar cuánto riesgo de concentración
+ * acepta una cartera es una decisión de su dueño, no de un tercero de
+ * YouTube ni de quien escribe el código. Esto queda aquí para que quien
+ * decida hacerlo lo haga sabiendo contra qué se está comparando.
+ */
 export const DECISION_THRESHOLDS = {
   /** Peso por encima del cual "recortar una parte" reduce riesgo real y no
    *  es sólo mover dinero de sitio. */
