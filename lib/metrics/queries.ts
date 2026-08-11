@@ -5,6 +5,7 @@ import type {
   TickerMetrics,
   ValuationHistory,
 } from "@/lib/metrics/derive";
+import type { Dilution } from "@/lib/metrics/dilution";
 
 // Lectura de `ticker_metrics`. Workers-safe: sólo SELECT, ninguna llamada a
 // proveedor. La escritura vive en `lib/cron/refresh-metrics.ts` porque
@@ -102,6 +103,54 @@ const SELECT = sql`
   SELECT *, EXTRACT(EPOCH FROM (now() - fetched_at)) / 3600 AS age_hours
   FROM ticker_metrics
 `;
+
+export type StoredDilution = Dilution & {
+  symbol: string;
+  /** Horas desde la descarga. Aquí importa MENOS que en los múltiplos: el
+   *  conteo de acciones sólo cambia cuando la empresa presenta, así que un
+   *  dato de hace días sigue siendo el vigente. Lo que sí hay que enseñar es
+   *  `periodEnd`, que es la fecha del hecho. */
+  ageHours: number | null;
+};
+
+/** Bloque de dilución de un símbolo, o null si aún no se ha ingerido. */
+export async function getDilution(
+  symbol: string,
+): Promise<StoredDilution | null> {
+  const rows = unwrapRows<{
+    symbol: string;
+    diluted_shares: number | null;
+    diluted_shares_year_ago: number | null;
+    dilution_pct: number | null;
+    sbc: number | null;
+    buybacks: number | null;
+    period_end: string | null;
+    period_form: string | null;
+    cadence: string | null;
+    taxonomy: string | null;
+    age_hours: number | null;
+  }>(
+    await db.execute(sql`
+      SELECT *, EXTRACT(EPOCH FROM (now() - fetched_at)) / 3600 AS age_hours
+      FROM ticker_dilution WHERE symbol = ${symbol.toUpperCase()}
+    `),
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    symbol: r.symbol,
+    dilutedShares: r.diluted_shares,
+    dilutedSharesYearAgo: r.diluted_shares_year_ago,
+    dilutionPct: r.dilution_pct,
+    sbc: r.sbc,
+    buybacks: r.buybacks,
+    periodEnd: r.period_end,
+    periodForm: r.period_form,
+    cadence: r.cadence === "annual" || r.cadence === "quarterly" ? r.cadence : null,
+    taxonomy: r.taxonomy,
+    ageHours: r.age_hours,
+  };
+}
 
 export async function getMetrics(symbol: string): Promise<StoredMetrics | null> {
   const rows = unwrapRows<Row>(

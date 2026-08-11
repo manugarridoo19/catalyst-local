@@ -1,6 +1,7 @@
 import { Sigma, AlertTriangle } from "lucide-react";
-import type { StoredMetrics } from "@/lib/metrics/queries";
+import type { StoredMetrics, StoredDilution } from "@/lib/metrics/queries";
 import type { HistoryStat } from "@/lib/metrics/derive";
+import { DILUTION_TARGET_PCT } from "@/lib/metrics/dilution";
 
 // Fundamentales de negocio: los 133 ratios de Finnhub que `refresh-metrics`
 // lleva escribiendo desde el 2026-08-11 y que hasta ahora NO LEÍA NADIE
@@ -143,7 +144,67 @@ function Group({
   );
 }
 
-export function TickerMetricsPanel({ m }: { m: StoredMetrics | null }) {
+/** Miles de millones / millones, para conteos de acciones y dólares. */
+function big(n: number | null): string {
+  if (n == null) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (a >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
+  return n.toLocaleString("es-ES");
+}
+
+/** Bloque de dilución. Fuente distinta (XBRL de la SEC) y cadencia distinta
+ *  que el resto del panel, así que lleva su propia fecha y su propio rótulo
+ *  de procedencia — fundirlo con los múltiplos de Finnhub daría un `as of`
+ *  que no significaría lo mismo para unas cifras que para otras. */
+function DilutionGroup({ d }: { d: StoredDilution }) {
+  const signo = d.dilutionPct == null ? "" : d.dilutionPct >= 0 ? "+" : "";
+  const veredicto =
+    d.dilutionPct == null
+      ? null
+      : d.dilutionPct > DILUTION_TARGET_PCT
+        ? `por encima del ${DILUTION_TARGET_PCT}% que las empresas se ponen como tope`
+        : d.dilutionPct < 0
+          ? "el conteo BAJA: está retirando acciones netas"
+          : `dentro del ${DILUTION_TARGET_PCT}% habitual como tope declarado`;
+
+  return (
+    <Group title="Cuánto te diluye">
+      <Row
+        label={`Acciones ${d.cadence === "annual" ? "interanual (anual)" : "interanual"}`}
+        value={d.dilutionPct == null ? "—" : `${signo}${d.dilutionPct.toFixed(2)}%`}
+        hint={
+          `Variación del conteo de acciones diluidas frente al mismo periodo del año anterior. ` +
+          `Positivo = te diluye. Es el RESULTADO: una empresa puede recomprar mucho y aun así diluir, ` +
+          `si el pago en acciones emite más de lo que retira. ${veredicto ?? ""}`
+        }
+      />
+      <Row label="Acciones diluidas" value={big(d.dilutedShares)} />
+      <Row
+        label="Pago en acciones"
+        value={big(d.sbc)}
+        hint="Stock-based compensation del periodo. El EBITDA ajustado lo suma de vuelta; para quien ya es accionista es un coste real."
+      />
+      <Row
+        label="Recompras"
+        value={d.buybacks == null ? "no publica" : big(d.buybacks)}
+        hint="Pagos por recompra de acciones propias en el periodo. «No publica» no es cero: es que la empresa ni siquiera declara el concepto, lo habitual en las que no recompran."
+      />
+      <p className="pt-1 font-mono text-[8.5px] leading-relaxed text-muted-foreground/50">
+        SEC XBRL · {d.periodForm ?? "—"} {d.periodEnd ?? ""}
+        {d.taxonomy === "ifrs-full" ? " · IFRS, presenta una vez al año" : ""}
+      </p>
+    </Group>
+  );
+}
+
+export function TickerMetricsPanel({
+  m,
+  d,
+}: {
+  m: StoredMetrics | null;
+  d?: StoredDilution | null;
+}) {
   // Sin fila no se pinta el bloque. Un panel de guiones no informa de nada y
   // sugiere que el dato existe y vale cero.
   if (!m) return null;
@@ -180,7 +241,7 @@ export function TickerMetricsPanel({ m }: { m: StoredMetrics | null }) {
         </span>
       </summary>
 
-      <div className="grid gap-x-8 gap-y-4 px-4 pb-4 pt-1 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-x-8 gap-y-4 px-4 pb-4 pt-1 sm:grid-cols-2 lg:grid-cols-5">
         <Group title="Qué pagas">
           <Row label="Forward P/E" value={mult(m.forwardPe)} />
           <Row label="P/E (TTM)" value={mult(m.peTtm)} history={m.history.pe} />
@@ -252,6 +313,8 @@ export function TickerMetricsPanel({ m }: { m: StoredMetrics | null }) {
           <Row label="Rentabilidad por dividendo" value={pct(m.dividendYieldTtm)} />
           <Row label="Payout" value={pct(m.payoutRatioTtm)} />
         </Group>
+
+        {d && <DilutionGroup d={d} />}
       </div>
 
       {/* Un dato DESCARTADO y uno ausente piden reacciones distintas, así que

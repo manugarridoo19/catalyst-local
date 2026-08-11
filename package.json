@@ -40,7 +40,8 @@
     "refresher:logs": "bash scripts/local-daemon.sh refresher-logs",
     "refresher:run": "bash scripts/local-daemon.sh refresher-run",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dilution:refresh": "tsx scripts/refresh-dilution.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

@@ -7,7 +7,7 @@ import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerFundamentals } from "@/components/ticker/ticker-fundamentals";
 import { TickerMetricsPanel } from "@/components/ticker/ticker-metrics-panel";
-import { getMetrics } from "@/lib/metrics/queries";
+import { getMetrics, getDilution } from "@/lib/metrics/queries";
 import { getShortInterestSeries } from "@/lib/short-interest/queries";
 import {
   getLatestEarningsReport,
@@ -58,6 +58,7 @@ export default async function TickerPage({
     earningsReport,
     surpriseHistory,
     metrics,
+    dilution,
   ] = await Promise.all([
     getProfile(symbol).catch(() => null),
     getQuote(symbol).catch(() => null),
@@ -87,6 +88,8 @@ export default async function TickerPage({
     // Cero llamadas a Finnhub desde aquí — 429ea a los egress de Cloudflare,
     // y además la ingesta tiene guard de 20h por símbolo.
     getMetrics(symbol).catch(() => null),
+    // Dilución: otra fuente (XBRL de la SEC) y otra cadencia, tabla aparte.
+    getDilution(symbol).catch(() => null),
   ]);
 
   const news: FeedItem[] = newsRows.map((r) => ({
@@ -237,7 +240,7 @@ export default async function TickerPage({
       {/* Fundamentales de negocio (Finnhub, 20 cifras + percentiles contra
           su propia historia). Cerrado por defecto: la barra de arriba ya da
           el vistazo rápido y esto es para cuando quieres mirar de verdad. */}
-      <TickerMetricsPanel m={metrics} />
+      <TickerMetricsPanel m={metrics} d={dilution} />
 
       {/* Chart left, news right.
           Móvil: una columna, chart altura fija razonable y news debajo

@@ -845,6 +845,40 @@ export const tickerMetrics = pgTable("ticker_metrics", {
     .defaultNow(),
 });
 
+// Dilución: conteo de acciones diluidas, pago en acciones y recompras, del
+// XBRL de la SEC. Ver `lib/metrics/dilution.ts`.
+//
+// TABLA APARTE Y NO COLUMNAS EN `ticker_metrics`, a propósito: la fuente es
+// otra (SEC, no Finnhub), la cadencia es otra (trimestral o anual contra el
+// refresco de 20h) y la frescura se mide distinto. Meterlas en la misma fila
+// obligaría a compartir un solo `fetched_at` que ya no significaría lo mismo
+// para unas columnas que para otras — que es justo el tipo de mezcla de
+// procedencias que este proyecto evita en todas partes.
+export const tickerDilution = pgTable("ticker_dilution", {
+  symbol: text("symbol")
+    .primaryKey()
+    .references(() => tickers.symbol, { onDelete: "cascade" }),
+  dilutedShares: doublePrecision("diluted_shares"),
+  dilutedSharesYearAgo: doublePrecision("diluted_shares_year_ago"),
+  /** Variación interanual del conteo, en %. Positivo = dilución. */
+  dilutionPct: doublePrecision("dilution_pct"),
+  sbc: doublePrecision("sbc"),
+  /** `null` = la empresa no publica el concepto. En una empresa en pérdidas
+   *  eso normalmente significa que NO recompra, no que falte el dato. */
+  buybacks: doublePrecision("buybacks"),
+  periodEnd: text("period_end"),
+  /** "10-K" | "10-Q" | "20-F": de qué documento sale. */
+  periodForm: text("period_form"),
+  /** "annual" | "quarterly". Los emisores extranjeros sólo tienen anual, y
+   *  su dato puede tener año y medio: se enseña en vez de disimularse. */
+  cadence: text("cadence"),
+  /** "us-gaap" | "ifrs-full". Procedencia del concepto. */
+  taxonomy: text("taxonomy"),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 // Contenido extraído del artículo + resumen IA on-demand (2026-07-17).
 // La mayoría de fuentes no traen body o traen boilerplate ("Titular +
 // SiteName"), así que al expandir una card extraemos el artículo real
