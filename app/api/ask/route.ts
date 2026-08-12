@@ -32,10 +32,12 @@ import {
   type Pressure,
 } from "@/lib/ask/decision";
 import {
+  MARKET_REF_SYMBOLS,
   buildPortfolio,
   dayAttribution,
   type DayAttribution,
   type Portfolio,
+  type QuoteLike,
 } from "@/lib/portfolio";
 import { getWatchlist } from "@/lib/db/queries";
 import { getQuotesMap } from "@/lib/providers/finnhub";
@@ -176,7 +178,7 @@ export async function POST(req: Request) {
     const portfolioP: Promise<PortfolioWithFrames> =
       job === "decision" || scope === "portfolio"
         ? loadPortfolio()
-        : Promise.resolve({ portfolio: null, frames: new Map() });
+        : Promise.resolve({ portfolio: null, frames: new Map(), quotes: {} });
 
     // El embedding de la pregunta es cuota: sólo para el dueño. Si falla
     // (cuota agotada), NO se aborta — se degrada a léxico + SQL, que sigue
@@ -223,13 +225,13 @@ export async function POST(req: Request) {
     let forceSymbols = named;
     let attribution: DayAttribution | undefined;
     if (scope === "portfolio") {
-      const { portfolio } = await portfolioP;
-      const held = portfolio?.positions.map((p) => p.symbol) ?? [];
+      const { portfolio: pf, quotes } = await portfolioP;
+      const held = pf?.positions.map((p) => p.symbol) ?? [];
       if (held.length) {
         forceSymbols = held;
         // El arrastre del día: la mitad de la respuesta a "por qué cae hoy",
         // y no sale de ninguna noticia. Aritmética en TS, jamás del modelo.
-        attribution = dayAttribution(portfolio!);
+        attribution = dayAttribution(pf!, quotes);
       } else {
         // Sin posiciones registradas no HAY cartera de la que hablar, y
         // sostener el alcance produciría una respuesta sobre un conjunto
@@ -401,6 +403,10 @@ export async function POST(req: Request) {
  */
 type PortfolioWithFrames = {
   portfolio: Portfolio | null;
+  /** El MISMO mapa con el que se valoró, incluidas las referencias de
+   *  mercado. Va de vuelta porque `dayAttribution` las necesita y pedirlas
+   *  otra vez sería una llamada de más a Finnhub por pregunta. */
+  quotes: Record<string, QuoteLike | null>;
   /** El MARCO declarado de cada símbolo (los ejes del coach), para leer la
    *  atribución del comunicado con el mismo lector que el panel. `null` en
    *  el mapa = posición sin clasificar, que también es información. */
@@ -422,8 +428,15 @@ async function loadPortfolio(): Promise<PortfolioWithFrames> {
       ]),
     );
     const live = rows.filter((r) => r.shares !== null && r.shares > 0);
-    if (!live.length) return { portfolio: null, frames };
-    const quotes = await getQuotesMap(live.map((r) => r.symbol)).catch(() => ({}));
+    if (!live.length) return { portfolio: null, frames, quotes: {} };
+    // Las referencias viajan en el MISMO lote: `getQuotesMap` va por
+    // símbolo con concurrencia 5, así que son dos entradas más en una
+    // llamada que ya se hace. Pedirlas aparte sería el camino por el que
+    // un sitio las tiene y otro no.
+    const quotes = await getQuotesMap([
+      ...live.map((r) => r.symbol),
+      ...MARKET_REF_SYMBOLS,
+    ]).catch(() => ({}));
     return {
       portfolio: buildPortfolio(
         rows.map((r) => ({
@@ -436,12 +449,13 @@ async function loadPortfolio(): Promise<PortfolioWithFrames> {
         quotes,
       ),
       frames,
+      quotes,
     };
   } catch (err) {
     console.warn(
       "[api/ask] cartera no disponible:",
       err instanceof Error ? err.message.slice(0, 120) : err,
     );
-    return { portfolio: null, frames: new Map() };
+    return { portfolio: null, frames: new Map(), quotes: {} };
   }
 }

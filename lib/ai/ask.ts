@@ -81,7 +81,7 @@ DISTINGUISH THE COMPANY FROM THE TAPE. An item titled "Why X Stock Is Sinking To
 
 AN OLD ITEM CANNOT BE THE CAUSE OF TODAY'S MOVE. Every item carries its age in parentheses. A quarterly release from two weeks ago is BACKGROUND — the market priced it two weeks ago. Putting today's decline next to it and saying nothing else asserts a causal link that is not there, and it is the easiest way to be wrong here while sounding precise. If the only material you have for a name is old, use it for CONTEXT and say plainly that nothing in the archive explains today specifically.
 
-WHEN EVERYTHING MOVES TOGETHER, SAY SO. If the numbers you were given show most or all names falling by a similar amount on the same day, that pattern is itself the finding, and a separate company-specific story for each one would be an invention. Name the pattern, then say per name whether the archive adds anything of its own on top of it.
+WHETHER IT IS THE MARKET OR YOUR NAMES IS A NUMBER, AND IT ARRIVES COMPUTED. When a BREADTH AND MARKET REFERENCE line is present, it settles that question — do not re-derive it by eyeballing the per-position percentages, and never assert "weakness in tech" or "broad selloff" without it. If it shows a wide move with a narrow spread, that pattern IS the finding and it goes FIRST, before any single company: inventing a separate story for each name would be seven fabrications where the truth is one fact. Then say, per name, whether the archive adds anything of its own on top of it.
 Rules:
 ${EVIDENCE_RULES}
 - Desk-analyst register: concrete, no hedging boilerplate, no investment advice, no "as an AI".`;
@@ -172,6 +172,39 @@ function formatDayAttribution(att: DayAttribution): string {
     // un valor en silencio deja al lector creyendo que no se movió.
     out.push(
       `- No price for today, so no attribution is possible: ${att.unmeasured.join(", ")}. Say so rather than leaving them out.`,
+    );
+  }
+
+  // ── Amplitud y referencia, TAMBIÉN calculadas ────────────────────────
+  //
+  // Sin esta línea, "¿es el mercado o son mis valores?" sólo se podía
+  // contestar mirando siete porcentajes a ojo — y un modelo que estima la
+  // amplitud suena idéntico acierte o falle. Con los índices delante, la
+  // frase deja de ser una impresión y pasa a ser una resta.
+  const b = att.breadth;
+  if (b.down + b.up > 0) {
+    const bits = [`${b.down} of ${b.down + b.up} positions down, ${b.up} up`];
+    if (b.spreadPct !== null) {
+      bits.push(`spread between best and worst ${b.spreadPct.toFixed(2)} points`);
+    }
+    if (b.topDragShare !== null) {
+      bits.push(
+        `the single biggest drag is ${(b.topDragShare * 100).toFixed(0)}% of the total drag`,
+      );
+    }
+    for (const r of b.refs) {
+      bits.push(
+        `${r.symbol} ${sign(r.dayChangePct)}${r.dayChangePct.toFixed(2)}% today` +
+          (r.excessPct !== null
+            ? ` (portfolio minus ${r.symbol}: ${sign(r.excessPct)}${r.excessPct.toFixed(2)} points)`
+            : ""),
+      );
+    }
+    out.push(
+      "",
+      "BREADTH AND MARKET REFERENCE (computed — quote it, never estimate it):",
+      `- ${bits.join(" · ")}`,
+      "- Read it: a wide move with a narrow spread and no single dominant drag is the market, and the honest answer says so before it says anything about any one company. A drag concentrated in one name is that name, whatever the rest did. The portfolio-minus-index figure is the part the market does NOT explain — it is one day, so it is context, never performance.",
     );
   }
   return out.join("\n");
@@ -978,6 +1011,23 @@ export function outlineInventoryFor(
     if (attribution.unmeasured.length) {
       lines.push(
         `${attribution.unmeasured.length} held positions with NO price today, so no attribution is possible: ${attribution.unmeasured.join(", ")}`,
+      );
+    }
+    // La amplitud, al editor. Es lo que le permite decidir si la primera
+    // sección es un titular de conjunto o directamente la primera posición
+    // — sobre un hecho medido y no sobre una corazonada suya.
+    const b = attribution.breadth;
+    if (b.down + b.up > 0) {
+      lines.push(
+        `A COMPUTED breadth line is available: ${b.down} of ${b.down + b.up} positions down` +
+          (b.spreadPct !== null ? `, spread ${b.spreadPct.toFixed(2)} points` : "") +
+          (b.topDragShare !== null
+            ? `, biggest single drag = ${(b.topDragShare * 100).toFixed(0)}% of the total`
+            : "") +
+          (b.refs.length
+            ? `, and the index references for today (${b.refs.map((r) => r.symbol).join(", ")})`
+            : ", but NO index reference could be priced") +
+          ". If it shows a broad, tightly-clustered move, the answer needs a short opening section naming that BEFORE the per-name breakdown; if the drag is concentrated in one name, it does not.",
       );
     }
   } else if (r.symbols.length) {

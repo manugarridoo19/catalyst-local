@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getWatchlist } from "@/lib/db/queries";
 import { ensureSessionCookie } from "@/lib/session";
 import { getQuotesMap } from "@/lib/providers/finnhub";
+import { MARKET_REF_SYMBOLS } from "@/lib/portfolio";
 import {
   citationNumberFor,
   retrievePortfolio,
@@ -119,7 +120,10 @@ export async function POST(req: Request) {
     // (schema muerto) y los pesos y el P&L de una revisión no pueden salir
     // de un precio de ayer. Si un símbolo falla vuelve como null y
     // `buildPortfolio` lo saca del denominador en vez de contarlo como 0.
-    const quotes = await getQuotesMap(live.map((r) => r.symbol)).catch(() => ({}));
+    const quotes = await getQuotesMap([
+      ...live.map((r) => r.symbol),
+      ...MARKET_REF_SYMBOLS,
+    ]).catch(() => ({}));
     // `harvest: allowLlm`, igual que /api/ask. Sin esto la cosecha de
     // cuerpos corría SIEMPRE —hasta 20s de fetches salientes a concurrencia
     // 4, más una fila en `article_extracts` por artículo— aunque el gate ya

@@ -55,7 +55,9 @@ async function main() {
   const { buildDecisionFacts } = await import("../lib/ask/decision");
   const { getWatchlist } = await import("../lib/db/queries");
   const { getQuotesMap } = await import("../lib/providers/finnhub");
-  const { buildPortfolio, dayAttribution } = await import("../lib/portfolio");
+  const { buildPortfolio, dayAttribution, MARKET_REF_SYMBOLS } = await import(
+    "../lib/portfolio"
+  );
   const { parseAxes } = await import("../lib/coach/frames");
   const { claimableSessionIds } = await import("../lib/session");
 
@@ -84,6 +86,7 @@ async function main() {
   // ruta. En un script no hay cookie, así que se usa la sesión fijada.
   let portfolio = null;
   let frames = new Map();
+  let quotes: Record<string, unknown> = {};
   if (job === "decision" || scope === "portfolio") {
     const [session] = [...claimableSessionIds()];
     if (session) {
@@ -95,8 +98,11 @@ async function main() {
         ]),
       );
       const live = rows.filter((x) => x.shares !== null && x.shares > 0);
-      const quotes = live.length
-        ? await getQuotesMap(live.map((x) => x.symbol)).catch(() => ({}))
+      quotes = live.length
+        ? await getQuotesMap([
+            ...live.map((x) => x.symbol),
+            ...MARKET_REF_SYMBOLS,
+          ]).catch(() => ({}))
         : {};
       portfolio = live.length
         ? buildPortfolio(
@@ -119,7 +125,7 @@ async function main() {
     const held = portfolio?.positions.map((p) => p.symbol) ?? [];
     if (held.length) {
       forceSymbols = held;
-      attribution = dayAttribution(portfolio!);
+      attribution = dayAttribution(portfolio!, quotes as never);
     } else {
       scope = "thematic";
     }

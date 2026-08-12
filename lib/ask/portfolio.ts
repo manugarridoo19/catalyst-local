@@ -42,7 +42,9 @@ import {
 import {
   buildPortfolio,
   concentrationFlags,
+  dayAttribution,
   type ConcentrationFlag,
+  type DayAttribution,
   type Portfolio,
   type Position,
   type QuoteLike,
@@ -160,6 +162,13 @@ export type PortfolioRetrieval = {
   /** Posiciones vivas sin UNA sola noticia en la ventana. El archivo no
    *  sabe nada de ellas y la revisión está obligada a decirlo. */
   blindSpots: string[];
+  /** Arrastre del día por posición + amplitud + índices de referencia, ya
+   *  calculados. Se computa AQUÍ y no en el formateador del prompt porque
+   *  este retrieval es el único sitio que tiene a la vez la cartera y el
+   *  mapa de quotes con el que se valoró — y porque /ask y la revisión
+   *  tienen que leer exactamente el mismo número
+   *  ([[feedback_arreglo_no_se_propaga]]). */
+  attribution: DayAttribution;
 };
 
 function symbolList(symbols: string[]): SQL {
@@ -413,6 +422,7 @@ export async function retrievePortfolio(
       forward: EMPTY_FORWARD,
       concentration: concentrationFlags(portfolio),
       blindSpots: [],
+      attribution: dayAttribution(portfolio, quotes),
     };
   }
 
@@ -585,6 +595,7 @@ export async function retrievePortfolio(
     forward,
     concentration: concentrationFlags(portfolio),
     blindSpots: facts.filter((f) => f.news7d === 0 && !f.citationNums.length).map((f) => f.symbol),
+    attribution: dayAttribution(portfolio, quotes),
   };
 }
 

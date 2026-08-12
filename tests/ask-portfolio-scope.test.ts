@@ -263,6 +263,44 @@ describe("dayAttribution — la aritmética que el modelo tiene prohibida", () =
     expect(suma).toBeCloseTo(p.dayChangePct!, 6);
   });
 
+  it("AMPLITUD: reparte el arrastre y sabe cuándo NO es el conjunto", () => {
+    // El discriminador entero. Aquí SMALL cae mucho pero BIG explica el día:
+    // `topDragShare` alto = "es esa posición", no "es el mercado". Sin este
+    // número, el modelo tendría que deducirlo mirando porcentajes — y una
+    // amplitud estimada a ojo suena igual de convincente acierte o falle.
+    const { breadth } = dayAttribution(p);
+    expect(breadth.down).toBe(2);
+    expect(breadth.up).toBe(0);
+    // BIG aporta -1.32 de un arrastre total de -1.45 → ~91%.
+    expect(breadth.topDragShare).toBeGreaterThan(0.85);
+  });
+
+  it("un día ANCHO y apretado da el reparto contrario", () => {
+    const ancho = buildPortfolio(
+      [
+        { symbol: "A", name: null, sector: null, shares: 10, avgCost: 1 },
+        { symbol: "B", name: null, sector: null, shares: 10, avgCost: 1 },
+        { symbol: "C", name: null, sector: null, shares: 10, avgCost: 1 },
+      ],
+      quotes({ A: [10, -2], B: [10, -2.1], C: [10, -1.9] }),
+    );
+    const { breadth } = dayAttribution(ancho);
+    expect(breadth.down).toBe(3);
+    expect(breadth.spreadPct).toBeCloseTo(0.2, 6);
+    // Repartido: ningún nombre pasa de ~35% del arrastre.
+    expect(breadth.topDragShare).toBeLessThan(0.4);
+  });
+
+  it("las REFERENCIAS salen del mismo mapa de quotes, y su ausencia no rompe", () => {
+    // Viajan en el mismo lote que las posiciones. Si Finnhub falla para
+    // ellas, `refs` va vacío y la respuesta se da igual — un 429 no puede
+    // costar la respuesta entera.
+    const conRefs = dayAttribution(p, quotes({ SPY: [500, -1] }));
+    expect(conRefs.breadth.refs.map((r) => r.symbol)).toEqual(["SPY"]);
+    expect(conRefs.breadth.refs[0].excessPct).toBeCloseTo(p.dayChangePct! + 1, 6);
+    expect(dayAttribution(p).breadth.refs).toEqual([]);
+  });
+
   it("una posición SIN precio se DEVUELVE, no se omite", () => {
     // Omitirla dejaría al lector creyendo que ese valor no se movió, que es
     // una afirmación que nadie ha hecho.

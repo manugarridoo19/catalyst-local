@@ -589,15 +589,70 @@ export type DayContribution = {
   contribPct: number;
 };
 
+/**
+ * Índices de REFERENCIA del día. Viajan dentro de la MISMA llamada de quotes
+ * que las posiciones (`getQuotesMap` va por símbolo con concurrencia 5), así
+ * que su coste es dos símbolos más en un lote que ya se pide — cero fetches
+ * nuevos y cero riesgo de que un sitio los pida y otro no.
+ *
+ * Los dos, no uno: SPY es la referencia estándar y QQQ es la que de verdad
+ * se parece a este libro. Con sólo el S&P, un día en que la tecnológica cae
+ * el doble que el índice ancho se lee como "algo pasa en tus valores" cuando
+ * lo que pasa es el sector.
+ *
+ * ⚠️ NO es el benchmark del Signal Lab. Aquél está CONGELADO (SPY,
+ * cierre-a-cierre sobre ajustados, dos fechas exactas) porque de él dependen
+ * comparaciones históricas. Esto es contexto de UN día para una respuesta, y
+ * no debe alimentar ninguna serie.
+ */
+export const MARKET_REF_SYMBOLS = ["SPY", "QQQ"] as const;
+
+export type MarketRef = {
+  symbol: string;
+  dayChangePct: number;
+  /** Cartera menos referencia, en puntos. Lo que NO explica el mercado. */
+  excessPct: number | null;
+};
+
+/**
+ * ¿Se movió TODO junto, o se movió UNA cosa? La pregunta que decide si la
+ * respuesta correcta es "esto es mercado" o "esto es tu posición en X".
+ *
+ * Es un número, así que se calcula aquí. La alternativa —que el modelo lo
+ * dedujera mirando siete porcentajes— es justo la atribución plausible y no
+ * medida que este proyecto prohíbe en todo lo demás: suena igual de
+ * convincente acierte o falle, y nadie la audita.
+ */
+export type DayBreadth = {
+  down: number;
+  up: number;
+  /** Recorrido entre el que más cae y el que más sube, en puntos. Estrecho
+   *  con casi todo en la misma dirección = se movieron a la vez. */
+  spreadPct: number | null;
+  /** Qué fracción del arrastre negativo TOTAL aporta el mayor lastre. Cerca
+   *  de 1 = la caída ES esa posición; repartido = es el conjunto. `null`
+   *  cuando no hay arrastre negativo que repartir. */
+  topDragShare: number | null;
+  /** Vacío si no se pudo cotizar ninguna referencia. Nunca bloquea. */
+  refs: MarketRef[];
+};
+
 export type DayAttribution = {
   contributions: DayContribution[];
   /** Posiciones vivas que hoy NO tienen movimiento medible. Se devuelven en
    *  vez de omitirse: una respuesta "stock por stock" que se salta un valor
    *  en silencio deja al lector creyendo que ese valor no se movió. */
   unmeasured: string[];
+  breadth: DayBreadth;
 };
 
-export function dayAttribution(p: Portfolio): DayAttribution {
+export function dayAttribution(
+  p: Portfolio,
+  /** El MISMO mapa de quotes con el que se valoró la cartera. Si trae las
+   *  referencias, salen; si no, `refs` va vacío y la respuesta se da igual
+   *  sin ellas — un 429 de Finnhub no puede costar la respuesta entera. */
+  quotes: Record<string, QuoteLike | null> = {},
+): DayAttribution {
   const contributions: DayContribution[] = [];
   const unmeasured: string[] = [];
   for (const pos of p.positions) {
@@ -616,5 +671,39 @@ export function dayAttribution(p: Portfolio): DayAttribution {
   // Del que más resta al que más suma. El orden ES la respuesta: quien abre
   // la lista es el que explica el día.
   contributions.sort((a, b) => a.contribPct - b.contribPct);
-  return { contributions, unmeasured };
+
+  const down = contributions.filter((c) => c.dayChangePct < 0).length;
+  const up = contributions.filter((c) => c.dayChangePct > 0).length;
+  const moves = contributions.map((c) => c.dayChangePct);
+  const spreadPct = moves.length ? Math.max(...moves) - Math.min(...moves) : null;
+
+  // El arrastre total NEGATIVO, y qué parte de él viene del primero de la
+  // lista. Se suman sólo los negativos a propósito: mezclar los que suben
+  // diluiría el denominador y una cartera con un ganador grande parecería
+  // "repartida" cuando su caída la produce un solo nombre.
+  const drag = contributions
+    .filter((c) => c.contribPct < 0)
+    .reduce((acc, c) => acc + c.contribPct, 0);
+  const topDragShare =
+    drag < 0 && contributions[0].contribPct < 0
+      ? contributions[0].contribPct / drag
+      : null;
+
+  const refs: MarketRef[] = [];
+  for (const sym of MARKET_REF_SYMBOLS) {
+    const q = quotes[sym];
+    if (!q || typeof q.changePercent !== "number") continue;
+    refs.push({
+      symbol: sym,
+      dayChangePct: q.changePercent,
+      excessPct:
+        p.dayChangePct !== null ? p.dayChangePct - q.changePercent : null,
+    });
+  }
+
+  return {
+    contributions,
+    unmeasured,
+    breadth: { down, up, spreadPct, topDragShare, refs },
+  };
 }

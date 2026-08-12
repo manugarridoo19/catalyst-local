@@ -23,7 +23,7 @@ import type { PositionContrast } from "@/lib/coach/build";
 import type { Falsifier } from "@/lib/coach/falsifiers";
 import type { EarningsRead } from "@/lib/ask/retrieve";
 import type { PortfolioRetrieval, PositionFacts } from "@/lib/ask/portfolio";
-import { dayAttribution, type PricedPosition } from "@/lib/portfolio";
+import type { PricedPosition } from "@/lib/portfolio";
 
 /**
  * Postura sobre una posición. Tokens estables en inglés: la traducción vive
@@ -398,6 +398,19 @@ function formatPortfolio(r: PortfolioRetrieval): string {
     );
   }
   if (p.dayChangePct !== null) head.push(`hoy ${pct(p.dayChangePct)}`);
+  // La amplitud y los índices, MEDIDOS. Sin ellos, "el día ha sido flojo en
+  // general" y "tus valores lo han hecho peor que el mercado" son la misma
+  // frase para el modelo, y sólo una de las dos es comprobable.
+  const b = r.attribution.breadth;
+  if (b.down + b.up > 0) {
+    head.push(`${b.down} de ${b.down + b.up} en rojo`);
+    for (const ref of b.refs) {
+      head.push(
+        `${ref.symbol} ${pct(ref.dayChangePct)}` +
+          (ref.excessPct !== null ? ` (tú ${pct(ref.excessPct)} vs él)` : ""),
+      );
+    }
+  }
 
   // El ARRASTRE del día, ya calculado por posición (2026-08-12). Propagado
   // desde /ask el mismo día que se montó allí, por la lección de siempre en
@@ -408,7 +421,7 @@ function formatPortfolio(r: PortfolioRetrieval): string {
   // −10% en el 2% de la cartera y un −10% en el 20% se leen igual, y la
   // revisión gasta su párrafo del día en el que menos mueve la aguja.
   const contribBySymbol = new Map(
-    dayAttribution(p).contributions.map((c) => [c.symbol, c.contribPct]),
+    r.attribution.contributions.map((c) => [c.symbol, c.contribPct]),
   );
 
   const lines = p.positions.map((pos: PricedPosition) => {

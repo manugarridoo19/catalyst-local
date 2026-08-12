@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { db, unwrapRows } from "@/lib/db";
 import { getWatchlist } from "@/lib/db/queries";
 import { getQuotesMap } from "@/lib/providers/finnhub";
+import { MARKET_REF_SYMBOLS } from "@/lib/portfolio";
 import { retrievePortfolio, citationNumberFor } from "@/lib/ask/portfolio";
 import { earningsReads } from "@/lib/ask/retrieve";
 import { extractForwardLedger } from "@/lib/ai/forward-ledger";
@@ -131,7 +132,10 @@ export async function runDailyReview(): Promise<{
       shares: r.shares,
       avgCost: r.avgCost,
     }));
-    const quotes = await getQuotesMap(live.map((r) => r.symbol)).catch(() => ({}));
+    const quotes = await getQuotesMap([
+      ...live.map((r) => r.symbol),
+      ...MARKET_REF_SYMBOLS,
+    ]).catch(() => ({}));
     const retrieval = await retrievePortfolio(positions, quotes, {
       harvest: true,
     });
