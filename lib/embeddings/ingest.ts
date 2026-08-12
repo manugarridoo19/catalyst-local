@@ -1,9 +1,9 @@
 // Ingesta de embeddings del archivo (Ask Catalyst, Fase 2 2026-07-21).
 //
 // Corre DENTRO del tick de scoring (score-orphans) y del cron: lo que
-// acaba de puntuarse con impact>=3 se embebe en la misma pasada, así el
-// archivo consultable va sólo unos minutos por detrás del feed. Node-only
-// (el Worker público jamás gasta cuota de embeddings).
+// acaba de puntuarse por encima del umbral de impacto se embebe en la misma
+// pasada, así el archivo consultable va sólo unos minutos por detrás del
+// feed. Node-only (el Worker público jamás gasta cuota de embeddings).
 //
 // Tres frenos, en este orden:
 //   1. Kill-switch por env (EMBED_ENABLED=0) — apagar sin desplegar código.
@@ -28,10 +28,18 @@ import {
   EMBED_MAX_BATCH,
   EMBED_MODEL,
 } from "@/lib/providers/gemini-embed";
+import {
+  DEFAULT_MAX_DB_MB,
+  DEFAULT_MIN_IMPACT,
+  DEFAULT_RETENTION_DAYS,
+} from "@/lib/embeddings/budget";
 
-/** Impacto mínimo para entrar en el archivo consultable. Bajarlo multiplica
- *  el gasto de disco por ~7 (el 85-90% de las noticias son impact<3). */
-const MIN_IMPACT = 3;
+/** Impacto mínimo para entrar en el archivo consultable. El porqué del 4 y
+ *  la aritmética de si la configuración cabe → `lib/embeddings/budget.ts`.
+ *  Bajarlo a 3 multiplica el flujo por ~2,7 y la ventana deja de caber. */
+function minImpact(): number {
+  return envInt("EMBED_MIN_IMPACT", DEFAULT_MIN_IMPACT);
+}
 /** Longitud del acompañamiento al titular cuando no hay resumen IA. */
 const BODY_SNIPPET = 400;
 /** Techo del troceado. Deliberadamente POR DEBAJO de `EMBED_MAX_BATCH` (el
@@ -112,11 +120,12 @@ async function dbSizeMb(): Promise<number> {
  * `ai_picks` conservaría una noticia ajena que nunca originó nada).
  */
 async function purgeExpired(): Promise<number> {
-  // 60d y no 90: medido 2026-07-21 con 1.820 filas reales, ~4,5 kB/fila con
-  // HNSW. A 90d × ~919 impact≥3/día serían ~353 MB solo de embeddings sobre
-  // ~95 MB del resto — cruzaría EMBED_MAX_DB_MB (380) hacia el día ~65 y la
-  // ventana dejaría de crecer igual. 60d ≈ 235 MB → cabe con margen.
-  const days = envInt("EMBED_RETENTION_DAYS", 60);
+  // 45d, y el 60 anterior era el número que NO CABÍA: se calculó en jul-2026
+  // con 1.820 filas reales y ~4,5 kB/fila, pero el coste medido sobre la
+  // tabla llena es 5,5 kB y el flujo real fue ~1.060/día, no ~919 — a 60d
+  // pedía ~535 MB de embeddings sobre 512 de base entera. El porqué del 45 y
+  // la comprobación de que la configuración cabe → `lib/embeddings/budget.ts`.
+  const days = envInt("EMBED_RETENTION_DAYS", DEFAULT_RETENTION_DAYS);
   const res = await db.execute(sql`
     DELETE FROM news_embeddings e
     WHERE e.published_at < now() - make_interval(days => ${days})
@@ -149,22 +158,40 @@ export async function runEmbedIngest(
 
   if (process.env.EMBED_ENABLED === "0") return done({ skipped: "disabled" });
 
+  // ─── LA PURGA VA PRIMERO, ANTES DE TODOS LOS FRENOS ────────────────────
+  //
+  // Estaba después del guard de almacenamiento, y eso convertía la pausa por
+  // disco en un CALLEJÓN SIN SALIDA: al cruzar EMBED_MAX_DB_MB el tick salía
+  // por el `return` de arriba, así que la purga —lo único que libera sitio—
+  // dejaba de ejecutarse justo cuando hacía falta. La base no podía encoger
+  // sola, la ventana consultable quedaba congelada para siempre y sólo lo
+  // arreglaba una persona borrando a mano. El único síntoma habría sido /ask
+  // dejando de encontrar lo nuevo, sin un error en ningún log.
+  //
+  // Purgar es barato (un DELETE indexado por published_at) y no depende de
+  // cuota ni de red, así que no hay razón para condicionarlo a nada. Y el
+  // tamaño se mide DESPUÉS: el guard tiene que decidir sobre la base ya
+  // purgada, no sobre la de hace un segundo.
+  const purged = await purgeExpired();
+
   const dbMb = await dbSizeMb();
-  const maxMb = envInt("EMBED_MAX_DB_MB", 380);
+  const maxMb = envInt("EMBED_MAX_DB_MB", DEFAULT_MAX_DB_MB);
   if (dbMb > maxMb) {
     console.warn(
       `[embed] BD en ${dbMb.toFixed(0)}MB > ${maxMb}MB — pausado (Neon free = 512MB para todo)`,
     );
-    return done({ skipped: "storage", dbMb });
+    return done({ skipped: "storage", dbMb, purged });
   }
 
   // Presupuesto DIARIO propio, por debajo de la cuota real (3×1.000, reset
   // medianoche Pacific): la ingesta puede comerse el día entero (pasó el
   // 20 y el 21-jul con la puesta al día: parón a las 12:52Z y /ask del dueño
   // degradado a léxico el resto del día). Con techo 2.500 quedan ~500 para
-  // preguntas de /ask y para el margen de ráfaga por minuto. El régimen
-  // normal (~400-900 impact≥3/día) ni se acerca; esto solo muerde en
-  // catch-ups, que es exactamente cuando hay que repartir.
+  // preguntas de /ask y para el margen de ráfaga por minuto. Con el umbral
+  // en 4 el régimen real son ~300-570 filas/día (medido 4-11 ago), así que
+  // esto sólo muerde en catch-ups — que es exactamente cuando hay que
+  // repartir. Ojo al leer la cuota: el techo son 3 proyectos × 1.000, y son
+  // 3 y no 5 desde que g3 y la reserva murieron por identidad, no por gasto.
   const dailyBudget = envInt("EMBED_DAILY_BUDGET", 2500);
   const usedToday = unwrapRows<{ n: number }>(
     await db.execute(sql`
@@ -177,7 +204,7 @@ export async function runEmbedIngest(
     console.log(
       `[embed] presupuesto diario agotado (${usedToday}/${dailyBudget}) — el resto queda para /ask; se reanuda a medianoche Pacific`,
     );
-    return done({ skipped: "budget", dbMb });
+    return done({ skipped: "budget", dbMb, purged });
   }
 
   // Recency-first, como todo en Catalyst: lo nuevo entra primero y la cola
@@ -196,13 +223,12 @@ export async function runEmbedIngest(
       FROM news n
       JOIN news_scores s ON s.news_id = n.id
       LEFT JOIN news_embeddings e ON e.news_id = n.id
-      WHERE s.impact >= ${MIN_IMPACT} AND e.id IS NULL
+      WHERE s.impact >= ${minImpact()} AND e.id IS NULL
       ORDER BY n.published_at DESC
       LIMIT ${limit}
     `),
   );
 
-  const purged = await purgeExpired();
   if (candidates.length === 0) return done({ purged, dbMb });
 
   const prepared = candidates.map((c) => ({ c, ...embedText(c) }));

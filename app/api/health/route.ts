@@ -6,6 +6,11 @@ import { getGeminiPoolStatus } from "@/lib/providers/gemini";
 import { groqCooldownStatus } from "@/lib/providers/groq";
 import { finnhubCooldownMs } from "@/lib/providers/finnhub";
 import { isWorkersRuntime, rateLimited } from "@/lib/ask/gate";
+import {
+  DEFAULT_MAX_DB_MB,
+  DEFAULT_MIN_IMPACT,
+  DEFAULT_RETENTION_DAYS,
+} from "@/lib/embeddings/budget";
 
 // Endpoint público de health-check para monitoring. No expone secretos, solo
 // agregados que necesita el alerting (GitHub Actions / cron-job.org / etc).
@@ -160,7 +165,23 @@ export async function GET(req: Request) {
         // Umbral con el que la ingesta de embeddings se pausa sola. Si
         // dbMb lo supera, el archivo consultable deja de crecer (a
         // propósito) pero el feed sigue.
-        embedPauseAtMb: Number(process.env.EMBED_MAX_DB_MB ?? 380),
+        embedPauseAtMb: Number(process.env.EMBED_MAX_DB_MB ?? DEFAULT_MAX_DB_MB),
+        // La pausa por disco es la avería MENOS visible del proyecto: no da
+        // error, no rompe ninguna página y el feed sigue — lo único que pasa
+        // es que /ask deja de encontrar por significado lo nuevo. Se saca
+        // como booleano en vez de dejar que quien mire tenga que comparar dos
+        // números a ojo.
+        embedPaused:
+          Number(row.db_mb ?? 0) >
+          Number(process.env.EMBED_MAX_DB_MB ?? DEFAULT_MAX_DB_MB),
+        // Qué configuración gobierna hoy la ventana consultable. Sin esto,
+        // "el archivo no encuentra X" no se puede diagnosticar sin leer
+        // código: puede ser el umbral (X no llegaba a impacto 4) o la
+        // retención (X es más viejo que la ventana).
+        retentionDays: Number(
+          process.env.EMBED_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS,
+        ),
+        minImpact: Number(process.env.EMBED_MIN_IMPACT ?? DEFAULT_MIN_IMPACT),
         embeddingsTotal: row.embeddings_total,
         lastEmbeddedAt: lastEmbedded?.toISOString() ?? null,
         embedAgeMin: embedAgeMin,
