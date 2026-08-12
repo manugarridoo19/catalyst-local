@@ -6,6 +6,7 @@ import {
 import {
   geminiChatCompletion,
   getGeminiPoolStatus,
+  type ThinkingLevel,
 } from "@/lib/providers/gemini";
 import { groqChatCompletion } from "@/lib/providers/groq";
 
@@ -41,6 +42,23 @@ export async function proseCompletion(opts: {
   geminiTimeoutMs?: number;
   /** Techo de pared del barrido completo de Gemini. */
   geminiOverallTimeoutMs?: number;
+  /**
+   * Pone GEMINI EN CABEZA con este modelo y este nivel de pensamiento, en
+   * lugar de OpenRouter. Si falla, la cadena sigue igual que siempre.
+   *
+   * Existe para UNA superficie: la redacción de /ask. La cadena normal manda
+   * `reasoning:{enabled:false}` a OpenRouter y `thinkingLevel:"minimal"` a
+   * Gemini, o sea que **hoy ninguna respuesta del proyecto razona** salvo la
+   * fusión diaria de Author Watch. Para un brief de titulares eso es correcto
+   * y barato. Para "por qué cae mi cartera, ve stock por stock" no: medido el
+   * 2026-08-12, el mismo modelo con el mismo material pasa de adjetivos a
+   * atribución por posición al subir de `minimal` a `low`.
+   *
+   * Va como opción y no como cambio de la cadena a propósito: el tier `lite`
+   * se eligió por CUOTA y sostiene el scoring (~250 llamadas/día) y los
+   * embeddings. /ask son un puñado de preguntas al día; el resto no se toca.
+   */
+  reason?: { model: string; thinking: ThinkingLevel };
 }): Promise<ChatCompletionResult> {
   const { messages, temperature, maxTokens, tag, jsonMode } = opts;
 
@@ -49,6 +67,29 @@ export async function proseCompletion(opts: {
       `[${tag}] ${provider} failed, falling through:`,
       err instanceof Error ? err.message.slice(0, 120) : err,
     );
+
+  // Gemini EN CABEZA cuando el llamante pide razonamiento. No es un atajo de
+  // rendimiento: OpenRouter va con `reasoning:{enabled:false}` en toda la
+  // cadena `brief`, así que pasar por él primero sería pedir razonamiento y
+  // recibir lo de siempre. Si falla (cuota, 404 del modelo, timeout), cae a
+  // la cadena completa de abajo — incluida la propia Gemini con su modelo
+  // por defecto, así que el peor caso es la respuesta de ayer, no un error.
+  if (opts.reason && getGeminiPoolStatus().total > 0) {
+    try {
+      return await geminiChatCompletion({
+        messages,
+        model: opts.reason.model,
+        thinking: opts.reason.thinking,
+        temperature,
+        maxTokens,
+        jsonMode,
+        timeoutMs: opts.geminiTimeoutMs ?? 25_000,
+        overallTimeoutMs: opts.geminiOverallTimeoutMs,
+      });
+    } catch (err) {
+      warn(`gemini(${opts.reason.model})`, err);
+    }
+  }
 
   try {
     return await chatCompletion({

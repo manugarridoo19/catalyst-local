@@ -26,7 +26,14 @@ import {
   type PendingDeal,
   type SystematicSeller,
 } from "@/lib/ask/forward";
-import { DECISION_NOISE, PREVIEW_NOISE, type AskIntent } from "@/lib/ask/intent";
+import {
+  DECISION_NOISE,
+  DIAGNOSE_NOISE,
+  PORTFOLIO_NOISE,
+  PREVIEW_NOISE,
+  type AskJob,
+  type AskScope,
+} from "@/lib/ask/intent";
 import { surprisePct, type EarningsSurprise } from "@/lib/earnings/surprise";
 import { getSurpriseHistory, type SurpriseHistoryRow } from "@/lib/earnings/queries";
 import { parseAttributions, type Attribution } from "@/lib/coach/frames";
@@ -193,9 +200,13 @@ export type AskForward = {
 
 export type Retrieval = {
   symbols: string[];
-  /** Qué clase de pregunta se recuperó. Decide la FORMA de la respuesta en
-   *  `answerShape` y qué canales se usaron aquí. */
-  intent: AskIntent;
+  /** Qué TRABAJO pide el lector. Decide el papel del redactor y qué canales
+   *  se encendieron aquí. */
+  job: AskJob;
+  /** Sobre qué símbolos va. `portfolio` = los de la watchlist, que NO se
+   *  adivinan: sin este eje, una pregunta sin ticker caía a búsqueda
+   *  semántica pura y traía las empresas equivocadas. */
+  scope: AskScope;
   citations: Citation[];
   facts: StructuredFacts[];
   /** Comunicados de resultados leídos de los símbolos de la pregunta. */
@@ -336,7 +347,11 @@ export async function extractQuestionSymbols(question: string): Promise<string[]
  * ("resultados", "antitrust", "guidance"), y si no queda nada el canal cae
  * al filtro por símbolo, que es lo correcto.
  */
-export function keywords(question: string, intent: AskIntent = "archive"): string[] {
+export function keywords(
+  question: string,
+  job: AskJob = "archive",
+  scope: AskScope = "thematic",
+): string[] {
   // El término que viaja al ILIKE conserva sus tildes (un titular en
   // español las lleva y `ILIKE '%opinion%'` no casa "opinión"); la
   // comparación contra las listas sí se hace sin ellas, que es donde están
@@ -353,14 +368,54 @@ export function keywords(question: string, intent: AskIntent = "archive"): strin
             w.length >= 4 &&
             !STOPWORDS.has(w) &&
             !STOPWORDS.has(bare(w)) &&
-            !(intent === "decision" && DECISION_NOISE.has(bare(w))) &&
-            !(intent === "preview" && PREVIEW_NOISE.has(bare(w))),
+            !(job === "decision" && DECISION_NOISE.has(bare(w))) &&
+            !(job === "preview" && PREVIEW_NOISE.has(bare(w))) &&
+            !(job === "diagnose" && DIAGNOSE_NOISE.has(bare(w))) &&
+            // El ruido del ALCANCE se purga aparte del ruido del TRABAJO:
+            // "mi cartera" y "por qué cae" son dos vocabularios distintos y
+            // una misma pregunta puede traer los dos. Sin esto, las 6 plazas
+            // del canal léxico se las comían "cartera", "cayendo" y "stock".
+            !(scope === "portfolio" && PORTFOLIO_NOISE.has(bare(w))),
         ),
     ),
   ].slice(0, 6);
 }
 
 type Row = Omit<Citation, "n" | "via"> & { dist?: number };
+
+/**
+ * Reordena una lista agrupada por símbolo a un round-robin por rango: la 1ª
+ * de cada símbolo, luego la 2ª de cada símbolo, etc. Preserva el orden
+ * relativo dentro de cada símbolo (que ya viene por peso de categoría) y el
+ * orden de aparición de los símbolos.
+ *
+ * Exportada para poder testear la propiedad que importa sin BD: **con un
+ * techo por debajo del total, ningún símbolo se queda sin representación
+ * mientras otro tiene dos**.
+ */
+export function interleaveBySymbol<T extends { symbol: string }>(items: T[]): T[] {
+  const bySymbol = new Map<string, T[]>();
+  for (const it of items) {
+    const cur = bySymbol.get(it.symbol);
+    if (cur) cur.push(it);
+    else bySymbol.set(it.symbol, [it]);
+  }
+  const lanes = [...bySymbol.values()];
+  const out: T[] = [];
+  for (let rank = 0; out.length < items.length; rank++) {
+    let pushedThisRank = false;
+    for (const lane of lanes) {
+      if (rank < lane.length) {
+        out.push(lane[rank]);
+        pushedThisRank = true;
+      }
+    }
+    // Cinturón contra un bucle infinito si `items` trajera algo raro: si una
+    // vuelta entera no coloca nada, no queda nada que colocar.
+    if (!pushedThisRank) break;
+  }
+  return out;
+}
 
 function rowsToCitations(rows: Row[], via: Citation["via"]): Citation[] {
   return rows.map((r) => ({ ...r, n: 0, via }));
@@ -407,6 +462,12 @@ async function vectorSearch(
   queryVec: number[],
   symbols: string[],
   limit: number,
+  /** false = el tramo global se cierra POR CONTRATO, no por umbral. Con
+   *  alcance de cartera una empresa ajena nunca puede responder "por qué cae
+   *  MI cartera": el umbral de abajo lo cerraría casi siempre por sí solo, y
+   *  "casi siempre" es exactamente la clase de garantía que este proyecto no
+   *  acepta cuando el fallo es servir las empresas equivocadas. */
+  allowGlobal = true,
 ): Promise<Citation[]> {
   const vec = `[${queryVec.join(",")}]`;
   // Con símbolos: primero los que hablan de ESE ticker, y con TODO el
@@ -440,8 +501,9 @@ async function vectorSearch(
   //   temática, y tratarlo como específico dejaba esa pregunta en 3 citas.
   //   Vale igual para un ticker legítimo recién llegado al universo.
   const own = filtered.length;
-  const globalLimit =
-    symbols.length === 0
+  const globalLimit = !allowGlobal
+    ? 0
+    : symbols.length === 0
       ? limit
       : own >= Math.ceil(limit / 2)
         ? 0
@@ -475,9 +537,10 @@ async function lexicalSearch(
   question: string,
   symbols: string[],
   limit: number,
-  intent: AskIntent,
+  job: AskJob,
+  scope: AskScope,
 ): Promise<Citation[]> {
-  const terms = keywords(question, intent);
+  const terms = keywords(question, job, scope);
   const termConds: SQL[] = terms.map(
     (t) => sql`(headline ILIKE ${"%" + t + "%"} OR summary ILIKE ${"%" + t + "%"})`,
   );
@@ -921,9 +984,18 @@ export async function retrieve(opts: {
   question: string;
   queryVec: number[] | null;
   limit?: number;
-  /** Clasificación de la pregunta. `decision` enciende el canal prospectivo
-   *  y purga el vocabulario de decisión del canal léxico. */
-  intent?: AskIntent;
+  /** Qué TRABAJO pide el lector. `decision` y `preview` encienden el canal
+   *  prospectivo; cada uno purga su propio vocabulario del canal léxico. */
+  job?: AskJob;
+  /** Sobre qué símbolos va. `portfolio` cierra el tramo global del canal
+   *  vectorial y reparte las citas por posición. */
+  scope?: AskScope;
+  /** Símbolos IMPUESTOS por el llamante, que ganan a la extracción y a la
+   *  herencia. Es la vía del alcance de cartera: los siete valores del libro
+   *  no se adivinan desde el texto de la pregunta — se leen de la watchlist,
+   *  y por eso tienen que entrar por fuera de este módulo (que es
+   *  Workers-safe y no conoce la sesión). */
+  forceSymbols?: string[];
   /** false = no salir a la red a extraer cuerpos que faltan. Los anónimos
    *  del Worker van así: no pueden disparar N fetches salientes. */
   harvest?: boolean;
@@ -937,14 +1009,24 @@ export async function retrieve(opts: {
   carrySymbols?: string[];
 }): Promise<Retrieval> {
   const { question, queryVec } = opts;
-  const intent: AskIntent = opts.intent ?? "archive";
+  const job: AskJob = opts.job ?? "archive";
+  const scope: AskScope = opts.scope ?? "thematic";
   const limit = opts.limit ?? 20;
   // Cada canal pide el presupuesto ENTERO y el reparto lo decide el bucle de
   // dedup de abajo, por orden de prioridad. Antes cada uno pedía `ceil/2`,
   // que no era un reparto sino un tope: el vectorial se llevaba sus 10 (la
   // mitad de otras empresas, ver VECTOR_GLOBAL_QUOTA) y el léxico se quedaba
   // con las 10 restantes que el `break` de `limit` no le llegaba a dar.
-  const extracted = await extractQuestionSymbols(question);
+  // El orden de precedencia es deliberado: lo IMPUESTO gana a lo extraído, y
+  // lo extraído gana a lo heredado del turno anterior. Con alcance de cartera
+  // el llamante ya sabe la respuesta ("estos siete") y adivinarla desde el
+  // texto es justo lo que produjo una respuesta sobre Altria y Sandisk.
+  //
+  // `?? await` y no `?.length ?`: el llamante que ya extrajo pasa el
+  // resultado aunque sea VACÍO, y repetir la extracción ahí sería una query
+  // de más en cada pregunta temática. Quien no lo pasa (probe, tests) sigue
+  // extrayendo aquí igual que siempre.
+  const extracted = opts.forceSymbols ?? (await extractQuestionSymbols(question));
   const symbols = extracted.length ? extracted : (opts.carrySymbols ?? []);
   // Los HECHOS prospectivos (vara de consenso, vendedores sistemáticos,
   // operaciones abiertas, riesgo estructural). Los enciende la decisión —son
@@ -954,7 +1036,7 @@ export async function retrieve(opts: {
   // el trimestre y cuánta apuesta contraria hay acumulada. Dejarlos apagados
   // ahí era la razón mecánica de que una previa sólo pudiera dar la fecha.
   const forwardOn =
-    (intent === "decision" || intent === "preview") && symbols.length > 0;
+    (job === "decision" || job === "preview") && symbols.length > 0;
   // El canal de CITAS por símbolo, en cambio, se enciende siempre que la
   // pregunta nombre un valor (2026-08-07). Es el arreglo del agujero que
   // dejaba una pregunta de archivo leyendo sólo `news_embeddings`, o sea
@@ -969,6 +1051,18 @@ export async function retrieve(opts: {
   // justo lo que hace falta aquí — y porque dos consultas distintas para lo
   // mismo acaban divergiendo (la lección de `earningsReads` el 06-08).
   const symbolChannel = symbols.length > 0;
+  const perSymbol = job === "decision" || scope === "portfolio" ? 3 : 8;
+  // Techo REAL de citas. Hasta ahora el canal por símbolo no respetaba
+  // ninguno (el `break` de `limit` vivía sólo en el bucle de vectorial +
+  // léxico), así que el tope efectivo dependía de cuántos símbolos trajera la
+  // pregunta — invisible con uno, decisivo con siete. Con alcance de cartera
+  // se reserva además un margen para el canal semántico, que aquí ya sólo
+  // puede devolver noticias de las propias posiciones: es donde vive el
+  // "Why Meta Platforms Stock Fell 10% Today" que explica el día.
+  const citationCap = Math.max(
+    limit,
+    symbols.length * perSymbol + (scope === "portfolio" ? 6 : 0),
+  );
 
   // Se lanza aquí y se pasa SIN await a structuredFacts: las dos cosas
   // vuelan a la vez y los hechos sólo la esperan al final.
@@ -978,8 +1072,10 @@ export async function retrieve(opts: {
     vector, lexical, facts, earnings, fwdCandidates,
     bars, sellers, rawDeals, risk, fundChanges,
   ] = await Promise.all([
-    queryVec ? vectorSearch(queryVec, symbols, limit) : Promise.resolve([]),
-    lexicalSearch(question, symbols, limit, intent),
+    queryVec
+      ? vectorSearch(queryVec, symbols, limit, scope !== "portfolio")
+      : Promise.resolve([]),
+    lexicalSearch(question, symbols, limit, job, scope),
     structuredFacts(
       symbols,
       earningsP.then((rs) => {
@@ -1008,7 +1104,15 @@ export async function retrieve(opts: {
           // resto del cupo es mejor gastarlo en semejanza. En archivo o
           // previa son la ÚNICA vía a los cuerpos ya extraídos, así que se
           // les da sitio de verdad.
-          intent === "decision" ? 3 : 8,
+          //
+          // Con alcance de CARTERA el reparto es lo único que importa: 8 por
+          // símbolo × 7 posiciones son 56 citas, y como la cabecera de
+          // candidatos no se recorta contra `limit`, las primeras posiciones
+          // se comerían el prompt entero y las últimas no aparecerían. Una
+          // respuesta "stock por stock" que se queda sin los tres últimos
+          // valores es peor que no responder: el lector no puede saber que
+          // faltan.
+          perSymbol,
         )
       : Promise.resolve([]),
     forwardOn ? earningsBars(symbols) : Promise.resolve([]),
@@ -1074,7 +1178,17 @@ export async function retrieve(opts: {
   // delante de vectorial y léxico. El orden de las citas es el orden en que
   // el modelo las lee, y en una decisión lo que pesa es lo que sigue
   // abierto, no lo último que se publicó.
-  for (const c of fwdCandidates) {
+  //
+  // INTERCALADOS POR SÍMBOLO, y con varios valores en juego eso decide si la
+  // respuesta existe. `selectForwardCandidates` devuelve `ORDER BY symbol,
+  // rn`: un bloque entero por ticker, en orden alfabético. Recortar esa lista
+  // por un techo no quita la peor cita de cada posición — borra las ÚLTIMAS
+  // POSICIONES ENTERAS. Con la cartera del usuario, un tope de 20 sobre
+  // 7 × 3 dejaba a NU sin una sola cita y la respuesta "stock por stock"
+  // habría hablado de seis valores de siete sin decir que faltaba uno.
+  // Intercalando por rango, cada posición tiene su mejor cita antes de que
+  // ninguna tenga la segunda.
+  for (const c of interleaveBySymbol(fwdCandidates)) {
     const key = `n${c.newsId}`;
     if (seen.has(key)) continue;
     const text = normalizeHeadline(c.headline);
@@ -1102,6 +1216,7 @@ export async function retrieve(opts: {
       sentiment: c.sentiment,
       body: c.body ? c.body.slice(0, EXTRACT_MAX_CHARS) : null,
     });
+    if (citations.length >= citationCap) break;
   }
 
   for (const c of [...vector, ...lexical]) {
@@ -1117,7 +1232,7 @@ export async function retrieve(opts: {
     if (text && seenText.has(text)) continue;
     if (text) seenText.add(text);
     citations.push({ ...c, n: citations.length + 1 });
-    if (citations.length >= limit) break;
+    if (citations.length >= citationCap) break;
   }
 
   await attachExtracts(citations);
@@ -1142,7 +1257,8 @@ export async function retrieve(opts: {
 
   return {
     symbols,
-    intent,
+    job,
+    scope,
     citations,
     facts,
     earnings,

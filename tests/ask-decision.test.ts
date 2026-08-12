@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DECISION_NOISE,
   classifyFocus,
-  classifyIntent,
+  classifyJob,
   normalizeQuestion,
 } from "@/lib/ask/intent";
 import { PRESETS, type Attribution, type Axes } from "@/lib/coach/frames";
@@ -25,10 +25,10 @@ import type { Portfolio } from "@/lib/portfolio";
 // consulta de archivo. Ninguno de los dos fallos hace ruido en producción:
 // los dos se leen como una respuesta razonable.
 
-describe("classifyIntent", () => {
+describe("classifyJob", () => {
   it("clasifica como decisión la pregunta que abrió la sesión", () => {
     expect(
-      classifyIntent("¿es buena idea dejar correr $MSFT o mejor vendemos una parte hoy?"),
+      classifyJob("¿es buena idea dejar correr $MSFT o mejor vendemos una parte hoy?"),
     ).toBe("decision");
   });
 
@@ -37,16 +37,16 @@ describe("classifyIntent", () => {
     // "buying". Sin el requisito de primera persona entraría en modo
     // decisión y contestaría con bloques de aguantar/recortar sobre unos
     // insiders que no son el usuario.
-    expect(classifyIntent("What are insiders buying lately?")).toBe("archive");
-    expect(classifyIntent("¿Hubo mucha venta de directivos en NVDA?")).toBe("archive");
-    expect(classifyIntent("¿Qué se dijo de la compra de Iridium?")).toBe("archive");
+    expect(classifyJob("What are insiders buying lately?")).toBe("archive");
+    expect(classifyJob("¿Hubo mucha venta de directivos en NVDA?")).toBe("archive");
+    expect(classifyJob("¿Qué se dijo de la compra de Iridium?")).toBe("archive");
   });
 
   it("acepta el juicio impersonal y la primera persona por separado", () => {
-    expect(classifyIntent("¿conviene vender AAPL antes de resultados?")).toBe("decision");
-    expect(classifyIntent("¿aguanto $RKLB hasta el cierre de la operación?")).toBe("decision");
-    expect(classifyIntent("should i sell NVDA before earnings?")).toBe("decision");
-    expect(classifyIntent("is it worth holding TSLA?")).toBe("decision");
+    expect(classifyJob("¿conviene vender AAPL antes de resultados?")).toBe("decision");
+    expect(classifyJob("¿aguanto $RKLB hasta el cierre de la operación?")).toBe("decision");
+    expect(classifyJob("should i sell NVDA before earnings?")).toBe("decision");
+    expect(classifyJob("is it worth holding TSLA?")).toBe("decision");
   });
 
   it("«¿debería comprar más $NU?» es una DECISIÓN, no una consulta de archivo", () => {
@@ -55,10 +55,10 @@ describe("classifyIntent", () => {
     // de acción pero ninguna marca de primera persona ESCRITA, y las
     // peticiones de juicio que había no cubrían estas formas — que son de
     // las más naturales que hay para preguntar exactamente esto.
-    expect(classifyIntent("¿debería comprar más $NU?")).toBe("decision");
-    expect(classifyIntent("¿tiene sentido ampliar en $SOFI?")).toBe("decision");
-    expect(classifyIntent("¿es buen momento para entrar en $RKLB?")).toBe("decision");
-    expect(classifyIntent("is it a good time to add $PLTR?")).toBe("decision");
+    expect(classifyJob("¿debería comprar más $NU?")).toBe("decision");
+    expect(classifyJob("¿tiene sentido ampliar en $SOFI?")).toBe("decision");
+    expect(classifyJob("¿es buen momento para entrar en $RKLB?")).toBe("decision");
+    expect(classifyJob("is it a good time to add $PLTR?")).toBe("decision");
   });
 
   it("la tercera persona de «deber» NO convierte una consulta de archivo en decisión", () => {
@@ -66,18 +66,18 @@ describe("classifyIntent", () => {
     // formas de primera persona: "debe"/"deben" hablan de la empresa, no del
     // lector, y con un verbo de acción dentro entrarían en modo decisión
     // desplegando bloques sobre el dinero de nadie.
-    expect(classifyIntent("¿la empresa debe vender su división de nube?")).toBe("archive");
-    expect(classifyIntent("¿por qué deben comprar más terrenos?")).toBe("archive");
+    expect(classifyJob("¿la empresa debe vender su división de nube?")).toBe("archive");
+    expect(classifyJob("¿por qué deben comprar más terrenos?")).toBe("archive");
     // Y "add" suelto, que se añadió a ACTION para el caso inglés de arriba,
     // no puede arrastrar la pregunta de ejemplo de la propia UI.
-    expect(classifyIntent("What are insiders adding lately?")).toBe("archive");
+    expect(classifyJob("What are insiders adding lately?")).toBe("archive");
   });
 
   it("no se despista con tildes ni mayúsculas", () => {
     expect(normalizeQuestion("¿Qué HAGO con mi posición?")).toBe(
       "¿que hago con mi posicion?",
     );
-    expect(classifyIntent("¿QUÉ HAGO CON MI POSICIÓN EN $SOFI, la amplío?")).toBe(
+    expect(classifyJob("¿QUÉ HAGO CON MI POSICIÓN EN $SOFI, la amplío?")).toBe(
       "decision",
     );
   });
@@ -86,39 +86,39 @@ describe("classifyIntent", () => {
     // La queja del 2026-08-07. Sin este intent caía en `archive`, cuya única
     // sección de futuro prohíbe pronosticar, y encima apagaba el canal
     // prospectivo entero: lo máximo que podía contestar era la fecha.
-    expect(classifyIntent("¿cómo se espera que sea la earnings report de $NU?")).toBe(
+    expect(classifyJob("¿cómo se espera que sea la earnings report de $NU?")).toBe(
       "preview",
     );
-    expect(classifyIntent("what to expect from $RKLB earnings?")).toBe("preview");
-    expect(classifyIntent("previa de resultados de $ZETA")).toBe("preview");
-    expect(classifyIntent("¿va a batir el consenso $PLTR?")).toBe("preview");
+    expect(classifyJob("what to expect from $RKLB earnings?")).toBe("preview");
+    expect(classifyJob("previa de resultados de $ZETA")).toBe("preview");
+    expect(classifyJob("¿va a batir el consenso $PLTR?")).toBe("preview");
   });
 
   it("la DECISIÓN gana a la previa cuando se pregunta por el dinero", () => {
     // "antes de resultados" es disparador de previa Y aparece en preguntas
     // de decisión. Quien pregunta qué hacer con su posición quiere un
-    // veredicto, no una previa — de ahí el orden en `classifyIntent`.
-    expect(classifyIntent("¿compro $NU antes de resultados?")).toBe("decision");
-    expect(classifyIntent("¿conviene vender AAPL antes de resultados?")).toBe("decision");
+    // veredicto, no una previa — de ahí el orden en `classifyJob`.
+    expect(classifyJob("¿compro $NU antes de resultados?")).toBe("decision");
+    expect(classifyJob("¿conviene vender AAPL antes de resultados?")).toBe("decision");
   });
 
   it("una consulta de archivo sin verbo de acción ni petición de opinión es archivo", () => {
-    expect(classifyIntent("¿Qué se dijo de NVDA esta semana?")).toBe("archive");
-    expect(classifyIntent("¿Hay algún 13D nuevo?")).toBe("archive");
+    expect(classifyJob("¿Qué se dijo de NVDA esta semana?")).toBe("archive");
+    expect(classifyJob("¿Hay algún 13D nuevo?")).toBe("archive");
     // "a largo plazo" a secas NO basta: es vocabulario normal de una
     // consulta de archivo sobre guía o estrategia de la empresa.
-    expect(classifyIntent("¿Cuál es la guía a largo plazo de MSFT?")).toBe("archive");
+    expect(classifyJob("¿Cuál es la guía a largo plazo de MSFT?")).toBe("archive");
   });
 
   it("una petición de opinión clasifica como decisión SIN verbo de acción", () => {
     // El caso que abrió la sesión del 2026-07-31: caía a archivo y el
     // bibliotecario (prohibido opinar) respondía con la ficha del valor.
-    expect(classifyIntent("que te parece SOFI a largo plazo?")).toBe("decision");
-    expect(classifyIntent("¿Cómo ves a PLTR después de resultados?")).toBe("decision");
-    expect(classifyIntent("¿Te mojas con NVDA?")).toBe("decision");
-    expect(classifyIntent("¿Merece la pena SOFI a estos precios?")).toBe("decision");
-    expect(classifyIntent("what do you think of NVDA long term?")).toBe("decision");
-    expect(classifyIntent("your take on TSLA?")).toBe("decision");
+    expect(classifyJob("que te parece SOFI a largo plazo?")).toBe("decision");
+    expect(classifyJob("¿Cómo ves a PLTR después de resultados?")).toBe("decision");
+    expect(classifyJob("¿Te mojas con NVDA?")).toBe("decision");
+    expect(classifyJob("¿Merece la pena SOFI a estos precios?")).toBe("decision");
+    expect(classifyJob("what do you think of NVDA long term?")).toBe("decision");
+    expect(classifyJob("your take on TSLA?")).toBe("decision");
   });
 
   it("la opinión pedida DE USTED también es decisión — la segunda regresión real", () => {
@@ -126,41 +126,41 @@ describe("classifyIntent", () => {
     // LE parece comprar SOFI a largo plazo?" llevaba además el verbo de
     // acción "comprar", así que entró por la conjunción vieja (acción sin
     // primera persona ni juicio reconocido) y cayó a archivo otra vez.
-    expect(classifyIntent("qué le parece comprar SOFI a largo plazo?")).toBe("decision");
-    expect(classifyIntent("¿Qué opina usted de NVDA?")).toBe("decision");
-    expect(classifyIntent("¿Cómo lo ve usted?")).toBe("decision");
-    expect(classifyIntent("¿Se moja con PLTR?")).toBe("decision");
-    expect(classifyIntent("¿Comprarías RKLB aquí?")).toBe("decision");
-    expect(classifyIntent("¿Compraría usted ZETA a estos precios?")).toBe("decision");
-    expect(classifyIntent("would you buy NVDA at these levels?")).toBe("decision");
+    expect(classifyJob("qué le parece comprar SOFI a largo plazo?")).toBe("decision");
+    expect(classifyJob("¿Qué opina usted de NVDA?")).toBe("decision");
+    expect(classifyJob("¿Cómo lo ve usted?")).toBe("decision");
+    expect(classifyJob("¿Se moja con PLTR?")).toBe("decision");
+    expect(classifyJob("¿Comprarías RKLB aquí?")).toBe("decision");
+    expect(classifyJob("¿Compraría usted ZETA a estos precios?")).toBe("decision");
+    expect(classifyJob("would you buy NVDA at these levels?")).toBe("decision");
   });
 
   it("la tercera persona NO es opinión: es una pregunta al archivo", () => {
     // "¿Por qué compraría Buffett esta acción?" pregunta por un tercero.
-    expect(classifyIntent("¿Por qué compraría Berkshire esta acción?")).toBe("archive");
-    expect(classifyIntent("¿Qué opina el mercado de NVDA?")).toBe("archive");
+    expect(classifyJob("¿Por qué compraría Berkshire esta acción?")).toBe("archive");
+    expect(classifyJob("¿Qué opina el mercado de NVDA?")).toBe("archive");
   });
 
   it("«¿es momento de vender Palantir?» es una DECISIÓN — la quinta regresión real", () => {
     // Medido el 2026-08-08: contestó el bibliotecario con la ficha de
     // resultados de PLTR sin decir una palabra sobre vender. "es buen/mal
     // momento" estaba en ADVISORY; la misma pregunta SIN adjetivo, no.
-    expect(classifyIntent("¿Es momento de vender Palantir?")).toBe("decision");
-    expect(classifyIntent("es momento de vender palantir")).toBe("decision");
-    expect(classifyIntent("¿Ha llegado el momento de salir de PLTR?")).toBe("decision");
-    expect(classifyIntent("¿Es ya el momento de comprar más SOFI?")).toBe("decision");
-    expect(classifyIntent("¿Es hora de vender NU?")).toBe("decision");
-    expect(classifyIntent("¿Va siendo hora de tomar beneficios en META?")).toBe("decision");
-    expect(classifyIntent("¿Toca recortar ZETA?")).toBe("decision");
-    expect(classifyIntent("is it time to sell PLTR?")).toBe("decision");
-    expect(classifyIntent("time to take profits on META?")).toBe("decision");
+    expect(classifyJob("¿Es momento de vender Palantir?")).toBe("decision");
+    expect(classifyJob("es momento de vender palantir")).toBe("decision");
+    expect(classifyJob("¿Ha llegado el momento de salir de PLTR?")).toBe("decision");
+    expect(classifyJob("¿Es ya el momento de comprar más SOFI?")).toBe("decision");
+    expect(classifyJob("¿Es hora de vender NU?")).toBe("decision");
+    expect(classifyJob("¿Va siendo hora de tomar beneficios en META?")).toBe("decision");
+    expect(classifyJob("¿Toca recortar ZETA?")).toBe("decision");
+    expect(classifyJob("is it time to sell PLTR?")).toBe("decision");
+    expect(classifyJob("time to take profits on META?")).toBe("decision");
   });
 
   it("el juicio temporal NO clasifica solo: sin verbo de acción sigue siendo archivo", () => {
     // La conjunción es la que protege estas dos, que llevan "momento de"
     // dentro y son consultas de archivo perfectamente legítimas.
-    expect(classifyIntent("¿En qué momento de la llamada habló del capex?")).toBe("archive");
-    expect(classifyIntent("¿Cuándo es el momento de mayor volumen del día?")).toBe("archive");
+    expect(classifyJob("¿En qué momento de la llamada habló del capex?")).toBe("archive");
+    expect(classifyJob("¿Cuándo es el momento de mayor volumen del día?")).toBe("archive");
   });
 });
 
@@ -363,7 +363,8 @@ describe("answerShape", () => {
     // que RESPONDE. Caer a prosa aquí devolvía el párrafo genérico.
     const r: Retrieval = {
       symbols: ["MSFT"],
-      intent: "decision",
+      job: "decision",
+      scope: "named",
       citations: [],
       facts: [],
       earnings: [],
@@ -760,7 +761,8 @@ describe("ledgerCandidates", () => {
 
   const base: Retrieval = {
     symbols: ["MSFT"],
-    intent: "decision",
+    job: "decision",
+    scope: "named",
     citations: [],
     facts: [],
     earnings: [],

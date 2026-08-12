@@ -13,8 +13,36 @@
 // pregunta de archivo mal clasificada como decisión sale peor que al revés,
 // porque despliega bloques ("a favor de recortar") que no vienen a cuento.
 // De ahí la conjunción de abajo.
+//
+// ─── DOS EJES, NO UNO (2026-08-12) ────────────────────────────────────────
+//
+// EL AGUJERO QUE TAPA, medido con "porque esta cayendo mi cartera hoy, ve
+// stock por stock": la respuesta habló de Altria, Rollins, Alphabet, Life360,
+// Aeva y Sandisk. Ninguna está en la cartera (PLTR, RKLB, ZETA, SOFI, MSFT,
+// META, NU). 20 de 20 citas eran de empresas ajenas.
+//
+// No fue el redactor ni el modelo: fue que un solo enum de tres valores
+// decidía a la vez DOS preguntas independientes.
+//
+//   ALCANCE (scope) — ¿sobre QUÉ símbolos?  named · portfolio · thematic
+//   TRABAJO (job)   — ¿qué quiere el lector? archive · diagnose · decision · preview
+//
+// "mi cartera" tiene alcance `portfolio` y trabajo `diagnose`. Con un enum
+// único no existía ninguna casilla para eso, así que caía al valor por
+// defecto (`archive`), y sin símbolos extraídos el retrieval se quedó con
+// una búsqueda semántica pura sobre "acción que cae hoy" — la frase más
+// genérica que existe en un archivo financiero: casó con todos los "Why X
+// Stock Is Sinking Today" del archivo. El retrieval hizo su trabajo
+// perfectamente sobre la pregunta equivocada.
+//
+// Las cinco regresiones anteriores se taparon ensanchando expresiones
+// regulares. Ésta no se puede: ninguna regex crea un alcance que no existe.
 
-export type AskIntent = "decision" | "preview" | "archive";
+/** ¿Sobre QUÉ símbolos va la pregunta? */
+export type AskScope = "named" | "portfolio" | "thematic";
+
+/** ¿Qué trabajo pide el lector? */
+export type AskJob = "decision" | "preview" | "diagnose" | "archive";
 
 /**
  * PREVIA de un resultado que aún no ha salido.
@@ -71,6 +99,91 @@ export const PREVIEW_NOISE = new Set([
   "salir", "saldra", "antes",
   "expect", "expected", "expectations", "preview", "consensus", "earnings",
   "report", "quarter", "results", "beat", "miss", "ahead", "print",
+]);
+
+/**
+ * ALCANCE DE CARTERA: la pregunta va sobre el LIBRO ENTERO, no sobre un
+ * valor. Los símbolos no hay que adivinarlos — están en la watchlist.
+ *
+ * Estas frases clasifican SOLAS y no necesitan conjunción con nada, porque
+ * tienen una propiedad que a los verbos de acción les falta: **no aparecen
+ * en titulares**. Nadie le pregunta a un archivo de noticias por "mi
+ * cartera". El posesivo de primera persona es obligatorio: "la cartera de
+ * Buffett" o "la cartera de bonos del BCE" son consultas de archivo
+ * legítimas y quedan fuera.
+ */
+const PORTFOLIO = [
+  // Español
+  /\b(mi|mis)\s+(cartera|carteras|portfolio|posicion|posiciones|acciones|valores|inversiones|participaciones|book)\b/,
+  /\b(la|toda\s+la|mi\s+propia)\s+cartera\s+(entera|completa|al\s+completo)\b/,
+  /\btoda\s+mi\s+(cartera|exposicion)\b/,
+  /\bmi\s+exposicion\s+(total|global|entera)\b/,
+  // Inglés
+  /\bmy\s+(portfolio|positions|holdings|book|stocks|names|exposure)\b/,
+  /\b(the\s+)?(whole|entire|full)\s+(portfolio|book)\b/,
+  /\bacross\s+(my|the)\s+(portfolio|positions|holdings|book)\b/,
+];
+
+/**
+ * Ruido de la propia pregunta de CARTERA, para el canal léxico. Mismo motivo
+ * que `DECISION_NOISE`: en "por qué está cayendo mi cartera hoy, ve stock por
+ * stock" las 6 plazas se las comían "cayendo", "cartera", "stock" y "hoy" —
+ * y "stock" casa por subcadena con literalmente medio archivo financiero.
+ */
+export const PORTFOLIO_NOISE = new Set([
+  "cartera", "carteras", "posicion", "posiciones", "acciones", "valores",
+  "inversiones", "participaciones", "exposicion", "entera", "completa",
+  "toda", "todas", "stock", "stocks", "valor",
+  "portfolio", "positions", "holdings", "book", "names", "exposure",
+  "whole", "entire", "full", "across", "each", "every",
+]);
+
+/**
+ * TRABAJO de DIAGNÓSTICO: "¿por qué se mueve esto?". No es una consulta de
+ * archivo y no es una decisión.
+ *
+ * El bibliotecario tiene PROHIBIDO opinar, así que ante "por qué cae" lo
+ * máximo que puede hacer es enumerar noticias y dejar que el lector deduzca
+ * la causa. Pero atribuir una caída a un hecho ES el trabajo que se pide, y
+ * es verificable: no se predice nada, se explica algo que ya pasó.
+ *
+ * No exige símbolo — con alcance `portfolio` el diagnóstico va posición a
+ * posición, que es justo la pregunta que abrió esto.
+ */
+const DIAGNOSE = [
+  // Español
+  /\bpor\s?que\s+.{0,30}\b(cae|caen|cayo|cayeron|baja|bajan|bajo|sube|suben|subio|subieron|se\s+hunde|se\s+desploma|se\s+dispara)\b/,
+  /\bpor\s?que\s+.{0,30}\bes(ta|tan)\s+(cayendo|bajando|subiendo|hundiendo|desplomando|disparando|en\s+rojo|en\s+verde)\b/,
+  /\ba\s+que\s+se\s+deb(e|en)\b/,
+  /\bque\s+(le\s+)?(pasa|paso|ocurre|ocurrio)\s+(a|con)\b/,
+  /\bque\s+esta\s+pasando\s+(con|en)\b/,
+  /\bque\s+explica\b/,
+  /\bmotivo\s+de\s+la\s+(caida|subida)\b/,
+  /\bcausa\s+de\s+la\s+(caida|subida)\b/,
+  // Inglés
+  /\bwhy\s+(is|are|did|was|were|has|have)\b.{0,30}\b(fall|falling|fell|drop|dropping|dropped|down|up|sink|sinking|rise|rising|rose|crash|crashing|tank|tanking|slide|sliding|plunge|plunging|jump|jumping)\b/,
+  /\bwhat(?:'s| is)\s+(going\s+on|happening)\s+with\b/,
+  /\bwhat\s+happened\s+(to|with)\b/,
+  /\bwhat(?:'s| is)\s+driving\b/,
+  /\bwhat\s+explains\b/,
+  /\breason\s+for\s+the\s+(drop|fall|decline|selloff|sell-off|rally|jump)\b/,
+];
+
+/**
+ * Ruido del diagnóstico para el canal léxico. "cae", "hoy" y "por qué" no
+ * distinguen una noticia de otra, y "cae"/"baja" casan por subcadena con
+ * media portada.
+ */
+export const DIAGNOSE_NOISE = new Set([
+  "cae", "caen", "cayo", "cayeron", "cayendo", "caida", "baja", "bajan",
+  "bajando", "sube", "suben", "subio", "subiendo", "subida", "hunde",
+  "hundiendo", "desploma", "desplomando", "dispara", "rojo", "verde",
+  "debe", "deben", "pasa", "paso", "ocurre", "ocurrio", "pasando",
+  "explica", "motivo", "causa", "hoy", "ahora", "porque",
+  "falling", "fell", "dropping", "dropped", "sinking", "rising", "rose",
+  "crashing", "tanking", "sliding", "plunging", "jumping", "down",
+  "happening", "happened", "driving", "explains", "reason", "today",
+  "selloff", "decline", "rally",
 ]);
 
 /**
@@ -169,6 +282,31 @@ const SELF = [
   /\b(vendo|vendemos|compro|compramos|tengo|tenemos|llevo|llevamos|entro|entramos|salgo|salimos|mantengo|mantenemos|aguanto|aguantamos|recorto|recortamos|cierro|cerramos|amplio|ampliamos|promedio)\b/,
   /\b(my|our|mine)\b/,
   /\b(i|we)\s+(should|shall|hold|sell|buy|own|have|keep|bought|sold)\b/,
+];
+
+/**
+ * Sujeto de TERCERA PERSONA: el que compró o vendió es OTRO.
+ *
+ * Anula la mitad "primera persona" de la conjunción, y no es cautela
+ * teórica — el fallo estaba vivo y lo cazó un test el 2026-08-12: **"quién
+ * compró acciones de SOFI" clasificaba DECISIÓN**. `normalizeQuestion` quita
+ * las tildes para poder escribir cada patrón una sola vez, así que "compró"
+ * (tercera del pasado) y "compro" (primera del presente) son la MISMA cadena,
+ * y `SELF` lista "compro" como marca de "esto es dinero mío". Resultado: una
+ * consulta de archivo perfectamente normal recibía bloques de aguantar y
+ * recortar sobre el dinero de nadie — el mismo fallo que la conjunción existe
+ * para evitar, entrando por la puerta de atrás.
+ *
+ * No se arregla con la tilde: el usuario escribe sin ellas ("porque esta
+ * cayendo mi cartera"). Lo que sí desambigua es el SUJETO.
+ *
+ * No toca `ADVISORY`: "¿quién debería vender aquí?" sigue pidiendo juicio.
+ */
+const THIRD_PARTY_SUBJECT = [
+  /\b(quien|quienes)\b/,
+  /\bque\s+(directivo|directivos|fondo|fondos|empresa|empresas|insider|insiders|analista|analistas|gestora|gestoras)\b/,
+  /\bwho\b/,
+  /\bwhich\s+(fund|funds|insider|insiders|exec|execs|executive|executives|firm|firms)\b/,
 ];
 
 /** Marcas de que se pide un JUICIO, no un dato. Vale por sí sola junto a un
@@ -329,11 +467,12 @@ export function classifyFocus(question: string): AskFocus {
  * plazo?" no lleva verbo de operación y aun así sólo admite una respuesta
  * que se moje.
  */
-export function classifyIntent(question: string): AskIntent {
+export function classifyJob(question: string): AskJob {
   const q = normalizeQuestion(question);
   if (OPINION.some((re) => re.test(q))) return "decision";
   const hasAction = ACTION.some((re) => re.test(q));
-  const hasSelf = SELF.some((re) => re.test(q));
+  const hasSelf =
+    !THIRD_PARTY_SUBJECT.some((re) => re.test(q)) && SELF.some((re) => re.test(q));
   const hasAdvisory = ADVISORY.some((re) => re.test(q));
   if (hasAction && (hasSelf || hasAdvisory)) return "decision";
   // La PREVIA va después de la decisión y antes del archivo. El orden no es
@@ -342,5 +481,31 @@ export function classifyIntent(question: string): AskIntent {
   // dinero, no por el trimestre. Quien pregunta qué hacer con su posición
   // quiere un veredicto, no una previa.
   if (PREVIEW.some((re) => re.test(q))) return "preview";
+  // El DIAGNÓSTICO va el penúltimo, justo por encima del archivo. Cede ante
+  // los tres de arriba a propósito: "¿vendo porque está cayendo?" pregunta
+  // qué hacer con el dinero y el porqué de la caída es sólo el contexto.
+  if (DIAGNOSE.some((re) => re.test(q))) return "diagnose";
   return "archive";
+}
+
+/**
+ * ALCANCE: sobre qué símbolos va la pregunta.
+ *
+ * `hasNamedSymbols` lo decide el llamante porque la extracción toca BD
+ * (alias, denylist) y este módulo es TS puro y testeable a mano.
+ *
+ * **Nombrar un valor GANA sobre el alcance de cartera**, y no es un detalle:
+ * "¿por qué cae MSFT en mi cartera?" señala una posición concreta, y abrir
+ * las siete sería contestar a otra pregunta. El alcance de cartera es para
+ * cuando NO se señala ninguna — que es exactamente cuando hoy el retrieval
+ * se quedaba sin referente y salía a buscar por parecido semántico.
+ */
+export function classifyScope(
+  question: string,
+  hasNamedSymbols: boolean,
+): AskScope {
+  if (hasNamedSymbols) return "named";
+  return PORTFOLIO.some((re) => re.test(normalizeQuestion(question)))
+    ? "portfolio"
+    : "thematic";
 }

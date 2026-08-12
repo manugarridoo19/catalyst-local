@@ -23,7 +23,7 @@ import type { PositionContrast } from "@/lib/coach/build";
 import type { Falsifier } from "@/lib/coach/falsifiers";
 import type { EarningsRead } from "@/lib/ask/retrieve";
 import type { PortfolioRetrieval, PositionFacts } from "@/lib/ask/portfolio";
-import type { PricedPosition } from "@/lib/portfolio";
+import { dayAttribution, type PricedPosition } from "@/lib/portfolio";
 
 /**
  * Postura sobre una posición. Tokens estables en inglés: la traducción vive
@@ -399,10 +399,28 @@ function formatPortfolio(r: PortfolioRetrieval): string {
   }
   if (p.dayChangePct !== null) head.push(`hoy ${pct(p.dayChangePct)}`);
 
+  // El ARRASTRE del día, ya calculado por posición (2026-08-12). Propagado
+  // desde /ask el mismo día que se montó allí, por la lección de siempre en
+  // estas dos superficies: [[feedback_arreglo_no_se_propaga]], quinta vez.
+  //
+  // "hoy −10%" y "peso 2%" en la misma línea NO son el arrastre: hay que
+  // multiplicarlos, y el prompt prohíbe la aritmética. Sin esta cifra, un
+  // −10% en el 2% de la cartera y un −10% en el 20% se leen igual, y la
+  // revisión gasta su párrafo del día en el que menos mueve la aguja.
+  const contribBySymbol = new Map(
+    dayAttribution(p).contributions.map((c) => [c.symbol, c.contribPct]),
+  );
+
   const lines = p.positions.map((pos: PricedPosition) => {
     const bits = [`${pos.symbol}: peso ${pos.weightPct?.toFixed(1) ?? "?"}%`];
     if (pos.unrealizedPct !== null) bits.push(`P&L ${pct(pos.unrealizedPct)}`);
     if (pos.dayChangePct !== null) bits.push(`hoy ${pct(pos.dayChangePct)}`);
+    const contrib = contribBySymbol.get(pos.symbol);
+    if (contrib !== undefined) {
+      bits.push(
+        `aporta ${contrib >= 0 ? "+" : ""}${contrib.toFixed(2)} pts al día`,
+      );
+    }
     if (pos.sector) bits.push(pos.sector);
     return `- ${bits.join(" · ")}`;
   });

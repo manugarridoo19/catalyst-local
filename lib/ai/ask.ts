@@ -13,7 +13,13 @@
 import { proseCompletion } from "@/lib/ai/prose-chain";
 import { warnIfTruncated } from "@/lib/providers/response";
 import { looksLikeScratchpad } from "@/lib/ai/guards";
-import { normalizeQuestion } from "@/lib/ask/intent";
+import { normalizeQuestion, type AskJob } from "@/lib/ask/intent";
+import {
+  planOutline,
+  type OutlineInventory,
+  type OutlineSection,
+} from "@/lib/ai/ask-outline";
+import type { DayAttribution } from "@/lib/portfolio";
 import { getEmpiricalPriors } from "@/lib/signals/priors";
 import type { ForwardItem } from "@/lib/ai/forward-ledger";
 import {
@@ -53,6 +59,33 @@ Rules:
 ${EVIDENCE_RULES}
 - Desk-analyst register: concrete, no hedging boilerplate, no investment advice, no "as an AI".`;
 
+/**
+ * El papel del redactor por TRABAJO. Es lo que cambia entre una consulta de
+ * archivo y un diagnóstico, y no es matiz: el bibliotecario tiene PROHIBIDO
+ * opinar, así que ante "por qué cae esto" lo máximo que puede hacer es
+ * enumerar noticias y dejar que el lector ate los cabos. Atribuir una caída a
+ * un hecho concreto no es opinar — el hecho ya ocurrió y la cita lo prueba.
+ *
+ * La línea roja se mantiene íntegra: explicar hacia atrás es el trabajo,
+ * predecir hacia delante sigue prohibido.
+ */
+const ASK_DIAGNOSE_RULES = `You answer questions about a proprietary news archive (Catalyst). The reader is asking WHY something moved. Your job is ATTRIBUTION, not chronicle.
+You receive: (a) numbered ARCHIVE ITEMS retrieved for the question, and optionally (b) COMPUTED FACTS — aggregates calculated by SQL over structured filings data.
+${ITEM_TYPES}
+
+ATTRIBUTING A MOVE IS YOUR JOB, and it is not the same as opining. The move already happened; the item is the evidence. "It fell because the release showed X [3]" is attribution and is allowed. "It will keep falling" is a forecast and is forbidden. So is a price target, a direction, and any advice on what to do about it.
+
+SAY WHEN YOU CANNOT ATTRIBUTE. If the archive has no item that explains a move, say exactly that for that name — "no hay nada en el archivo que lo explique" is a real answer and a useful one. Manufacturing a plausible cause from a loosely related headline is the single worst thing you can do here, because the reader cannot tell it apart from a real one. Never reach for the market as a cause ("weakness in tech") unless an item says so.
+
+DISTINGUISH THE COMPANY FROM THE TAPE. An item titled "Why X Stock Is Sinking Today" is journalism ABOUT the move, not a cause of it — mine it for the cause it names and cite that, do not report the move back to the reader as its own explanation. He can already see the move.
+
+AN OLD ITEM CANNOT BE THE CAUSE OF TODAY'S MOVE. Every item carries its age in parentheses. A quarterly release from two weeks ago is BACKGROUND — the market priced it two weeks ago. Putting today's decline next to it and saying nothing else asserts a causal link that is not there, and it is the easiest way to be wrong here while sounding precise. If the only material you have for a name is old, use it for CONTEXT and say plainly that nothing in the archive explains today specifically.
+
+WHEN EVERYTHING MOVES TOGETHER, SAY SO. If the numbers you were given show most or all names falling by a similar amount on the same day, that pattern is itself the finding, and a separate company-specific story for each one would be an invention. Name the pattern, then say per name whether the archive adds anything of its own on top of it.
+Rules:
+${EVIDENCE_RULES}
+- Desk-analyst register: concrete, no hedging boilerplate, no investment advice, no "as an AI".`;
+
 // Respuesta ESTRUCTURADA. Se usa sólo cuando el retrieval trajo material de
 // verdad (ver `answerShape`): con dos titulares sueltos, cuatro epígrafes
 // producen un esqueleto con secciones vacías, que se lee peor que un párrafo.
@@ -77,6 +110,72 @@ const ASK_PROSE_PROMPT = `${ASK_BASE_RULES}
 
 Output ONLY a JSON object: {"answer": "...", "used": [1,4,7], "coverage": "full" | "partial" | "none"}
 - 2-6 sentences, one paragraph.`;
+
+/**
+ * Respuesta CON GUION: los epígrafes los decide la pregunta (ver
+ * `lib/ai/ask-outline.ts`), no una plantilla.
+ *
+ * Sustituye a `ASK_SECTIONS_PROMPT` en los trabajos `archive` y `diagnose`.
+ * Las reglas de evidencia son EXACTAMENTE las mismas — lo único que cambia
+ * es de dónde sale la lista de secciones.
+ */
+function outlineSystemPrompt(job: AskJob, outline: OutlineSection[]): string {
+  const base = job === "diagnose" ? ASK_DIAGNOSE_RULES : ASK_BASE_RULES;
+  const spec = outline
+    .map((s) => `- "${s.key}" — title "${s.title}". ${s.brief}`)
+    .join("\n");
+  return `${base}
+
+Output ONLY a JSON object:
+{"sections": [{"key": "...", "title": "...", "text": "..."}], "used": [1,4,7], "coverage": "full"}
+
+THE SECTIONS BELOW WERE CHOSEN FOR THIS EXACT QUESTION. Use these keys, in this order, and no others:
+${spec}
+
+Section rules:
+- "title": use the title given above, verbatim.
+- 2-5 sentences per section. Each section carries its own citations.
+- OMIT a section only if the material genuinely has nothing for it, and say what is missing in the section that follows. An empty heading is a lie about how much the archive knows; padding one is worse.
+- Do NOT add sections that are not on the list, and do NOT merge two of them into one.`;
+}
+
+/**
+ * El bloque que responde "¿por qué cae mi cartera hoy?" antes de que el
+ * modelo lea una sola noticia.
+ *
+ * Va el PRIMERO por la misma razón que la posición en una decisión: un modelo
+ * pondera lo que lee antes, y con las noticias arriba la respuesta vuelve a
+ * ser una crónica con un "por tanto" pegado al final.
+ *
+ * Las cifras vienen de `dayAttribution` (TS puro) y el prompt prohíbe
+ * recalcularlas. No es celo: medido el 2026-08-12, un modelo con
+ * razonamiento y los pesos delante SÍ hace la cuenta — y acierta casi
+ * siempre, que es exactamente el modo de fallo que nadie audita.
+ */
+function formatDayAttribution(att: DayAttribution): string {
+  if (!att.contributions.length && !att.unmeasured.length) return "";
+  const sign = (n: number) => (n >= 0 ? "+" : "");
+  const money = (n: number | null) =>
+    n === null ? "n/d" : `${sign(n)}${n.toFixed(2)}$`;
+  const lines = att.contributions.map(
+    (c) =>
+      `- ${c.symbol}: ${sign(c.dayChangePct)}${c.dayChangePct.toFixed(2)}% hoy · ` +
+      `pesa ${c.weightPct.toFixed(1)}% · ${money(c.dayChangeAbs)} · ` +
+      `aporta ${sign(c.contribPct)}${c.contribPct.toFixed(2)} puntos al movimiento de la cartera`,
+  );
+  const out = [
+    "TODAY'S MOVE, POSITION BY POSITION (already computed — quote these numbers as printed, NEVER recompute them and never add them up yourself). Ordered from the biggest drag to the biggest lift, so the first line is the one that explains the day:",
+    ...lines,
+  ];
+  if (att.unmeasured.length) {
+    // Se DICEN, no se omiten: una respuesta "stock por stock" que se salta
+    // un valor en silencio deja al lector creyendo que no se movió.
+    out.push(
+      `- No price for today, so no attribution is possible: ${att.unmeasured.join(", ")}. Say so rather than leaving them out.`,
+    );
+  }
+  return out.join("\n");
+}
 
 // Respuesta de PREVIA. La cuarta forma, y existe por el mismo motivo que la
 // de decisión: la pregunta no cabía en ninguna de las otras.
@@ -329,11 +428,47 @@ export function formatEarningsContent(e: EarningsRead): string {
   return out.join("\n");
 }
 
-function formatItems(citations: Citation[], earnings: EarningsRead[]): string {
+/**
+ * LA EDAD DE CADA ÍTEM, escrita, no deducible.
+ *
+ * El agujero que tapa (2026-08-12): el prompt lleva desde siempre la regla
+ * "cuando algo tenga más de unos días, di cuándo pasó en vez de dar a
+ * entender que es de ahora"… y el modelo **no tenía con qué cumplirla**. Las
+ * citas traen su fecha, pero en ninguna parte del mensaje se dice qué día es
+ * hoy, y restar dos fechas es aritmética — que este prompt prohíbe
+ * explícitamente. Así que la regla dependía de que el modelo adivinara la
+ * fecha actual desde sus pesos, congelados en su corte de entrenamiento.
+ *
+ * Se vio en la primera respuesta buena de la cartera: atribuyó la caída de
+ * HOY a unos resultados del 29 de julio sin señalar en ningún momento que
+ * eran de hace dos semanas. La cifra era correcta y la implicación, falsa.
+ */
+export function ageLabel(publishedAt: string, now: Date): string {
+  const d = new Date(publishedAt);
+  if (Number.isNaN(d.getTime())) return "";
+  // Por DÍA DE CALENDARIO, no por horas transcurridas. Con la resta de
+  // milisegundos, una noticia de anoche a las 20:00 leída hoy a las 12:00
+  // sale "hace 0 días" y se rotula **(HOY)**: exactamente la afirmación
+  // falsa que esta etiqueta existe para impedir. Y es el caso normal, no un
+  // borde — el archivo se llena de noticias del cierre americano, que en
+  // hora del usuario es de madrugada.
+  const utcDay = (x: Date) =>
+    Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()) / 86_400_000;
+  const days = utcDay(now) - utcDay(d);
+  if (days <= 0) return " (HOY)";
+  if (days === 1) return " (ayer)";
+  return ` (hace ${days} días)`;
+}
+
+function formatItems(
+  citations: Citation[],
+  earnings: EarningsRead[],
+  now: Date = new Date(),
+): string {
   const bySymbol = new Map(earnings.map((e) => [e.symbol, e]));
   return citations
     .map((c) => {
-      const date = c.publishedAt.slice(0, 10);
+      const date = `${c.publishedAt.slice(0, 10)}${ageLabel(c.publishedAt, now)}`;
       const syms = c.symbols.length ? ` [${c.symbols.join(",")}]` : "";
       if (c.via === "filing") {
         const e = bySymbol.get(c.symbols[0]);
@@ -396,18 +531,31 @@ export function hasCoverage(r: Retrieval): boolean {
 export type AnswerShape = "decision" | "preview" | "sections" | "prose";
 
 export function answerShape(r: Retrieval): AnswerShape {
-  // La intención MANDA sobre el material. Una pregunta de decisión con
-  // poco archivo sigue queriendo la forma de decisión: la respuesta será
-  // "no da para inclinarse, esto es lo que falta", que responde. Caer a
-  // prosa aquí devolvía el párrafo genérico que abrió esta sesión.
-  if (r.intent === "decision") return "decision";
+  // El TRABAJO manda sobre el material. Una pregunta de decisión con poco
+  // archivo sigue queriendo la forma de decisión: la respuesta será "no da
+  // para inclinarse, esto es lo que falta", que responde. Caer a prosa aquí
+  // devolvía el párrafo genérico que abrió aquella sesión.
+  if (r.job === "decision") return "decision";
   // Misma regla para la previa, y por el mismo motivo medido: con poco
   // archivo la respuesta correcta sigue siendo "ésta es la vara, esto es lo
   // que el archivo NO tiene", no una crónica de las últimas noticias.
-  if (r.intent === "preview") return "preview";
+  if (r.job === "preview") return "preview";
+  // Con alcance de CARTERA la pregunta es por definición sobre varias
+  // posiciones, así que la prosa de un párrafo no puede contestarla aunque
+  // el archivo venga flojo: la respuesta correcta sería "estas tres se
+  // mueven, de estas dos no hay nada", y eso son epígrafes. El material aquí
+  // no es sólo el archivo — la atribución del día ya viene calculada.
+  if (r.scope === "portfolio") return "sections";
   if (r.earnings.length > 0) return "sections";
   if (r.citations.length >= 6 && r.bodiesAvailable >= 2) return "sections";
   return "prose";
+}
+
+/** ¿Esta forma admite guion? Sólo las dos que hasta hoy eran plantillas
+ *  genéricas. `decision` y `preview` tienen claves PORTANTES (gates y orden
+ *  en código) y conservan su esquema — ver la cabecera de `ask-outline.ts`. */
+export function shapeAcceptsOutline(shape: AnswerShape): boolean {
+  return shape === "sections" || shape === "prose";
 }
 
 /** Techo de salida por forma. En prosa el prompt pide 2-6 frases y el cap
@@ -425,6 +573,35 @@ const MAX_TOKENS: Record<AnswerShape, number> = {
   preview: 1800,
   prose: 700,
 };
+
+/**
+ * EL RAZONAMIENTO DE LA RESPUESTA (2026-08-12).
+ *
+ * Hasta hoy TODA la prosa del proyecto salía sin razonar: OpenRouter con
+ * `reasoning:{enabled:false}` en la cadena `brief`, Gemini con
+ * `thinkingLevel:"minimal"`. Para un digest de titulares eso es correcto y
+ * barato. Para "por qué cae mi cartera, ve stock por stock" no lo es, y está
+ * medido contra la API con las keys reales: mismo modelo, mismo material, en
+ * `minimal` devuelve adjetivos y en `low` atribuye posición a posición.
+ *
+ * SÓLO AQUÍ. El tier `lite` se eligió por CUOTA y sostiene el scoring y los
+ * embeddings, que son miles de llamadas al día; /ask son un puñado. Y si la
+ * cuota de este modelo se agota, `prose-chain` cae a la cadena de siempre:
+ * el peor caso es la respuesta de ayer.
+ *
+ * `ASK_REASON=0` lo apaga entero.
+ */
+const ASK_REASON_MODEL = process.env.ASK_REASON_MODEL || "gemini-3.6-flash";
+const ASK_REASON_ON = process.env.ASK_REASON !== "0";
+
+/**
+ * Los tokens de pensamiento SALEN DEL MISMO PRESUPUESTO que la respuesta.
+ * Medido el 2026-08-12: con `thinkingLevel:"high"` y 900 de techo, la
+ * respuesta volvió cortada a media frase — 865 tokens gastados en pensar y
+ * 31 en contestar. Por eso el nivel se queda en `low` y por eso el techo
+ * sube con él: subir uno sin el otro convierte una mejora en un truncamiento.
+ */
+const THINKING_HEADROOM = 1200;
 
 const SECTION_KEYS = [
   "numbers", "reading", "overlooked", "watch",
@@ -654,6 +831,12 @@ export type AskOptions = {
    *  revisión). Contexto para entender el seguimiento, nunca fuente: los
    *  hechos siguen saliendo del material de este turno. */
   history?: AskTurn[];
+  /** Arrastre del día posición a posición, YA CALCULADO. Sólo llega con
+   *  alcance de cartera. Es la mitad de la respuesta a "por qué cae mi
+   *  cartera hoy" y no sale de ninguna noticia. */
+  attribution?: DayAttribution;
+  /** Guion de la respuesta. `undefined` = forma fija de siempre. */
+  outline?: OutlineSection[];
 };
 
 export type AskTurn = { question: string; answer: string };
@@ -696,8 +879,19 @@ export async function buildAskUserBlock(
   question: string,
   opts: AskOptions = {},
 ): Promise<{ shape: AnswerShape; system: string; userBlock: string }> {
-  const { decision, ledger = [], focus = "general", history = [] } = opts;
+  const {
+    decision,
+    ledger = [],
+    focus = "general",
+    history = [],
+    attribution,
+    outline,
+  } = opts;
   const shape = answerShape(r);
+  // El guion sólo gobierna las formas que eran plantillas genéricas. Si el
+  // editor no contestó, `outline` llega vacío y todo sigue como ayer.
+  const withOutline =
+    outline && outline.length && shapeAcceptsOutline(shape) ? outline : null;
 
   // El track record del PROPIO Catalyst entra como CALIBRACIÓN de cuánto
   // exigir, no como dato a citar: si los upgrades de analista no han batido
@@ -719,11 +913,23 @@ export async function buildAskUserBlock(
       ].join("\n")
     : "";
 
+  // La fecha de HOY, escrita. Sin ella "por qué cae mi cartera hoy" no tiene
+  // ancla: el modelo sólo puede situar "hoy" con la fecha de su corte de
+  // entrenamiento, que en este proyecto está siempre meses por detrás.
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+
   const userBlock = [
     historyBlock,
+    `TODAY IS ${today}. Every item below carries its age in parentheses; use it.`,
     `QUESTION: ${question}`,
     shape === "decision" ? focusLine(focus) : "",
     "",
+    // El arrastre del día va ANTES que nada más, incluida la posición: es la
+    // única parte de la respuesta que no depende del archivo y es la que
+    // contesta literalmente la pregunta. Con las noticias delante, el modelo
+    // vuelve a redactar una crónica y cuelga los números al final.
+    attribution ? formatDayAttribution(attribution) : "",
     shape === "decision" && decision ? formatDecision(decision, ledger) : "",
     // En la previa el bloque de lo ya fijado va DELANTE de las noticias, por
     // lo mismo que el libro de futuros en una decisión: un modelo pondera lo
@@ -734,7 +940,7 @@ export async function buildAskUserBlock(
     shape === "decision" || shape === "preview"
       ? "ARCHIVE ITEMS (support material to cite — do NOT summarise them):"
       : "ARCHIVE ITEMS:",
-    formatItems(r.citations, r.earnings),
+    formatItems(r.citations, r.earnings, now),
     "",
     formatFacts(r.facts),
     priors ?? "",
@@ -742,7 +948,80 @@ export async function buildAskUserBlock(
     .filter(Boolean)
     .join("\n");
 
-  return { shape, system: SYSTEM_BY_SHAPE[shape], userBlock };
+  return {
+    shape,
+    system: withOutline
+      ? outlineSystemPrompt(r.job, withOutline)
+      : SYSTEM_BY_SHAPE[shape],
+    userBlock,
+  };
+}
+
+/**
+ * Qué material hay, en lenguaje llano y SIN el material dentro.
+ *
+ * Es todo lo que ve el editor del guion. Que no vea los artículos es el
+ * punto: un modelo con veinte noticias delante y la orden de "decide la
+ * forma" acaba resumiendo las noticias. Sin ellas sólo puede contestar lo
+ * que se le pregunta.
+ */
+export function outlineInventoryFor(
+  r: Retrieval,
+  question: string,
+  attribution?: DayAttribution,
+): OutlineInventory {
+  const lines: string[] = [];
+  if (attribution) {
+    lines.push(
+      `${attribution.contributions.length} portfolio positions with today's move, weight and contribution in percentage points ALREADY COMPUTED (the reader owns these): ${attribution.contributions.map((c) => c.symbol).join(", ") || "none"}`,
+    );
+    if (attribution.unmeasured.length) {
+      lines.push(
+        `${attribution.unmeasured.length} held positions with NO price today, so no attribution is possible: ${attribution.unmeasured.join(", ")}`,
+      );
+    }
+  } else if (r.symbols.length) {
+    lines.push(`Question is about these tickers: ${r.symbols.join(", ")}`);
+  } else {
+    lines.push("No specific ticker — thematic question over the whole archive");
+  }
+  lines.push(
+    `${r.citations.length} archive items retrieved, ${r.bodiesAvailable} of them with the full article body extracted (the rest are headline-only)`,
+  );
+  if (r.earnings.length) {
+    lines.push(
+      `${r.earnings.length} of the companies' OWN earnings releases already read (first-party, with the numbers and a "not said out loud" reading): ${r.earnings.map((e) => e.symbol).join(", ")}`,
+    );
+  } else {
+    lines.push("No company press release has been read for this question");
+  }
+  // Los agregados SQL se anuncian POR LO QUE TIENEN, no por su existencia:
+  // "hay hechos estructurados" hace que el editor proponga una sección de
+  // insiders sobre cero operaciones.
+  const withInsider = r.facts.filter(
+    (f) => f.insiderNet7d !== null && f.insiderNet7d !== 0,
+  );
+  if (withInsider.length) {
+    lines.push(
+      `Net open-market insider activity in the last 7d for: ${withInsider.map((f) => f.symbol).join(", ")}`,
+    );
+  } else {
+    lines.push("No insider activity in the window");
+  }
+  const withEarningsDate = r.facts.filter((f) => f.nextEarnings);
+  if (withEarningsDate.length) {
+    lines.push(
+      `Scheduled next reporting dates for: ${withEarningsDate.map((f) => f.symbol).join(", ")}`,
+    );
+  }
+  // Las ENTIDADES suben el techo de secciones lo justo para que quepan
+  // todas. Con la cartera real (7 posiciones) el tope fijo de 6 dejaba a
+  // RKLB fuera — y era justo la única que subía, o sea la mitad interesante
+  // de la respuesta a "por qué cae".
+  const entities = attribution
+    ? attribution.contributions.length + attribution.unmeasured.length
+    : r.symbols.length;
+  return { question, job: r.job, scope: r.scope, lines, entities };
 }
 
 export async function askArchive(
@@ -750,7 +1029,7 @@ export async function askArchive(
   question: string,
   opts: AskOptions = {},
 ): Promise<AskAnswer> {
-  const { decision, ledger = [] } = opts;
+  const { decision, ledger = [], attribution } = opts;
   // Una pregunta de decisión con evidencia dura propia (peso, insiders,
   // una fecha de resultados) merece respuesta aunque el archivo de noticias
   // venga flojo: la mitad de la respuesta no sale de las noticias.
@@ -765,7 +1044,29 @@ export async function askArchive(
     };
   }
 
-  const { shape, system, userBlock } = await buildAskUserBlock(r, question, opts);
+  // ── El GUION, antes de redactar ──────────────────────────────────────
+  //
+  // Es la primera de las dos llamadas y sólo decide la FORMA. Si el llamante
+  // ya trae uno (el probe), no se vuelve a pedir. Si el editor falla, sigue
+  // valiendo `null` y la respuesta sale con la plantilla de siempre — esta
+  // llamada nunca puede costar una respuesta que ayer se daba.
+  let outline = opts.outline;
+  if (!outline && shapeAcceptsOutline(answerShape(r))) {
+    outline =
+      (await planOutline(outlineInventoryFor(r, question, attribution))) ??
+      undefined;
+  }
+
+  const { shape, system, userBlock } = await buildAskUserBlock(r, question, {
+    ...opts,
+    outline,
+  });
+  // Las claves admitidas salen del guion cuando lo hay. Sin esto, las
+  // secciones que el editor acaba de inventar ("meta", "rklb") caerían todas
+  // a "other" y el reordenado las apilaría en el orden que devolviera el
+  // modelo — que es justo lo que el guion existe para fijar.
+  const outlineKeys =
+    outline && shapeAcceptsOutline(shape) ? outline.map((s) => s.key) : null;
 
   let parsed: {
     answer?: string;
@@ -788,7 +1089,14 @@ export async function askArchive(
   // reintento. Éste es el único sitio del proyecto donde el reintento por
   // truncamiento existe — el resto de llamantes sólo lo LOGUEA (ver
   // warnIfTruncated), porque añadir bucles nuevos multiplicaría la cuota.
-  let maxTokens = MAX_TOKENS[shape];
+  // El techo de salida se ajusta al GUION: con siete secciones (una por
+  // posición) el tope pensado para cuatro epígrafes trunca la respuesta a
+  // media frase, que es el fallo ya medido el 2026-07-31 con la sexta
+  // sección de una decisión. Un guion largo es una promesa de sitio.
+  const shapeTokens = outlineKeys
+    ? Math.max(MAX_TOKENS[shape], 400 + outlineKeys.length * 230)
+    : MAX_TOKENS[shape];
+  let maxTokens = shapeTokens + (ASK_REASON_ON ? THINKING_HEADROOM : 0);
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await proseCompletion({
       messages: [
@@ -799,6 +1107,9 @@ export async function askArchive(
       maxTokens,
       tag: "ask",
       jsonMode: true,
+      reason: ASK_REASON_ON
+        ? { model: ASK_REASON_MODEL, thinking: "low" }
+        : undefined,
       // Cuatro epígrafes con citas son ~1.900 chars de salida y el modelo de
       // cabeza tarda ~24s en escribirlos: con los 25s por defecto se quedaba
       // JUSTO fuera y contestaba el de reserva. Techo de pared para que un
@@ -839,8 +1150,8 @@ export async function askArchive(
       throw new Error("ask: respuesta no parseable como JSON");
     }
 
-    sections = normalizeSections(parsed);
-    const order = ORDER_BY_SHAPE[shape];
+    sections = normalizeSections(parsed, outlineKeys ?? SECTION_KEYS);
+    const order = outlineKeys ?? ORDER_BY_SHAPE[shape];
     if (order) sections = orderDecisionSections(sections, order);
     // El reintento cubre los DOS modos de fallo del esquema, no sólo uno.
     // La guarda anterior exigía `sections.length` para reintentar por falta
@@ -972,17 +1283,24 @@ export function inlineMarkers(text: string): number[] {
  * de un 500. La cadena de fallback llega hasta llama-3.1-8b: el parser tiene
  * que tolerar al peor eslabón.
  */
-export function normalizeSections(parsed: {
-  answer?: string;
-  sections?: Array<{ key?: string; title?: string; text?: string }>;
-}): AskSection[] {
+export function normalizeSections(
+  parsed: {
+    answer?: string;
+    sections?: Array<{ key?: string; title?: string; text?: string }>;
+  },
+  /** Claves admitidas. Con guion son las que el editor eligió para ESTA
+   *  pregunta; sin él, el enum histórico. Lo que no esté en la lista cae a
+   *  "other" — se conserva el texto, se pierde el orden, que es lo correcto:
+   *  tirar una sección con contenido sería peor que no saber dónde va. */
+  allowedKeys: readonly string[] = SECTION_KEYS,
+): AskSection[] {
   const out: AskSection[] = [];
   if (Array.isArray(parsed.sections)) {
     for (const s of parsed.sections) {
       const text = typeof s?.text === "string" ? cleanBrackets(s.text) : "";
       if (!text) continue; // sección vacía = sección que no existe
       const key =
-        typeof s.key === "string" && SECTION_KEYS.includes(s.key) ? s.key : "other";
+        typeof s.key === "string" && allowedKeys.includes(s.key) ? s.key : "other";
       const title =
         typeof s.title === "string" && s.title.trim()
           ? s.title.trim().slice(0, 40)

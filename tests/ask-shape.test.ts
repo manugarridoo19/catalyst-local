@@ -27,7 +27,8 @@ function citation(n: number, over: Partial<Citation> = {}): Citation {
 function retrieval(over: Partial<Retrieval> = {}): Retrieval {
   return {
     symbols: [],
-    intent: "archive",
+    job: "archive",
+    scope: "thematic",
     citations: [],
     facts: [],
     earnings: [],

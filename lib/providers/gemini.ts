@@ -328,15 +328,36 @@ function authFailure(status: number, body: string): string | null {
 // nivel más bajo del enum: "none" no existe. Misma intención que budget 0.
 // Por eso el payload se construye POR MODELO y no una vez para toda la cadena:
 // el fallback mezcla familias y cada una habla su dialecto.
-function thinkingConfigFor(model: string): Record<string, unknown> {
-  return model.startsWith("gemini-3")
-    ? { thinkingLevel: "minimal" }
-    : { thinkingBudget: 0 };
+//
+// `thinking` PERMITE SUBIRLO (2026-08-12), y sólo lo pide un llamante: la
+// redacción de /ask. Medido contra la API con la misma pregunta y los mismos
+// datos: en `minimal` el modelo devuelve adjetivos («genera el mayor impacto
+// negativo»), en `low` atribuye posición a posición. La contrapartida está
+// medida también, y es la razón de que esto no sea el defecto: los tokens de
+// pensamiento **salen del mismo presupuesto que la respuesta**, así que en
+// `high` la salida volvió TRUNCADA a media frase. Quien suba el nivel tiene
+// que subir `maxTokens` con él.
+export type ThinkingLevel = "minimal" | "low" | "high";
+
+function thinkingConfigFor(
+  model: string,
+  level: ThinkingLevel = "minimal",
+): Record<string, unknown> {
+  // 2.x no tiene enum: su único dialecto es numérico y su único uso aquí es
+  // apagarlo. Pedir `low` a un 2.x no puede fallar en silencio con un budget
+  // inventado — se queda en 0, que es lo que ese modelo sabe hacer.
+  if (!model.startsWith("gemini-3")) return { thinkingBudget: 0 };
+  return { thinkingLevel: level };
 }
 
 function toGeminiPayload(
   messages: ChatMessage[],
-  opts: { temperature?: number; maxTokens?: number; jsonMode?: boolean },
+  opts: {
+    temperature?: number;
+    maxTokens?: number;
+    jsonMode?: boolean;
+    thinking?: ThinkingLevel;
+  },
   model: string,
 ): Record<string, unknown> {
   const system = messages
@@ -355,7 +376,7 @@ function toGeminiPayload(
     // flash-lite puede razonar si se lo dejan puesto — mismo problema que
     // Nemotron en OpenRouter (quema el output budget en pensamiento).
     // Thinking al mínimo que permita la familia del modelo.
-    thinkingConfig: thinkingConfigFor(model),
+    thinkingConfig: thinkingConfigFor(model, opts.thinking),
   };
   if (opts.jsonMode) generationConfig.responseMimeType = "application/json";
   const payload: Record<string, unknown> = { contents, generationConfig };
@@ -479,6 +500,11 @@ export async function geminiChatCompletion(opts: {
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
+  /** Nivel de pensamiento. Por defecto `minimal` para TODO el proyecto — el
+   *  pensamiento se paga del mismo presupuesto de salida y el scoring no lo
+   *  necesita. Súbelo sólo donde el razonamiento sea el producto, y sube
+   *  `maxTokens` con él. */
+  thinking?: ThinkingLevel;
   /** Timeout de UN intento (una key, un modelo). */
   timeoutMs?: number;
   /** Techo de PARED para el barrido entero (todos los modelos × todas las

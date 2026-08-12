@@ -558,3 +558,63 @@ export function concentrationFlags(p: Portfolio): ConcentrationFlag[] {
       b.weightPct - a.weightPct,
   );
 }
+
+/**
+ * QUIÉN ARRASTRA HOY, y cuánto. La aritmética que responde "¿por qué cae mi
+ * cartera hoy?" — calculada AQUÍ, nunca por el modelo.
+ *
+ * Existe porque esa pregunta tiene una respuesta exacta y el LLM no puede
+ * darla. Medido el 2026-08-12 contra `gemini-3.6-flash` con los pesos y los
+ * movimientos ya en el prompt: con el razonamiento apagado (que es como sale
+ * hoy TODA llamada del proyecto) devolvió adjetivos — «genera el mayor
+ * impacto negativo»; con razonamiento en `low` sí hizo la cuenta… y la hizo
+ * ÉL. Ese es justo el modo de fallo que este proyecto tiene prohibido desde
+ * el 2026-07-25: el modelo estima a ojo, acierta por poco y nadie lo audita.
+ *
+ * Con esta función el razonamiento se gasta donde sí aporta —QUÉ hecho
+ * explica cada caída— y los números llegan hechos.
+ *
+ * `contribPct` es puntos porcentuales de la CARTERA, no el movimiento del
+ * valor: una posición que cae un 10% pesando el 20% resta 2,0 puntos. Es la
+ * única de las dos cifras que se puede sumar, y por eso es la que ordena.
+ */
+export type DayContribution = {
+  symbol: string;
+  weightPct: number;
+  /** Movimiento del VALOR hoy, en %. */
+  dayChangePct: number;
+  /** Dinero de hoy en esta posición. */
+  dayChangeAbs: number | null;
+  /** Puntos porcentuales que esta posición aporta al movimiento del total. */
+  contribPct: number;
+};
+
+export type DayAttribution = {
+  contributions: DayContribution[];
+  /** Posiciones vivas que hoy NO tienen movimiento medible. Se devuelven en
+   *  vez de omitirse: una respuesta "stock por stock" que se salta un valor
+   *  en silencio deja al lector creyendo que ese valor no se movió. */
+  unmeasured: string[];
+};
+
+export function dayAttribution(p: Portfolio): DayAttribution {
+  const contributions: DayContribution[] = [];
+  const unmeasured: string[] = [];
+  for (const pos of p.positions) {
+    if (pos.dayChangePct === null || pos.weightPct === null) {
+      unmeasured.push(pos.symbol);
+      continue;
+    }
+    contributions.push({
+      symbol: pos.symbol,
+      weightPct: pos.weightPct,
+      dayChangePct: pos.dayChangePct,
+      dayChangeAbs: pos.dayChangeAbs,
+      contribPct: (pos.dayChangePct * pos.weightPct) / 100,
+    });
+  }
+  // Del que más resta al que más suma. El orden ES la respuesta: quien abre
+  // la lista es el que explica el día.
+  contributions.sort((a, b) => a.contribPct - b.contribPct);
+  return { contributions, unmeasured };
+}

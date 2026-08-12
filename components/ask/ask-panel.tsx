@@ -365,7 +365,7 @@ function Answer({ res }: { res: AskResponse }) {
   // una decisión con hechos duros el archivo SÍ sabe algo: lo que falta es
   // la prosa, y eso ya lo dice `note`.
   const hasHardDecision =
-    res.intent === "decision" &&
+    res.job === "decision" &&
     (res.pressures.length > 0 || res.dated.length > 0 || res.ledger.length > 0);
   const noCoverage = res.coverage === "none" && !res.answer && !hasHardDecision;
 
@@ -449,7 +449,7 @@ function Answer({ res }: { res: AskResponse }) {
         </div>
       ) : null}
 
-      {res.intent === "decision" ? <DecisionBlocks res={res} /> : null}
+      {res.job === "decision" ? <DecisionBlocks res={res} /> : null}
 
       {res.facts.length ? (
         <section>

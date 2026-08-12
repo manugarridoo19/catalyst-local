@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  extractQuestionSymbols,
   ledgerCandidates,
   retrieve,
   type Citation,
@@ -16,9 +17,11 @@ import { embedBatch, EmbedQuotaError } from "@/lib/providers/gemini-embed";
 import { isWorkersRuntime, llmAllowed, rateLimited } from "@/lib/ask/gate";
 import {
   classifyFocus,
-  classifyIntent,
+  classifyJob,
+  classifyScope,
   type AskFocus,
-  type AskIntent,
+  type AskJob,
+  type AskScope,
 } from "@/lib/ask/intent";
 import { parseAxes, type Axes } from "@/lib/coach/frames";
 import {
@@ -28,7 +31,12 @@ import {
   type PositionContext,
   type Pressure,
 } from "@/lib/ask/decision";
-import { buildPortfolio, type Portfolio } from "@/lib/portfolio";
+import {
+  buildPortfolio,
+  dayAttribution,
+  type DayAttribution,
+  type Portfolio,
+} from "@/lib/portfolio";
 import { getWatchlist } from "@/lib/db/queries";
 import { getQuotesMap } from "@/lib/providers/finnhub";
 import { ensureSessionCookie } from "@/lib/session";
@@ -85,9 +93,13 @@ function parseHistory(raw: unknown): HistoryIn[] {
 
 export type AskResponse = {
   mode: "answer" | "search";
-  /** Qué clase de pregunta se detectó. La UI pinta la exposición y las
-   *  presiones sólo en `decision` — en una consulta de archivo serían ruido. */
-  intent: AskIntent;
+  /** Qué TRABAJO se detectó. La UI pinta la exposición y las presiones sólo
+   *  en `decision` — en una consulta de archivo serían ruido. */
+  job: AskJob;
+  /** Sobre QUÉ va: un valor nombrado, la cartera entera o un tema. Se
+   *  devuelve para poder auditar desde fuera el fallo que abrió esto — una
+   *  pregunta sobre "mi cartera" que acaba respondiendo sobre Altria. */
+  scope: AskScope;
   /** Qué decisión se pregunta (entrar dinero / sacarlo / general). Se
    *  devuelve para poder auditar desde fuera que el veredicto respondió a
    *  la pregunta que se hizo. */
@@ -137,16 +149,32 @@ export async function POST(req: Request) {
   question = question.slice(0, MAX_QUESTION_CHARS);
 
   const allowLlm = await llmAllowed();
-  const intent = classifyIntent(question);
+  const job = classifyJob(question);
   const focus = classifyFocus(question);
+  // Arranca en `thematic` y se afina dentro del try, en cuanto se sabe si la
+  // pregunta nombra algún valor. Vive fuera para que el `catch` pueda
+  // devolverlo: una respuesta fallida también tiene que decir cómo se
+  // enrutó, que es lo que hizo falta para diagnosticar esto.
+  let scope: AskScope = "thematic";
 
   try {
+    // Los símbolos se extraen UNA sola vez, aquí, y viajan a `retrieve`. El
+    // alcance depende de si la pregunta nombra alguno y `retrieve` necesita
+    // el mismo resultado: extraerlo dos veces sería una query por pregunta a
+    // cambio de nada.
+    const named = await extractQuestionSymbols(question);
+    scope = classifyScope(question, named.length > 0);
+
     // La cartera se pide EN PARALELO con el retrieval, no después: son dos
     // ramas independientes (una consulta a Neon + Finnhub, la otra al
     // archivo) y encadenarlas sumaba su latencia a una pregunta que el
     // usuario está esperando con la pantalla delante.
+    //
+    // Con alcance de cartera hace falta además ANTES del retrieval, porque
+    // los símbolos salen de ella. Sigue lanzándose aquí para que se solape
+    // con el embedding de la pregunta, que es lo que va justo debajo.
     const portfolioP: Promise<PortfolioWithFrames> =
-      intent === "decision"
+      job === "decision" || scope === "portfolio"
         ? loadPortfolio()
         : Promise.resolve({ portfolio: null, frames: new Map() });
 
@@ -187,6 +215,30 @@ export async function POST(req: Request) {
       }
     }
 
+    // ── El alcance de CARTERA se resuelve aquí, y es el arreglo del fallo
+    // que abrió esto: los siete valores del libro no se adivinan desde el
+    // texto de la pregunta. Sin esto, "por qué cae mi cartera" no extraía
+    // ningún símbolo y el retrieval se iba a buscar por parecido semántico —
+    // devolviendo 20 de 20 citas de empresas que el usuario no tiene.
+    let forceSymbols = named;
+    let attribution: DayAttribution | undefined;
+    if (scope === "portfolio") {
+      const { portfolio } = await portfolioP;
+      const held = portfolio?.positions.map((p) => p.symbol) ?? [];
+      if (held.length) {
+        forceSymbols = held;
+        // El arrastre del día: la mitad de la respuesta a "por qué cae hoy",
+        // y no sale de ninguna noticia. Aritmética en TS, jamás del modelo.
+        attribution = dayAttribution(portfolio!);
+      } else {
+        // Sin posiciones registradas no HAY cartera de la que hablar, y
+        // sostener el alcance produciría una respuesta sobre un conjunto
+        // vacío. Degradar a temático deja que el archivo conteste lo que
+        // pueda, que es lo honesto.
+        scope = "thematic";
+      }
+    }
+
     // La cosecha de cuerpos (N fetches salientes) va gated a la sesión del
     // dueño, igual que el embedding y el LLM: un endpoint público y
     // enumerable no puede convertirse en un proxy de descargas para bots.
@@ -194,7 +246,9 @@ export async function POST(req: Request) {
       question,
       queryVec,
       harvest: allowLlm,
-      intent,
+      job,
+      scope,
+      forceSymbols,
       // Herencia de símbolos del turno anterior — solo actúa si la
       // pregunta nueva no nombra ninguno (ver retrieve).
       carrySymbols: lastTurn?.symbols,
@@ -205,7 +259,7 @@ export async function POST(req: Request) {
     // cero cuota de proveedor y son la parte de la respuesta que no
     // necesita un LLM para ser verdad.
     let decision: DecisionFacts | undefined;
-    if (intent === "decision") {
+    if (job === "decision") {
       const { portfolio, frames } = await portfolioP;
       decision = buildDecisionFacts({
         symbols: r.symbols,
@@ -235,7 +289,8 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           mode: "search",
-          intent,
+          job,
+          scope,
           focus,
           question,
           answer: null,
@@ -265,7 +320,7 @@ export async function POST(req: Request) {
     // Sólo en decisiones: una consulta de archivo no la necesita y pagaría
     // el doble de cuota por nada. Y si falla, la 2ª sigue igual.
     let ledger: ForwardItem[] = [];
-    if (intent === "decision") {
+    if (job === "decision") {
       const { candidates, numberOf } = ledgerCandidates(r);
       const extracted = await extractForwardLedger(candidates, numberOf).catch(
         () => null,
@@ -278,11 +333,13 @@ export async function POST(req: Request) {
       ledger,
       focus,
       history: history satisfies AskTurn[],
+      attribution,
     });
     return NextResponse.json(
       {
         mode: "answer",
-        intent,
+        job,
+        scope,
         focus,
         question,
         answer: a.answer || null,
@@ -308,7 +365,8 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         mode: "answer",
-        intent,
+        job,
+        scope,
         focus,
         question,
         answer: null,
