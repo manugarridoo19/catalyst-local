@@ -7,7 +7,7 @@ import { NewsSidePanel } from "@/components/ticker/news-side-panel";
 import { TickerBrief } from "@/components/ticker/ticker-brief";
 import { TickerFundamentals } from "@/components/ticker/ticker-fundamentals";
 import { TickerMetricsPanel } from "@/components/ticker/ticker-metrics-panel";
-import { getMetrics, getDilution } from "@/lib/metrics/queries";
+import { getMetricsOnDemand, getDilutionOnDemand } from "@/lib/metrics/on-demand";
 import { getShortInterestSeries } from "@/lib/short-interest/queries";
 import {
   getLatestEarningsReport,
@@ -84,12 +84,14 @@ export default async function TickerPage({
     // Serie de sorpresas trimestre a trimestre (consenso snapshoteado al
     // leer cada 8-K). Crece sola con el barrido de earnings.
     getSurpriseHistory(symbol).catch(() => []),
-    // Fundamentales de negocio: SELECT sobre lo que dejó `refresh-metrics`.
-    // Cero llamadas a Finnhub desde aquí — 429ea a los egress de Cloudflare,
-    // y además la ingesta tiene guard de 20h por símbolo.
-    getMetrics(symbol).catch(() => null),
+    // Fundamentales de negocio: SELECT sobre lo que dejó `refresh-metrics`,
+    // y si no hay fila Y estamos en el daemon local (LOCAL_MODE), se ingiere
+    // al vuelo con el guard de 20h — un ticker fuera de la watchlist dejaba
+    // el panel directamente vacío. En el Worker sigue siendo solo lectura:
+    // Finnhub 429ea a los egress de Cloudflare.
+    getMetricsOnDemand(symbol).catch(() => null),
     // Dilución: otra fuente (XBRL de la SEC) y otra cadencia, tabla aparte.
-    getDilution(symbol).catch(() => null),
+    getDilutionOnDemand(symbol).catch(() => null),
   ]);
 
   const news: FeedItem[] = newsRows.map((r) => ({

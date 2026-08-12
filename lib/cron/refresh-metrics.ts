@@ -46,18 +46,25 @@ export type MetricsRefreshResult = {
   failed: number;
 };
 
-export async function runRefreshMetricsCron(): Promise<MetricsRefreshResult> {
-  const all = unwrapRows<{ symbol: string }>(
-    await db.execute(sql`SELECT DISTINCT symbol FROM watchlist ORDER BY symbol`),
-  );
+export async function runRefreshMetricsCron(options?: {
+  force?: boolean;
+  /** Símbolos concretos en vez de la watchlist. Lo usa el fetch-on-miss del
+   *  daemon local para un ticker visitado que no está en cartera. */
+  symbols?: string[];
+}): Promise<MetricsRefreshResult> {
+  const all =
+    options?.symbols?.map((s) => s.toUpperCase()) ??
+    unwrapRows<{ symbol: string }>(
+      await db.execute(sql`SELECT DISTINCT symbol FROM watchlist ORDER BY symbol`),
+    ).map((r) => r.symbol);
 
   // La frescura se mide con `job_state` (marca de INTENTO) y no con
   // `ticker_metrics.fetched_at`, porque un símbolo sin cobertura en Finnhub
   // no llega a escribir fila: guardarse por la tabla propia lo volvería a
   // preguntar en cada tick. Es la lección de `earnings-cal:` literalmente.
   const stale: string[] = [];
-  for (const { symbol } of all) {
-    if (!(await jobRanWithin(`metrics:${symbol}`, STALE_HOURS))) {
+  for (const symbol of all) {
+    if (options?.force || !(await jobRanWithin(`metrics:${symbol}`, STALE_HOURS))) {
       stale.push(symbol);
     }
   }

@@ -1,6 +1,7 @@
 import { Sigma, AlertTriangle } from "lucide-react";
 import type { StoredMetrics, StoredDilution } from "@/lib/metrics/queries";
 import type { HistoryStat } from "@/lib/metrics/derive";
+import { gapFor, type Gap, type MetricField } from "@/lib/metrics/gaps";
 import { DILUTION_TARGET_PCT } from "@/lib/metrics/dilution";
 
 // Fundamentales de negocio: los 133 ratios de Finnhub que `refresh-metrics`
@@ -64,18 +65,22 @@ function Row({
   value,
   hint,
   history,
+  gap,
 }: {
   label: string;
   value: string;
   hint?: string;
   history?: HistoryStat;
+  /** Si la cifra falta, POR QUÉ falta (lib/metrics/gaps.ts). Una raya muda
+   *  sugiere un fallo de carga; «pérdidas» o «no paga» es una respuesta. */
+  gap?: Gap | null;
 }) {
   const corta = historyShort(history);
   const larga = historyNote(history);
-  // El `title` acumula las dos explicaciones que existan: qué es la métrica
-  // y qué dice su percentil. Es donde cabe la prosa sin robarle sitio a la
-  // cifra, que es lo único que se mira de un vistazo.
-  const tip = [hint, larga].filter(Boolean).join(" — ") || undefined;
+  // El `title` acumula las explicaciones que existan: qué es la métrica, por
+  // qué falta y qué dice su percentil. Es donde cabe la prosa sin robarle
+  // sitio a la cifra, que es lo único que se mira de un vistazo.
+  const tip = [hint, gap?.why, larga].filter(Boolean).join(" — ") || undefined;
   return (
     <div className="flex items-baseline justify-between gap-3 py-1" title={tip}>
       <span className="shrink-0 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">
@@ -87,9 +92,17 @@ function Row({
             {corta}
           </span>
         )}
-        <span className="shrink-0 font-mono text-[12px] font-semibold tabular-nums text-foreground">
-          {value}
-        </span>
+        {gap ? (
+          // La palabra va en gris y sin negrita a propósito: es un motivo,
+          // no un valor, y no debe leerse como si la métrica valiera algo.
+          <span className="shrink-0 whitespace-nowrap font-mono text-[10px] italic text-muted-foreground/60">
+            {gap.label}
+          </span>
+        ) : (
+          <span className="shrink-0 font-mono text-[12px] font-semibold tabular-nums text-foreground">
+            {value}
+          </span>
+        )}
       </span>
     </div>
   );
@@ -212,6 +225,10 @@ export function TickerMetricsPanel({
   const { label: cabLabel, value: cabValue, stat: cabStat } = headline(m);
   const cabNote = historyNote(cabStat);
 
+  // Devuelve null cuando la cifra existe, así que añadirlo a cada fila no
+  // cambia nada donde hay dato.
+  const gap = (f: MetricField) => gapFor(m, f);
+
   // `fetched_at` dice cuándo lo bajamos; `asOf` es el trimestre contable al
   // que se refiere. Si el cron lleva días caído hay que decirlo en vez de
   // presentar como actual un múltiplo viejo.
@@ -243,26 +260,39 @@ export function TickerMetricsPanel({
 
       <div className="grid gap-x-8 gap-y-4 px-4 pb-4 pt-1 sm:grid-cols-2 lg:grid-cols-5">
         <Group title="Qué pagas">
-          <Row label="Forward P/E" value={mult(m.forwardPe)} />
-          <Row label="P/E (TTM)" value={mult(m.peTtm)} history={m.history.pe} />
+          <Row label="Forward P/E" value={mult(m.forwardPe)} gap={gap("forwardPe")} />
+          <Row
+            label="P/E (TTM)"
+            value={mult(m.peTtm)}
+            history={m.history.pe}
+            gap={gap("peTtm")}
+          />
           <Row
             label="PEG"
             value={ratio(m.pegTtm)}
             hint="Precio dividido por beneficio, dividido por el crecimiento esperado. Por debajo de 1 el crecimiento no está pagado; alrededor de 2, sí y de sobra."
+            gap={gap("pegTtm")}
           />
-          <Row label="PEG forward" value={ratio(m.forwardPeg)} />
-          <Row label="P/S" value={mult(m.psTtm)} history={m.history.ps} />
+          <Row label="PEG forward" value={ratio(m.forwardPeg)} gap={gap("forwardPeg")} />
+          <Row
+            label="P/S"
+            value={mult(m.psTtm)}
+            history={m.history.ps}
+            gap={gap("psTtm")}
+          />
           <Row
             label="EV/EBITDA"
             value={mult(m.evEbitdaTtm)}
             history={m.history.evEbitda}
+            gap={gap("evEbitdaTtm")}
           />
           <Row
             label="EV/FCF"
             value={mult(m.evFcf)}
             hint="Valor de empresa sobre flujo de caja libre. En plena ola de capex baja el FCF y este múltiplo se dispara sin que el negocio empeore."
+            gap={gap("evFcf")}
           />
-          <Row label="P/B" value={mult(m.pb)} history={m.history.pb} />
+          <Row label="P/B" value={mult(m.pb)} history={m.history.pb} gap={gap("pb")} />
         </Group>
 
         <Group title="Si lo vale">
@@ -270,48 +300,82 @@ export function TickerMetricsPanel({
             label="ROIC"
             value={pct(m.roicTtm)}
             hint="Lo que saca por cada euro invertido en el negocio. Es la cifra que justifica que una empresa siga gastando fuerte."
+            gap={gap("roicTtm")}
           />
-          <Row label="ROE" value={pct(m.roeTtm)} />
-          <Row label="Margen bruto" value={pct(m.grossMarginTtm)} />
-          <Row label="Margen operativo" value={pct(m.operatingMarginTtm)} />
-          <Row label="Margen neto" value={pct(m.netMarginTtm)} />
+          <Row label="ROE" value={pct(m.roeTtm)} gap={gap("roeTtm")} />
+          <Row
+            label="Margen bruto"
+            value={pct(m.grossMarginTtm)}
+            gap={gap("grossMarginTtm")}
+          />
+          <Row
+            label="Margen operativo"
+            value={pct(m.operatingMarginTtm)}
+            gap={gap("operatingMarginTtm")}
+          />
+          <Row label="Margen neto" value={pct(m.netMarginTtm)} gap={gap("netMarginTtm")} />
           <Row
             label="Margen FCF"
             value={pct(m.fcfMargin)}
             hint="Qué parte de cada euro facturado acaba siendo caja libre."
+            gap={gap("fcfMargin")}
           />
         </Group>
 
         <Group title="Cuánto crece">
-          <Row label="Ingresos interanual" value={pct(m.revenueGrowthTtmYoy)} />
+          <Row
+            label="Ingresos interanual"
+            value={pct(m.revenueGrowthTtmYoy)}
+            gap={gap("revenueGrowthTtmYoy")}
+          />
           <Row
             label="Ingresos 3 años"
             value={pct(m.revenueGrowth3y)}
             hint="El compuesto a 3 años dice si el interanual de hoy es la tendencia o un rebote."
+            gap={gap("revenueGrowth3y")}
           />
           <Row
             label="Ingresos 5 años"
             value={pct(m.revenueGrowth5y)}
             hint="El arco completo. Con TTM y 3 años no se distingue una desaceleración estructural de un año flojo."
+            gap={gap("revenueGrowth5y")}
           />
-          <Row label="BPA interanual" value={pct(m.epsGrowthTtmYoy)} />
-          <Row label="BPA 3 años" value={pct(m.epsGrowth3y)} />
+          <Row
+            label="BPA interanual"
+            value={pct(m.epsGrowthTtmYoy)}
+            gap={gap("epsGrowthTtmYoy")}
+          />
+          <Row label="BPA 3 años" value={pct(m.epsGrowth3y)} gap={gap("epsGrowth3y")} />
           <Row
             label="Caja libre 5 años"
             value={pct(m.fcfCagr5y)}
             hint="CAGR del flujo de caja operativo libre. Se puede crecer en ingresos y en beneficio sin que la caja acompañe; aquí se ve."
+            gap={gap("fcfCagr5y")}
           />
         </Group>
 
         <Group title="Cómo aguanta">
-          <Row label="Deuda / fondos propios" value={ratio(m.totalDebtToEquity)} />
+          <Row
+            label="Deuda / fondos propios"
+            value={ratio(m.totalDebtToEquity)}
+            gap={gap("totalDebtToEquity")}
+          />
           <Row
             label="Ratio corriente"
             value={ratio(m.currentRatio)}
             hint="Activo corriente sobre pasivo corriente: por debajo de 1 depende de refinanciar."
+            gap={gap("currentRatio")}
           />
-          <Row label="Rentabilidad por dividendo" value={pct(m.dividendYieldTtm)} />
-          <Row label="Payout" value={pct(m.payoutRatioTtm)} />
+          <Row
+            label="Rentabilidad por dividendo"
+            value={pct(m.dividendYieldTtm)}
+            gap={gap("dividendYieldTtm")}
+          />
+          <Row
+            label="Payout"
+            value={pct(m.payoutRatioTtm)}
+            gap={gap("payoutRatioTtm")}
+          />
         </Group>
 
         {d && <DilutionGroup d={d} />}
